@@ -2,23 +2,33 @@ import { query } from "./_generated/server";
 import { v } from "convex/values";
 
 /**
- * Validate the provided password against the stored AUTH_PASSWORD environment variable.
- * Returns true if the password matches, false otherwise.
+ * Validate the provided password against stored passwords.
+ * Returns the access level: "admin", "user", or null if invalid.
+ * 
+ * - AUTH_PASSWORD: Regular user access (can view but not edit)
+ * - ADMIN_PASSWORD: Full admin access (can view and edit/manage)
  */
 export const validatePassword = query({
     args: { password: v.string() },
     handler: async (ctx, args) => {
-        // Get the password from environment variable
-        const storedPassword = process.env.AUTH_PASSWORD;
+        const authPassword = process.env.AUTH_PASSWORD;
+        const adminPassword = process.env.ADMIN_PASSWORD;
 
-        if (!storedPassword) {
+        if (!authPassword) {
             console.error("AUTH_PASSWORD environment variable is not set");
             return { success: false, error: "Authentication not configured" };
         }
 
-        // Compare passwords (simple string comparison)
-        const isValid = args.password === storedPassword;
+        // Check admin password first (if set)
+        if (adminPassword && args.password === adminPassword) {
+            return { success: true, role: "admin" };
+        }
 
-        return { success: isValid };
+        // Check regular user password
+        if (args.password === authPassword) {
+            return { success: true, role: "user" };
+        }
+
+        return { success: false, error: "Incorrect password" };
     },
 });

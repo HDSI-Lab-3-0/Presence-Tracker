@@ -100,7 +100,8 @@ function createResidentCard(device) {
         <div class="last-seen">
             ${timeMessage}
         </div>
-        <div style="margin-top: 10px; display: flex; justify-content: flex-end; gap: 8px;">
+        ${window.isAdmin && window.isAdmin() ? `
+        <div class="admin-actions" style="margin-top: 10px; display: flex; justify-content: flex-end; gap: 8px;">
              <button class="btn btn-secondary" style="font-size: 0.7rem; padding: 2px 6px;"
                 onclick="openEditModal('${device._id}', '${device.firstName || ''}', '${device.lastName || ''}')">
                 Edit
@@ -110,6 +111,7 @@ function createResidentCard(device) {
                 Forget
              </button>
         </div>
+        ` : ''}
     `;
     return card;
 }
@@ -151,14 +153,17 @@ function updateResidentCard(card, device) {
     }
     if (lastSeen) lastSeen.textContent = timeMessage;
 
-    // Update button onclick handlers (in case _id changed)
-    const editBtn = card.querySelector('.btn-secondary');
-    const forgetBtn = card.querySelector('.btn:last-child');
-    if (editBtn) {
-        editBtn.onclick = () => openEditModal(device._id, device.firstName || '', device.lastName || '');
-    }
-    if (forgetBtn) {
-        forgetBtn.onclick = () => forgetDevice(device._id, device.macAddress);
+    // Update button onclick handlers (in case _id changed) - only if admin
+    const adminActions = card.querySelector('.admin-actions');
+    if (adminActions) {
+        const editBtn = adminActions.querySelector('.btn-secondary');
+        const forgetBtn = adminActions.querySelector('.btn:last-child');
+        if (editBtn) {
+            editBtn.onclick = () => openEditModal(device._id, device.firstName || '', device.lastName || '');
+        }
+        if (forgetBtn) {
+            forgetBtn.onclick = () => forgetDevice(device._id, device.macAddress);
+        }
     }
 }
 
@@ -229,9 +234,11 @@ function createPendingItem(device) {
                 <span>${device.macAddress}</span>
             </div>
         </div>
+        ${window.isAdmin && window.isAdmin() ? `
         <button class="btn btn-primary" onclick="openModal('${device.macAddress}')">
             Register
         </button>
+        ` : ''}
     `;
     return item;
 }

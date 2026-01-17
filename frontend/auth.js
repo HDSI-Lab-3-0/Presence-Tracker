@@ -1,12 +1,14 @@
 // Authentication Module
-// Password validation via Convex backend
+// Password validation via Convex backend with role-based access
 
 const AUTH_SESSION_KEY = 'ieee_presence_authenticated';
+const AUTH_ROLE_KEY = 'ieee_presence_role';
 
 // Check if already authenticated on page load
 (function checkAuth() {
     if (sessionStorage.getItem(AUTH_SESSION_KEY) === 'true') {
-        showMainApp();
+        const role = sessionStorage.getItem(AUTH_ROLE_KEY) || 'user';
+        showMainApp(role);
     }
 })();
 
@@ -35,8 +37,9 @@ async function handleAuth(event) {
         const result = await window.convexClient.query("auth:validatePassword", { password });
 
         if (result.success) {
-            // Store authentication in session
+            // Store authentication and role in session
             sessionStorage.setItem(AUTH_SESSION_KEY, 'true');
+            sessionStorage.setItem(AUTH_ROLE_KEY, result.role);
 
             // Animate transition
             const overlay = document.getElementById('auth-overlay');
@@ -45,7 +48,7 @@ async function handleAuth(event) {
             // After animation, hide completely and show app
             setTimeout(() => {
                 overlay.classList.add('hidden');
-                showMainApp();
+                showMainApp(result.role);
             }, 300);
         } else {
             // Show error
@@ -77,7 +80,7 @@ async function handleAuth(event) {
     return false;
 }
 
-function showMainApp() {
+function showMainApp(role) {
     const overlay = document.getElementById('auth-overlay');
     const mainApp = document.getElementById('main-app');
 
@@ -91,11 +94,36 @@ function showMainApp() {
     void mainApp.offsetWidth;
     mainApp.classList.add('fade-in');
 
+    // Apply role-based visibility
+    applyRolePermissions(role);
+
     // Initialize the app (start Convex subscription)
     if (typeof window.initializeApp === 'function') {
         window.initializeApp();
     }
 }
+
+function applyRolePermissions(role) {
+    // Store role globally for other scripts to access
+    window.userRole = role;
+
+    // Add role class to body for CSS-based hiding
+    document.body.classList.remove('role-user', 'role-admin');
+    document.body.classList.add(`role-${role}`);
+
+    // If user role, hide admin-only elements
+    if (role !== 'admin') {
+        // Hide all elements with admin-only class
+        document.querySelectorAll('.admin-only').forEach(el => {
+            el.style.display = 'none';
+        });
+    }
+}
+
+// Function to check if current user is admin
+window.isAdmin = function () {
+    return sessionStorage.getItem(AUTH_ROLE_KEY) === 'admin';
+};
 
 // Make handleAuth available globally
 window.handleAuth = handleAuth;
