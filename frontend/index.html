@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IEEE Presence Tracker</title>
+    <link rel="stylesheet" href="./style.css">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap"
+        rel="stylesheet">
+
+    <!-- Convex Client -->
+    <script src="https://unpkg.com/convex@1.8.0/dist/browser.bundle.js"></script>
+
+    <!-- Runtime Config -->
+    <script src="./config.js"></script>
+</head>
+
+<body>
+    <div class="app-container">
+        <header class="main-header">
+            <div class="logo">
+                <h1>IEEE Presence Tracker</h1>
+            </div>
+            <div class="status-indicator">
+                <span class="dot online"></span>
+                System Active
+            </div>
+        </header>
+
+        <main class="dashboard">
+            <!-- Active Residents Section -->
+            <section class="section residents-section">
+                <div class="section-header">
+                    <h2>Active IEEE Members</h2>
+                    <span class="count-badge" id="residents-count">0</span>
+                </div>
+                <div class="grid-container" id="residents-grid">
+                    <!-- Cards injected by JS -->
+                    <div class="loading-state">Loading IEEE Members ...</div>
+                </div>
+            </section>
+
+            <!-- New Devices Section -->
+            <section class="section pending-section">
+                <div class="section-header">
+                    <h2>New Devices Detected</h2>
+                    <div class="pulse-indicator">
+                        <span class="pulse-dot"></span>
+                        Scanning Nearby
+                    </div>
+                </div>
+                <div class="list-container" id="pending-list">
+                    <!-- List items injected by JS -->
+                    <div class="empty-state">No new devices nearby</div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Registration Modal -->
+    <div id="registration-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Register Device</h3>
+                <button class="close-btn" onclick="closeModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <p class="helper-text">Registering <span id="modal-mac"></span></p>
+                <div class="form-group">
+                    <label for="device-firstname">First Name</label>
+                    <input type="text" id="device-firstname" placeholder="e.g. Jane" autofocus>
+                </div>
+                <div class="form-group">
+                    <label for="device-lastname">Last Name</label>
+                    <input type="text" id="device-lastname" placeholder="e.g. Doe">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="submitRegistration()">Confirm & Register</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Device Modal -->
+    <div id="edit-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Edit Device</h3>
+                <button class="close-btn" onclick="closeEditModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="edit-device-id">
+                <div class="form-group">
+                    <label for="edit-firstname">First Name</label>
+                    <input type="text" id="edit-firstname" placeholder="e.g. Jane">
+                </div>
+                <div class="form-group">
+                    <label for="edit-lastname">Last Name</label>
+                    <input type="text" id="edit-lastname" placeholder="e.g. Doe">
+                </div>
+
+                <hr style="border: 0; border-top: 1px solid var(--border); margin: 1.5rem 0;">
+
+                <div class="logs-section">
+                    <h4
+                        style="font-size: 0.85rem; margin-bottom: 0.5rem; text-transform: uppercase; color: var(--text-secondary);">
+                        Activity Log</h4>
+                    <div id="edit-logs"
+                        style="max-height: 150px; overflow-y: auto; font-size: 0.75rem; background: var(--bg-app); padding: 0.5rem; border: 1px solid var(--border); border-radius: 4px; font-family: var(--font-mono);">
+                        Loading logs...
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="submitEdit()">Save Changes</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script src="./app.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,28 @@
+<!-- Edit Device Modal -->
+<div id="edit-modal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3>Edit Device</h3>
+            <button class="close-btn" onclick="closeEditModal()">×</button>
+        </div>
+        <div class="modal-body">
+            <input type="hidden" id="edit-device-id">
+            <div class="form-group">
+                <label for="edit-firstname">First Name</label>
+                <input type="text" id="edit-firstname" placeholder="e.g. Jane">
+            </div>
+            <div class="form-group">
+                <label for="edit-lastname">Last Name</label>
+                <input type="text" id="edit-lastname" placeholder="e.g. Doe">
+            </div>
+            <div class="form-group">
+                <label for="edit-phone">Phone Number</label>
+                <input type="tel" id="edit-phone" placeholder="e.g. 555-0123">
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="submitEdit()">Save Changes</button>
+        </div>
+    </div>
+</div>

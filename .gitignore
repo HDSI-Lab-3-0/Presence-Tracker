@@ -1,0 +1,40 @@
+# Environment variables
+.env
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Log files
+*.log
+presence_tracker.log
+
+# Convex local state
+.convex/
+
+# Node modules
+node_modules/
+
+# UV cache
+.uv/
+uv.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+.env.local

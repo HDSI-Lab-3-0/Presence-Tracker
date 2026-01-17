@@ -1,0 +1,437 @@
+import subprocess
+import logging
+from typing import Optional
+import bluetooth
+
+logger = logging.getLogger(__name__)
+
+
+def check_device_connected(mac_address: str) -> bool:
+    """
+    Check if a specific Bluetooth device is currently connected/paired.
+
+    Uses bluetoothctl to check if a device is connected. This is more reliable
+    on Raspberry Pi than pybluez for checking connection status, especially
+    for iOS devices which may not be discoverable via scanning.
+
+    Args:
+        mac_address: The MAC address of the device to check (format: XX:XX:XX:XX:XX:XX)
+
+    Returns:
+        True if the device is connected, False otherwise
+    """
+    try:
+        # Use bluetoothctl to check if device is connected
+        result = subprocess.run(
+            ["bluetoothctl", "info", mac_address],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+        if result.returncode != 0:
+            logger.debug(f"Device {mac_address} not found or bluetoothctl error")
+            return False
+
+        # Check if "Connected: yes" is in the output
+        if "Connected: yes" in result.stdout:
+            logger.debug(f"Device {mac_address} is connected")
+            return True
+        else:
+            logger.debug(f"Device {mac_address} is not connected")
+            return False
+
+    except subprocess.TimeoutExpired:
+        logger.warning(f"Timeout checking connection for {mac_address}")
+        return False
+    except FileNotFoundError:
+        logger.error("bluetoothctl not found. Bluetooth may not be available.")
+        return False
+    except Exception as e:
+        logger.error(f"Error checking device connection: {e}")
+        return False
+
+
+def scan_for_devices() -> dict[str, str]:
+    """
+    Scan for visible Bluetooth devices and return a dictionary of MAC addresses to names.
+
+    Uses pybluez to discover nearby Bluetooth devices. This works well for
+    Android devices and other devices that are discoverable. Note that iOS
+    devices are typically not discoverable via scanning when paired.
+
+    Returns:
+        Dictionary mapping MAC addresses to device names
+    """
+    devices: dict[str, str] = {}
+
+    try:
+        # Discover devices for 8 seconds
+        logger.info("Scanning for Bluetooth devices...")
+        discovered_devices = bluetooth.discover_devices(
+            duration=8, lookup_names=True, flush_cache=True
+        )
+
+        for addr, name in discovered_devices:
+            devices[addr] = name if name else "Unknown"
+            logger.info(f"Found device: {addr} - {devices[addr]}")
+
+        logger.info(f"Scan complete. Found {len(devices)} devices.")
+        return devices
+
+    except bluetooth.BluetoothError as e:
+        logger.error(f"Bluetooth scanning error: {e}")
+        return {}
+    except Exception as e:
+        logger.error(f"Unexpected error during scan: {e}")
+        return {}
+
+
+def get_device_name(mac_address: str) -> Optional[str]:
+    """
+    Get the friendly name of a device by MAC address.
+
+    Uses bluetoothctl to get device info, which is more reliable for
+    paired devices including iOS devices.
+
+    Args:
+        mac_address: The MAC address of the device (format: XX:XX:XX:XX:XX:XX)
+
+    Returns:
+        The device name if found, None otherwise
+    """
+    try:
+        result = subprocess.run(
+            ["bluetoothctl", "info", mac_address],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+        if result.returncode != 0:
+            logger.debug(f"Device {mac_address} not found")
+            logger.debug(f"bluetoothctl stderr: {result.stderr}")
+            return None
+
+        # Log full output for debugging
+        logger.info(f"bluetoothctl info for {mac_address}:\n{result.stdout}")
+
+        # Parse the output to find the device name
+        for line in result.stdout.split("\n"):
+            if "Name:" in line:
+                name = line.split(":", 1)[1].strip()
+                if name:
+                    logger.info(f"✓ Device {mac_address} name found: '{name}'")
+                    return name
+
+        logger.warning(f"✗ No Name field found for device {mac_address}")
+        return None
+
+    except subprocess.TimeoutExpired:
+        logger.warning(f"✗ Timeout getting name for {mac_address}")
+        return None
+    except FileNotFoundError:
+        logger.error("✗ bluetoothctl not found. Bluetooth may not be available.")
+        return None
+    except Exception as e:
+        logger.error(f"✗ Error getting device name: {e}")
+        return None
+
+
+def scan_paired_devices() -> dict[str, str]:
+    """
+    Scan for paired Bluetooth devices using bluetoothctl.
+
+    This is useful for getting a list of all paired devices, including
+    iOS devices which may not be discoverable via scanning.
+
+    Returns:
+        Dictionary mapping MAC addresses to device names
+    """
+    devices: dict[str, str] = {}
+
+    try:
+        result = subprocess.run(
+            ["bluetoothctl", "devices", "Paired"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if result.returncode != 0:
+            logger.error("Failed to get paired devices")
+            return {}
+
+        # Parse output: format is "Device XX:XX:XX:XX:XX:XX Device Name"
+        for line in result.stdout.split("\n"):
+            line = line.strip()
+            if line.startswith("Device "):
+                parts = line.split(" ", 2)
+                if len(parts) >= 3:
+                    mac_address = parts[1]
+                    name = parts[2]
+                    devices[mac_address] = name
+                    logger.debug(f"Paired device: {mac_address} - {name}")
+
+        logger.info(f"Found {len(devices)} paired devices")
+        return devices
+
+    except subprocess.TimeoutExpired:
+        logger.warning("Timeout scanning paired devices")
+        return {}
+    except FileNotFoundError:
+        logger.error("bluetoothctl not found. Bluetooth may not be available.")
+        return {}
+    except Exception as e:
+        logger.error(f"Error scanning paired devices: {e}")
+        return {}
+
+
+def get_all_connected_devices() -> list[str]:
+    """
+    Get list of MAC addresses for all currently connected Bluetooth devices.
+
+    Uses bluetoothctl to directly query connected devices. This is more reliable
+    than scanning for findable devices, as it includes paired devices that are
+    connected but not discoverable (like iOS devices).
+
+    Returns:
+        List of MAC addresses of connected devices
+    """
+    connected_devices: list[str] = []
+
+    try:
+        # Directly get connected devices using new bluetoothctl syntax
+        result = subprocess.run(
+            ["bluetoothctl", "devices", "Connected"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if result.returncode != 0:
+            logger.error("Failed to get connected devices")
+            return []
+
+        # Extract MAC addresses from connected devices
+        # Output format: "Device XX:XX:XX:XX:XX:XX Device Name"
+        for line in result.stdout.split("\n"):
+            line = line.strip()
+            if line.startswith("Device "):
+                parts = line.split(" ", 2)
+                if len(parts) >= 2:
+                    mac_address = parts[1]
+                    connected_devices.append(mac_address)
+                    logger.debug(f"Connected device: {mac_address}")
+
+        logger.info(f"Found {len(connected_devices)} connected device(s)")
+        return connected_devices
+
+    except subprocess.TimeoutExpired:
+        logger.warning("Timeout getting connected devices")
+        return []
+    except FileNotFoundError:
+        logger.error("bluetoothctl not found. Bluetooth may not be available.")
+        return []
+    except Exception as e:
+        logger.error(f"Error getting connected devices: {e}")
+        return []
+
+
+def trust_device(mac_address: str) -> bool:
+    """
+    Trust a Bluetooth device to allow auto-connect.
+
+    Trusted devices can automatically reconnect when they come into range.
+
+    Args:
+        mac_address: The MAC address of the device to trust
+
+    Returns:
+        True if the device was trusted successfully, False otherwise
+    """
+    try:
+        result = subprocess.run(
+            ["bluetoothctl", "trust", mac_address],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if "trust succeeded" in result.stdout.lower() or result.returncode == 0:
+            logger.info(f"Trusted device {mac_address}")
+            return True
+        else:
+            logger.warning(f"Failed to trust device {mac_address}: {result.stdout}")
+            return False
+
+    except subprocess.TimeoutExpired:
+        logger.warning(f"Timeout trusting device {mac_address}")
+        return False
+    except Exception as e:
+        logger.error(f"Error trusting device {mac_address}: {e}")
+        return False
+
+
+def is_device_trusted(mac_address: str) -> bool:
+    """
+    Check if a device is trusted.
+
+    Args:
+        mac_address: The MAC address of the device to check
+
+    Returns:
+        True if the device is trusted, False otherwise
+    """
+    try:
+        result = subprocess.run(
+            ["bluetoothctl", "info", mac_address],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+        return "Trusted: yes" in result.stdout
+
+    except Exception as e:
+        logger.error(f"Error checking trust status for {mac_address}: {e}")
+        return False
+
+
+def connect_device(mac_address: str) -> bool:
+    """
+    Attempt to connect to a Bluetooth device.
+
+    Args:
+        mac_address: The MAC address of the device to connect to
+
+    Returns:
+        True if connected successfully, False otherwise
+    """
+    try:
+        # First ensure the device is trusted
+        if not is_device_trusted(mac_address):
+            logger.info(f"Device {mac_address} not trusted, trusting now...")
+            trust_device(mac_address)
+
+        logger.info(f"Attempting to connect to {mac_address}...")
+        result = subprocess.run(
+            ["bluetoothctl", "connect", mac_address],
+            capture_output=True,
+            text=True,
+            timeout=15,  # Connection can take time
+        )
+
+        if "Connection successful" in result.stdout or check_device_connected(mac_address):
+            logger.info(f"Successfully connected to {mac_address}")
+            return True
+        else:
+            logger.debug(f"Could not connect to {mac_address}: {result.stdout.strip()}")
+            return False
+
+    except subprocess.TimeoutExpired:
+        logger.debug(f"Timeout connecting to {mac_address} (device may be out of range)")
+        return False
+    except Exception as e:
+        logger.error(f"Error connecting to device {mac_address}: {e}")
+        return False
+
+def disconnect_device(mac_address: str) -> bool:
+    """
+    Disconnect from a Bluetooth device.
+
+    Args:
+        mac_address: The MAC address of the device to disconnect
+
+    Returns:
+        True if disconnected successfully, False otherwise
+    """
+    try:
+        logger.info(f"Disconnecting from {mac_address}...")
+        result = subprocess.run(
+            ["bluetoothctl", "disconnect", mac_address],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if "Successful disconnected" in result.stdout or not check_device_connected(mac_address):
+            logger.info(f"Successfully disconnected from {mac_address}")
+            return True
+        else:
+            logger.debug(f"Could not disconnect from {mac_address}: {result.stdout.strip()}")
+            return False
+
+    except subprocess.TimeoutExpired:
+        logger.warning(f"Timeout disconnecting from {mac_address}")
+        return False
+    except Exception as e:
+        logger.error(f"Error disconnecting from device {mac_address}: {e}")
+        return False
+
+
+def remove_device(mac_address: str) -> bool:
+    """Remove a device from the Bluetooth adapter's paired devices list.
+
+    Args:
+        mac_address: The MAC address of the device to remove
+
+    Returns:
+        True if the device was successfully removed, False otherwise
+    """
+    try:
+        result = subprocess.run(
+            ["bluetoothctl", "remove", mac_address],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if result.returncode == 0 and "has been removed" in result.stdout:
+            logger.info(f"Successfully removed device {mac_address}")
+            return True
+        else:
+            logger.warning(f"Failed to remove device {mac_address}: {result.stdout.strip()}")
+            return False
+
+    except subprocess.TimeoutExpired:
+        logger.warning(f"Timeout removing device {mac_address}")
+        return False
+    except Exception as e:
+        logger.error(f"Error removing device {mac_address}: {e}")
+        return False
+
+
+def get_paired_devices() -> list[str]:
+    """
+    Get list of all paired Bluetooth device MAC addresses.
+
+    Returns:
+        List of MAC addresses of paired devices
+    """
+    paired_devices: list[str] = []
+
+    try:
+        result = subprocess.run(
+            ["bluetoothctl", "devices", "Paired"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if result.returncode != 0:
+            logger.error("Failed to get paired devices")
+            return []
+
+        for line in result.stdout.split("\n"):
+            line = line.strip()
+            if line.startswith("Device "):
+                parts = line.split(" ", 2)
+                if len(parts) >= 2:
+                    paired_devices.append(parts[1])
+
+        return paired_devices
+
+    except Exception as e:
+        logger.error(f"Error getting paired devices: {e}")
+        return []
