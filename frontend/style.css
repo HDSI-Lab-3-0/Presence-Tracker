@@ -600,13 +600,25 @@ body {
     box-sizing: border-box;
 }
 
+
 .auth-overlay.fade-out {
     opacity: 0;
     visibility: hidden;
     pointer-events: none;
 }
 
-.auth-overlay.hidden {
+/* Generic hidden class */
+.hidden {
+    display: none !important;
+}
+
+/* Admin Only Elements */
+body.role-user .admin-only {
+    display: none !important;
+}
+
+/* To ensure it overrides other displays */
+body:not(.role-admin) .admin-only {
     display: none !important;
 }
 

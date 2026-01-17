@@ -80,7 +80,15 @@ async function handleAuth(event) {
     return false;
 }
 
+// Logout function
+window.logout = function () {
+    sessionStorage.removeItem(AUTH_SESSION_KEY);
+    sessionStorage.removeItem(AUTH_ROLE_KEY);
+    window.location.reload();
+}
+
 function showMainApp(role) {
+    console.log("Logged in with role:", role);
     const overlay = document.getElementById('auth-overlay');
     const mainApp = document.getElementById('main-app');
 
@@ -111,13 +119,7 @@ function applyRolePermissions(role) {
     document.body.classList.remove('role-user', 'role-admin');
     document.body.classList.add(`role-${role}`);
 
-    // If user role, hide admin-only elements
-    if (role !== 'admin') {
-        // Hide all elements with admin-only class
-        document.querySelectorAll('.admin-only').forEach(el => {
-            el.style.display = 'none';
-        });
-    }
+    console.log(`Applied role: ${role}`);
 }
 
 // Function to check if current user is admin
