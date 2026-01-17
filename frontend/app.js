@@ -50,6 +50,23 @@ function renderDevices(devices) {
 
     // Fix: Treat undefined/null as pending (only explicitly false means registered)
     const residents = devices.filter(d => d.pendingRegistration === false);
+
+    // Sort: Active > Inactive, then Alphabetical
+    residents.sort((a, b) => {
+        // 1. Sort by Status (Active > Inactive)
+        const aActive = a.status === 'present';
+        const bActive = b.status === 'present';
+
+        if (aActive && !bActive) return -1;
+        if (!aActive && bActive) return 1;
+
+        // 2. Sort by Name (Alphabetical)
+        const aName = (a.firstName && a.lastName) ? `${a.firstName} ${a.lastName}` : (a.name || a.macAddress);
+        const bName = (b.firstName && b.lastName) ? `${b.firstName} ${b.lastName}` : (b.name || b.macAddress);
+
+        return aName.localeCompare(bName);
+    });
+
     const pending = devices.filter(d => d.pendingRegistration !== false);
 
     // Update Counts
