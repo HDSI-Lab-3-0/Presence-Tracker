@@ -18,7 +18,28 @@
 </head>
 
 <body>
-    <div class="app-container">
+    <!-- Authentication Overlay -->
+    <div id="auth-overlay" class="auth-overlay">
+        <div class="auth-container">
+            <div class="auth-header">
+                <div class="auth-logo">
+                    <div class="auth-logo-bar"></div>
+                    <h1>IEEE Presence Tracker</h1>
+                </div>
+                <p class="auth-subtitle">Access Restricted</p>
+            </div>
+            <form id="auth-form" class="auth-form" onsubmit="return handleAuth(event)">
+                <div class="auth-input-group">
+                    <label for="auth-password">Enter Password</label>
+                    <input type="password" id="auth-password" placeholder="••••••••••••" autofocus autocomplete="off">
+                </div>
+                <div id="auth-error" class="auth-error"></div>
+                <button type="submit" class="btn btn-primary auth-submit">Unlock</button>
+            </form>
+        </div>
+    </div>
+
+    <div class="app-container" id="main-app" style="display: none;">
         <header class="main-header">
             <div class="logo">
                 <h1>IEEE Presence Tracker</h1>
@@ -137,6 +158,7 @@
 
     <div id="toast" class="toast"></div>
 
+    <script src="./auth.js"></script>
     <script src="./app.js"></script>
     <script src="./integrations.js"></script>
 </body>

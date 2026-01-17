@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as auth from "../auth.js";
 import type * as devices from "../devices.js";
 import type * as fixPendingDevices from "../fixPendingDevices.js";
 import type * as integrations from "../integrations.js";
@@ -20,6 +21,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  auth: typeof auth;
   devices: typeof devices;
   fixPendingDevices: typeof fixPendingDevices;
   integrations: typeof integrations;

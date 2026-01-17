@@ -6,10 +6,22 @@ const convexClient = window.convexClient;
 
 // State
 let selectedMacForRegistration = null;
+let subscriptionInitialized = false;
 
 document.addEventListener('DOMContentLoaded', () => {
-    setupConvexSubscription();
+    // Only setup subscription if already authenticated (session persisted)
+    if (sessionStorage.getItem('ieee_presence_authenticated') === 'true') {
+        initializeApp();
+    }
 });
+
+// Expose this function for auth.js to call after successful login
+window.initializeApp = function () {
+    if (!subscriptionInitialized) {
+        setupConvexSubscription();
+        subscriptionInitialized = true;
+    }
+}
 
 function setupConvexSubscription() {
     // Subscribe to the getDevices query
