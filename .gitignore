@@ -14,7 +14,7 @@ __pycache__/
 
 # Log files
 *.log
-presence_tracker.log
+presence_tracker.log*
 
 # Convex local state
 .convex/
