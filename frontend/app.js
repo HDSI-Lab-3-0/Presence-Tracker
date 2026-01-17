@@ -234,11 +234,9 @@ function createPendingItem(device) {
                 <span>${device.macAddress}</span>
             </div>
         </div>
-        ${window.isAdmin && window.isAdmin() ? `
         <button class="btn btn-primary" onclick="openModal('${device.macAddress}')">
             Register
         </button>
-        ` : ''}
     `;
     return item;
 }

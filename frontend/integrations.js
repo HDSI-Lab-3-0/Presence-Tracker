@@ -1,16 +1,4 @@
-document.addEventListener('DOMContentLoaded', () => {
-    // Add "Settings" button to header if not present
-    const header = document.querySelector('.main-header');
-    if (!document.getElementById('settings-btn')) {
-        const btn = document.createElement('button');
-        btn.id = 'settings-btn';
-        btn.className = 'btn btn-secondary';
-        btn.textContent = 'Settings';
-        btn.style.marginLeft = 'auto';
-        btn.onclick = openIntegrationsModal;
-        header.appendChild(btn);
-    }
-});
+// Button injection removed -- handled in index.html
 
 let integrations = [];
 
