@@ -36,13 +36,24 @@ export default defineSchema({
       channelId: v.optional(v.string()),
     }),
     isEnabled: v.boolean(),
+    // Slack message ts or Discord message ID for persistent message updates
+    messageId: v.optional(v.string()),
     // Keep track of the last successfully sent message ID to allow threading or replacement
     lastMessageId: v.optional(v.string()),
   }),
 
-  activeMessages: defineTable({
-    integrationId: v.id("integrations"),
-    messageId: v.string(), // External ID
+  integrationMessages: defineTable({
+    platform: v.union(v.literal("slack"), v.literal("discord")),
+    messageId: v.string(),
     channelId: v.optional(v.string()),
-  }).index("by_integrationId", ["integrationId"]),
+    lastUpdateTimestamp: v.number(),
+  }).index("by_platform", ["platform"]),
+
+  attendanceLogs: defineTable({
+    userId: v.string(),
+    userName: v.string(),
+    status: v.union(v.literal("present"), v.literal("absent")),
+    timestamp: v.number(),
+    deviceId: v.string(),
+  }).index("by_timestamp", ["timestamp"]),
 });

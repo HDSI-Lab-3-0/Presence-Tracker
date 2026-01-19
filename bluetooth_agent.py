@@ -6,6 +6,12 @@ This script runs a persistent Bluetooth agent that automatically accepts
 pairing requests without requiring a PIN. It uses D-Bus to register as
 the default Bluetooth agent and handles pairing, authorization, and
 trust requests automatically.
+
+Audio Routing Disabled:
+This agent now rejects Bluetooth audio profile connections (A2DP, HSP, HFP)
+to prevent audio output from being routed to the Raspberry Pi. Devices can
+still pair and stay connected for presence tracking, but audio profiles
+will not be established.
 """
 
 import dbus
@@ -92,10 +98,28 @@ class BluetoothAgent(dbus.service.Object):
         device_info = self._get_device_info(device)
         logger.info(f"AuthorizeService: {device_info} UUID: {uuid}")
         
-        # Ensure the device is paired and trusted
+        # DISABLED: Bluetooth audio routing to prevent audio output to Pi
+        # Audio profile UUIDs to reject:
+        # A2DP (Advanced Audio Distribution Profile): 0000110d-0000-1000-8000-00805f9b34fb
+        # HSP (Headset Profile): 00001108-0000-1000-8000-00805f9b34fb
+        # HFP (Hands-Free Profile): 0000111e-0000-1000-8000-00805f9b34fb
+        # HFP AG (Hands-Free Audio Gateway): 0000111f-0000-1000-8000-00805f9b34fb
+        audio_uuids = [
+            "0000110d-0000-1000-8000-00805f9b34fb",  # A2DP
+            "00001108-0000-1000-8000-00805f9b34fb",  # HSP
+            "0000111e-0000-1000-8000-00805f9b34fb",  # HFP
+            "0000111f-0000-1000-8000-00805f9b34fb",  # HFP AG
+        ]
+        
+        if uuid in audio_uuids:
+            # Reject audio profiles to prevent audio routing to Pi
+            logger.info(f"Rejecting audio service request: {uuid} for {device_info}")
+            raise Rejected("Audio profile connection rejected")
+        
+        # Ensure the device is paired and trusted for non-audio services
         self._ensure_paired_and_trusted(device)
         
-        # Accept all service authorizations
+        # Accept all non-audio service authorizations
         return
     
     def _ensure_paired_and_trusted(self, device_path):

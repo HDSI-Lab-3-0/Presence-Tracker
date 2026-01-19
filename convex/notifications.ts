@@ -33,9 +33,9 @@ export const updatePresenceNotifications = action({
 
             try {
                 if (integration.type === "discord" && integration.config.webhookUrl) {
-                    await handleDiscord(ctx, integration._id, integration.config.webhookUrl, message);
+                    await handleDiscord(ctx, integration.type, integration.config.webhookUrl, message);
                 } else if (integration.type === "slack" && integration.config.botToken && integration.config.channelId) {
-                    await handleSlack(ctx, integration._id, integration.config.botToken, integration.config.channelId, message);
+                    await handleSlack(ctx, integration.type, integration.config.botToken, integration.config.channelId, message);
                 }
             } catch (e) {
                 console.error(`Failed to handle integration ${integration._id} (${integration.type}):`, e);
@@ -44,17 +44,15 @@ export const updatePresenceNotifications = action({
     },
 });
 
-async function handleDiscord(ctx: any, integrationId: any, webhookUrl: string, content: string) {
-    // Get active message
-    const activeMsg = await ctx.runQuery(internal.integrations.getActiveMessage, { integrationId });
-
+async function handleDiscord(ctx: any, platform: "discord", webhookUrl: string, content: string) {
+    const integration = await ctx.runQuery(api.integrations.getIntegrations);
+    const discordIntegration = integration.find((i: any) => i.type === "discord" && i.isEnabled);
     let messageSent = false;
 
-    if (activeMsg) {
-        // Try to edit
+    if (discordIntegration?.messageId) {
+        // Try to edit existing message
         try {
-            // Discord Webhook Edit URL: webhook_url/messages/message_id
-            const editUrl = `${webhookUrl}/messages/${activeMsg.messageId}`;
+            const editUrl = `${webhookUrl}/messages/${discordIntegration.messageId}`;
             const res = await fetch(editUrl, {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
@@ -69,31 +67,28 @@ async function handleDiscord(ctx: any, integrationId: any, webhookUrl: string, c
     }
 
     if (!messageSent) {
-        // Send new message
-        // Append ?wait=true to get message object back
+        // Send new message, use ?wait=true to get message object back
         const res = await fetch(`${webhookUrl}?wait=true`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ content }),
         });
-
-        if (res.ok) {
-            const data = await res.json();
-            if (data.id) {
-                await ctx.runMutation(internal.integrations.updateActiveMessage, {
-                    integrationId,
-                    messageId: data.id,
-                });
-            }
+        const data = await res.json();
+        if (data.ok && data.id) {
+            await ctx.runMutation(internal.integrations.updateIntegration, {
+                type: "discord",
+                messageId: data.id,
+            });
         }
     }
 }
 
-async function handleSlack(ctx: any, integrationId: any, token: string, channel: string, content: string) {
-    const activeMsg = await ctx.runQuery(internal.integrations.getActiveMessage, { integrationId });
+async function handleSlack(ctx: any, platform: "slack", token: string, channel: string, content: string) {
+    const integration = await ctx.runQuery(api.integrations.getIntegrations);
+    const slackIntegration = integration.find((i: any) => i.type === "slack" && i.isEnabled);
     let messageSent = false;
 
-    if (activeMsg) {
+    if (slackIntegration?.messageId) {
         // Try update
         const res = await fetch("https://slack.com/api/chat.update", {
             method: "POST",
@@ -103,7 +98,7 @@ async function handleSlack(ctx: any, integrationId: any, token: string, channel:
             },
             body: JSON.stringify({
                 channel: channel,
-                ts: activeMsg.messageId, // timestamp is the ID in slack
+                ts: slackIntegration.messageId,
                 text: content
             })
         });
@@ -127,11 +122,10 @@ async function handleSlack(ctx: any, integrationId: any, token: string, channel:
             })
         });
         const data = await res.json();
-        if (data.ok) {
-            await ctx.runMutation(internal.integrations.updateActiveMessage, {
-                integrationId,
+        if (data.ok && data.ts) {
+            await ctx.runMutation(internal.integrations.updateIntegration, {
+                type: "slack",
                 messageId: data.ts,
-                channelId: data.channel
             });
         }
     }

@@ -57,38 +57,61 @@ export const deleteIntegration = mutation({
     },
 });
 
-export const getActiveMessage = internalQuery({
-    args: { integrationId: v.id("integrations") },
+export const getIntegrationMessage = internalQuery({
+    args: { platform: v.union(v.literal("slack"), v.literal("discord")) },
     handler: async (ctx, args) => {
         return await ctx.db
-            .query("activeMessages")
-            .withIndex("by_integrationId", (q) => q.eq("integrationId", args.integrationId))
+            .query("integrationMessages")
+            .withIndex("by_platform", (q) => q.eq("platform", args.platform))
             .first();
     },
 });
 
-export const updateActiveMessage = internalMutation({
+export const updateIntegrationMessage = internalMutation({
     args: {
-        integrationId: v.id("integrations"),
+        platform: v.union(v.literal("slack"), v.literal("discord")),
         messageId: v.string(),
         channelId: v.optional(v.string()),
     },
     handler: async (ctx, args) => {
         const existing = await ctx.db
-            .query("activeMessages")
-            .withIndex("by_integrationId", (q) => q.eq("integrationId", args.integrationId))
+            .query("integrationMessages")
+            .withIndex("by_platform", (q) => q.eq("platform", args.platform))
             .first();
+
+        const timestamp = Date.now();
 
         if (existing) {
             await ctx.db.patch(existing._id, {
                 messageId: args.messageId,
                 channelId: args.channelId,
+                lastUpdateTimestamp: timestamp,
             });
         } else {
-            await ctx.db.insert("activeMessages", {
-                integrationId: args.integrationId,
+            await ctx.db.insert("integrationMessages", {
+                platform: args.platform,
                 messageId: args.messageId,
                 channelId: args.channelId,
+                lastUpdateTimestamp: timestamp,
+            });
+        }
+    },
+});
+
+export const updateIntegration = internalMutation({
+    args: {
+        type: v.union(v.literal("discord"), v.literal("slack")),
+        messageId: v.optional(v.string()),
+    },
+    handler: async (ctx, args) => {
+        const existing = await ctx.db
+            .query("integrations")
+            .filter((q) => q.eq(q.field("type"), args.type))
+            .first();
+
+        if (existing) {
+            await ctx.db.patch(existing._id, {
+                messageId: args.messageId,
             });
         }
     },

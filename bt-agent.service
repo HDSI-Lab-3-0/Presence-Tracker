@@ -6,7 +6,12 @@ Requires=bluetooth.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/bt-agent -c NoInputNoOutput
+# DISABLED: Audio routing to prevent audio output to Pi
+# The standard bt-agent accepts all service connections including audio profiles (A2DP, HSP, HFP)
+# This would route audio output to the Raspberry Pi when devices connect.
+# To re-enable audio routing, remove the --disable-audio flag (if supported) or use the custom agent instead.
+# ExecStart=/usr/bin/bt-agent -c NoInputNoOutput
+ExecStart=/bin/true
 Restart=on-failure
 RestartSec=5
 

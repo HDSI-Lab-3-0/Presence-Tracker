@@ -1,5 +1,6 @@
+"use node";
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { mutation, query, internalMutation } from "./_generated/server";
 import { Doc } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 
@@ -369,5 +370,64 @@ export const getPresentUsers = query({
         lastName: d.lastName,
         name: d.name,
       }));
+  },
+});
+
+export const logAttendance = mutation({
+  args: {
+    userId: v.string(),
+    userName: v.string(),
+    status: v.union(v.literal("present"), v.literal("absent")),
+    deviceId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    await ctx.db.insert("attendanceLogs", {
+      userId: args.userId,
+      userName: args.userName,
+      status: args.status,
+      timestamp: now,
+      deviceId: args.deviceId,
+    });
+    return { success: true };
+  },
+});
+
+export const getAttendanceLogs = mutation({
+  args: {
+    adminPassword: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const environment = process.env;
+    const adminPassword = environment.ADMIN_PASSWORD;
+    if (args.adminPassword !== adminPassword) {
+      throw new Error("Invalid admin password");
+    }
+
+    const fourteenDaysAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
+    const logs = await ctx.db
+      .query("attendanceLogs")
+      .withIndex("by_timestamp", (q) => q.gte("timestamp", fourteenDaysAgo))
+      .order("desc")
+      .collect();
+
+    return logs;
+  },
+});
+
+export const cleanupOldLogs = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const fourteenDaysAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
+    const oldLogs = await ctx.db
+      .query("attendanceLogs")
+      .withIndex("by_timestamp", (q) => q.lt("timestamp", fourteenDaysAgo))
+      .collect();
+
+    for (const log of oldLogs) {
+      await ctx.db.delete(log._id);
+    }
+
+    return { deletedCount: oldLogs.length };
   },
 });

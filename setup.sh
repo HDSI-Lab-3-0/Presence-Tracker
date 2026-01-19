@@ -24,6 +24,28 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Track services that need to be restarted after installation
+TRACKED_SERVICES=(
+    "presence-tracker.service"
+    "web-dashboard.service"
+    "bluetooth-agent.service"
+    "bluetooth-discoverable.service"
+)
+
+# Array to store which services were running before installation
+SERVICES_TO_RESTART=()
+
+# Check and track active services before installation
+log_info "Checking current service status..."
+for service in "${TRACKED_SERVICES[@]}"; do
+    if systemctl is-active --quiet "$service" 2>/dev/null; then
+        SERVICES_TO_RESTART+=("$service")
+        log_info "Service $service is currently active - will be restarted after installation"
+    else
+        log_info "Service $service is not currently active - will not be started automatically"
+    fi
+done
+
 # Check if running as root
 if [ "$EUID" -eq 0 ]; then
     log_error "Please run this script as a regular user, not as root."
@@ -39,16 +61,6 @@ sudo apt update
 # Upgrade installed packages
 log_info "Upgrading installed packages..."
 sudo apt upgrade -y
-
-# Install UV package manager
-if ! command -v uv &> /dev/null; then
-    log_info "Installing UV package manager..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    source $HOME/.local/bin/env
-    log_info "UV installed successfully"
-else
-    log_info "UV is already installed (version: $(uv --version))"
-fi
 
 # Install BlueZ and Bluetooth tools
 log_info "Installing BlueZ and Bluetooth tools..."
@@ -221,23 +233,8 @@ if [ "$bluetooth_detected" = true ]; then
         sudo cp bluetooth-discoverable.service /etc/systemd/system/bluetooth-discoverable.service
         sudo systemctl daemon-reload
         sudo systemctl enable bluetooth-discoverable.service
-        
-        # Restart the service to apply changes immediately
-        log_info "Restarting bluetooth-discoverable service..."
-        set +e  # Don't exit if service isn't running yet
-        sudo systemctl stop bluetooth-discoverable.service 2>/dev/null
-        sleep 1
-        sudo systemctl start bluetooth-discoverable.service
-        service_status=$?
-        set -e
-        
-        if [ $service_status -eq 0 ]; then
-            log_info "Bluetooth discoverable service started successfully"
-        else
-            log_warn "Failed to start bluetooth-discoverable service (this may be normal on first run)"
-        fi
     else
-        log_warn "bluetooth-discoverable.service not found. Skip service installation."
+        log_warn "bluetooth-discoverable.service not found. Skipping service installation."
     fi
 else
     log_warn "Skipping Bluetooth discoverable configuration - no adapter detected"
@@ -253,6 +250,28 @@ else
     log_warn "You will need to log out and log back in for group changes to take effect"
 fi
 
+# Install bun (JavaScript/Node.js package manager)
+if ! command -v bun &> /dev/null; then
+    log_info "Installing bun package manager..."
+    curl -fsSL https://bun.sh/install | bash
+    # Add bun to PATH for current session
+    export BUN_INSTALL="$HOME/.bun"
+    export PATH="$BUN_INSTALL/bin:$PATH"
+    log_info "Bun installed successfully"
+else
+    log_info "Bun is already installed (version: $(bun --version))"
+fi
+
+# Install UV package manager (Python dependencies)
+if ! command -v uv &> /dev/null; then
+    log_info "Installing UV package manager..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    source $HOME/.local/bin/env
+    log_info "UV installed successfully"
+else
+    log_info "UV is already installed (version: $(uv --version))"
+fi
+
 # Install Python dependencies
 if [ -f "pyproject.toml" ]; then
     log_info "Installing Python dependencies with UV..."
@@ -261,6 +280,15 @@ if [ -f "pyproject.toml" ]; then
 else
     log_error "pyproject.toml not found. Please run this script from the project directory."
     exit 1
+fi
+
+# Install JavaScript/Node dependencies with bun
+if [ -f "package.json" ]; then
+    log_info "Installing JavaScript dependencies with bun..."
+    bun install
+    log_info "JavaScript dependencies installed successfully"
+else
+    log_info "No package.json found. Skipping JavaScript dependency installation."
 fi
 
 # Create .env file if it doesn't exist
@@ -277,79 +305,75 @@ else
     log_info ".env file already exists"
 fi
 
-# Install systemd service
+# Install systemd services
+services_installed=false
+
+# Install presence-tracker service
 if [ -f "presence-tracker.service" ]; then
-    log_info "Installing systemd service..."
+    log_info "Installing presence-tracker service..."
     sudo cp presence-tracker.service /etc/systemd/system/presence-tracker.service
     sudo systemctl daemon-reload
     sudo systemctl enable presence-tracker.service
-    
-    # Restart the presence tracker service
-    log_info "Restarting presence tracker service..."
-    set +e  # Don't exit if service isn't running yet
-    sudo systemctl stop presence-tracker.service 2>/dev/null
-    sleep 1
-    sudo systemctl start presence-tracker.service
-    service_status=$?
-    set -e
-    
-    if [ $service_status -eq 0 ]; then
-        log_info "Presence tracker service started successfully"
-    else
-        log_warn "Failed to start presence tracker service (this may be normal on first run)"
-    fi
+    services_installed=true
 else
-    log_warn "presence-tracker.service not found. Skip service installation."
+    log_warn "presence-tracker.service not found. Skipping service installation."
 fi
 
-# Install web dashboard service
+# Install web-dashboard service
 if [ -f "web-dashboard.service" ]; then
-    log_info "Installing web dashboard service..."
+    log_info "Installing web-dashboard service..."
     sudo cp web-dashboard.service /etc/systemd/system/web-dashboard.service
     sudo systemctl daemon-reload
     sudo systemctl enable web-dashboard.service
-    
-    # Restart the web dashboard service
-    log_info "Restarting web dashboard service..."
-    set +e  # Don't exit if service isn't running yet
-    sudo systemctl stop web-dashboard.service 2>/dev/null
-    sleep 1
-    sudo systemctl start web-dashboard.service
-    service_status=$?
-    set -e
-    
-    if [ $service_status -eq 0 ]; then
-        log_info "Web dashboard service started successfully"
-    else
-        log_warn "Failed to start web dashboard service (this may be normal on first run)"
-    fi
+    services_installed=true
 else
-    log_warn "web-dashboard.service not found. Skip web dashboard installation."
+    log_warn "web-dashboard.service not found. Skipping web dashboard installation."
 fi
 
-# Install Bluetooth agent service (for automatic pairing acceptance)
+# Install bluetooth-agent service (for automatic pairing acceptance)
 if [ -f "bluetooth-agent.service" ]; then
-    log_info "Installing Bluetooth agent service..."
+    log_info "Installing bluetooth-agent service..."
     sudo cp bluetooth-agent.service /etc/systemd/system/bluetooth-agent.service
     sudo systemctl daemon-reload
     sudo systemctl enable bluetooth-agent.service
-    
-    # Restart the Bluetooth agent service
-    log_info "Restarting Bluetooth agent service..."
-    set +e  # Don't exit if service isn't running yet
-    sudo systemctl stop bluetooth-agent.service 2>/dev/null
-    sleep 1
-    sudo systemctl start bluetooth-agent.service
-    service_status=$?
-    set -e
-    
-    if [ $service_status -eq 0 ]; then
-        log_info "Bluetooth agent service started successfully"
-    else
-        log_warn "Failed to start Bluetooth agent service (this may be normal on first run)"
-    fi
+    services_installed=true
 else
-    log_warn "bluetooth-agent.service not found. Skip Bluetooth agent installation."
+    log_warn "bluetooth-agent.service not found. Skipping Bluetooth agent installation."
+fi
+
+# Reload systemd daemon if any services were installed
+if [ "$services_installed" = true ]; then
+    log_info "Reloading systemd daemon..."
+    sudo systemctl daemon-reload
+fi
+
+# Restart only services that were active before installation
+if [ ${#SERVICES_TO_RESTART[@]} -gt 0 ]; then
+    log_info ""
+    log_info "Restarting services that were active before installation..."
+    
+    for service in "${SERVICES_TO_RESTART[@]}"; do
+        log_info "Restarting $service..."
+        set +e  # Don't exit if restart fails
+        sudo systemctl restart "$service" 2>/dev/null
+        restart_status=$?
+        set -e
+        
+        if [ $restart_status -eq 0 ]; then
+            log_info "Successfully restarted $service"
+        else
+            log_warn "Failed to restart $service (this may be normal on first run)"
+        fi
+    done
+    
+    log_info "Service restarts completed"
+else
+    log_info ""
+    log_info "No services were active before installation - services will not be started automatically"
+    log_info "You can start services manually with:"
+    log_info "  sudo systemctl start presence-tracker.service"
+    log_info "  sudo systemctl start web-dashboard.service"
+    log_info "  sudo systemctl start bluetooth-agent.service"
 fi
 
 # Summary
@@ -357,6 +381,12 @@ log_info ""
 log_info "=========================================="
 log_info "Setup completed successfully!"
 log_info "=========================================="
+log_info ""
+log_info "Installed components:"
+log_info "  - UV package manager (Python dependencies)"
+log_info "  - Bun package manager (JavaScript/Node dependencies)"
+log_info "  - BlueZ and Bluetooth tools"
+log_info "  - Systemd services (presence-tracker, web-dashboard, bluetooth-agent)"
 log_info ""
 log_info "Next steps:"
 log_info "1. Edit .env and add your CONVEX_DEPLOYMENT_URL"
@@ -366,9 +396,17 @@ log_info "   - Scan for discoverable Bluetooth devices"
 log_info "   - View currently connected devices"
 log_info "   - Register devices with user names"
 log_info "   - Monitor registered device status"
-log_info "4. The presence tracker service runs automatically in the background"
-log_info "5. Monitor logs: sudo journalctl -u presence-tracker -f"
-log_info "6. Monitor web dashboard: sudo journalctl -u web-dashboard -f"
+log_info "4. Services that were running before installation have been restarted"
+log_info "5. Start services manually (if needed):"
+log_info "   - sudo systemctl start presence-tracker.service"
+log_info "   - sudo systemctl start web-dashboard.service"
+log_info "   - sudo systemctl start bluetooth-agent.service"
+log_info "6. Monitor logs:"
+log_info "   - sudo journalctl -u presence-tracker -f"
+log_info "   - sudo journalctl -u web-dashboard -f"
+log_info "   - sudo journalctl -u bluetooth-agent -f"
+log_info ""
+log_info "Note: This script is idempotent and can be run multiple times safely."
 log_info ""
 log_info "For full deployment instructions, see DEPLOYMENT.md"
 log_info "For Bluetooth pairing guide, see PAIRING.md"
