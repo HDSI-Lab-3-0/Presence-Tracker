@@ -1,6 +1,5 @@
-"use node";
 import { v } from "convex/values";
-import { mutation, query, internalMutation } from "./_generated/server";
+import { action, mutation, query, internalMutation } from "./_generated/server";
 import { Doc } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 
@@ -312,7 +311,7 @@ export const deleteDevice = mutation({
   },
 });
 
-export const cleanupExpiredGracePeriods = mutation({
+export const cleanupExpiredGracePeriods = action({
   args: {},
   handler: async (ctx) => {
     // Cleanup disabled - devices should never be automatically deleted
