@@ -62,7 +62,7 @@ export const updatePresenceNotifications = action({
                     await handleSlack(ctx, integration.type, integration.config.botToken, integration.config.channelId, message);
                 }
             } catch (e) {
-                console.error(`Failed to handle integration ${integration._id} (${integration.type}):`, e);
+                // Error handling for integration failures
             }
         }
     },

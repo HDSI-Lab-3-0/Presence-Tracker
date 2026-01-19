@@ -40,7 +40,7 @@ export default defineSchema({
     messageId: v.optional(v.string()),
     // Keep track of the last successfully sent message ID to allow threading or replacement
     lastMessageId: v.optional(v.string()),
-  }),
+  }).index("by_type", ["type"]),
 
   integrationMessages: defineTable({
     platform: v.union(v.literal("slack"), v.literal("discord")),

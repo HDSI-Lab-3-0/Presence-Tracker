@@ -21,15 +21,6 @@ export const getDevices = query({
   args: {},
   handler: async (ctx) => {
     const devices = await ctx.db.query("devices").collect();
-    console.log("[Convex getDevices] Raw devices from DB:", devices.map(d => ({
-      _id: d._id,
-      macAddress: d.macAddress,
-      name: d.name,
-      firstName: d.firstName,
-      lastName: d.lastName,
-      pendingRegistration: d.pendingRegistration,
-    })));
-
     const mappedDevices = devices.map(
       (device: Doc<"devices">) => ({
         _id: device._id,
@@ -43,16 +34,6 @@ export const getDevices = query({
         pendingRegistration: device.pendingRegistration,
       }),
     );
-
-    console.log("[Convex getDevices] Mapped devices sent to frontend:", mappedDevices.map(d => ({
-      _id: d._id,
-      macAddress: d.macAddress,
-      name: d.name,
-      firstName: d.firstName,
-      lastName: d.lastName,
-      pendingRegistration: d.pendingRegistration,
-    })));
-
     return mappedDevices;
   },
 });
@@ -209,20 +190,12 @@ export const registerPendingDevice = mutation({
     name: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    console.log("[Convex registerPendingDevice] Received:", {
-      macAddress: args.macAddress,
-      name: args.name,
-      nameType: typeof args.name,
-      nameLength: args.name?.length,
-    });
-
     const existingDevice = await ctx.db
       .query("devices")
       .withIndex("by_macAddress", (q) => q.eq("macAddress", args.macAddress))
       .first();
 
     if (existingDevice) {
-      console.log("[Convex registerPendingDevice] Device already exists:", existingDevice._id);
       return existingDevice;
     }
 
@@ -230,11 +203,6 @@ export const registerPendingDevice = mutation({
     const gracePeriodEnd = now + GRACE_PERIOD_SECONDS * 1000;
 
     const deviceName = args.name || "";
-    console.log("[Convex registerPendingDevice] Storing name:", {
-      original: args.name,
-      stored: deviceName,
-      isEmpty: deviceName === "",
-    });
 
     const deviceId = await ctx.db.insert("devices", {
       macAddress: args.macAddress,
@@ -245,8 +213,6 @@ export const registerPendingDevice = mutation({
       gracePeriodEnd,
       pendingRegistration: true,
     });
-
-    console.log("[Convex registerPendingDevice] Created device:", deviceId, "with name:", deviceName);
 
     return {
       _id: deviceId,
@@ -393,7 +359,7 @@ export const logAttendance = mutation({
   },
 });
 
-export const getAttendanceLogs = mutation({
+export const getAttendanceLogs = query({
   args: {
     adminPassword: v.string(),
   },

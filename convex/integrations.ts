@@ -20,7 +20,7 @@ export const saveIntegration = mutation({
     handler: async (ctx, args) => {
         const existing = await ctx.db
             .query("integrations")
-            .filter((q) => q.eq(q.field("type"), args.type))
+            .withIndex("by_type", (q) => q.eq("type", args.type))
             .first();
 
         if (existing) {
@@ -106,7 +106,7 @@ export const updateIntegration = internalMutation({
     handler: async (ctx, args) => {
         const existing = await ctx.db
             .query("integrations")
-            .filter((q) => q.eq(q.field("type"), args.type))
+            .withIndex("by_type", (q) => q.eq("type", args.type))
             .first();
 
         if (existing) {
