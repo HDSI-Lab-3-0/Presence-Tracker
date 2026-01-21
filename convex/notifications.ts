@@ -1,8 +1,8 @@
 "use node";
-import { action } from "./_generated/server";
+import { internalAction } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 
-export const updatePresenceNotifications = action({
+export const updatePresenceNotifications = internalAction({
     args: {},
     handler: async (ctx) => {
         // 1. Get present users

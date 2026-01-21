@@ -33,18 +33,26 @@ cd "/home/ieee/Desktop/IEEE Presence Tracker"
 ./setup.sh
 ```
 
+The script will display an interactive menu with options:
+1. **Full Install** - Complete installation and configuration
+2. **Update Config** - Update Bluetooth name and configuration
+3. **Resetup/Redeploy Convex** - Trigger Convex re-deployment
+4. **Restart Services** - Restart systemd services
+5. **Make Bluetooth Discoverable** - Configure Bluetooth for discoverable mode
+
 The script will:
-- Install UV package manager
+- Install UV and Bun package managers
 - Install BlueZ and Bluetooth tools
-- Install Python dependencies
-- Configure Bluetooth permissions
-- Install systemd service
+- Install Python and JavaScript dependencies
+- Configure Bluetooth permissions and discoverability
+- Install and configure systemd services
+- Deploy to Convex backend
 
 Then:
 1. Edit `.env` and add your `CONVEX_DEPLOYMENT_URL`
 2. Pair your Bluetooth devices (see [PAIRING.md](PAIRING.md))
 3. Register devices in Convex
-4. Start the tracker: `uv run presence_tracker.py`
+4. The tracker will run automatically via systemd service
 
 ### Manual Setup
 
@@ -89,10 +97,10 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for detailed manual setup instructions.
 
 ```bash
 # Run tracker manually
-uv run presence_tracker.py
+uv run src/presence_tracker.py
 
 # View logs
-tail -f presence_tracker.log
+tail -f logs/presence_tracker.log
 
 # Check service status
 sudo systemctl status presence-tracker.service
@@ -107,7 +115,10 @@ sudo systemctl restart presence-tracker.service
 bluetoothctl paired-devices
 
 # List Convex devices
-npx convex run getDevices
+bunx convex run getDevices
+
+# Run setup menu for configuration changes
+./setup.sh
 ```
 
 ## Manual Setup Steps
@@ -117,36 +128,36 @@ For detailed instructions, see [DEPLOYMENT.md](DEPLOYMENT.md).
 ### Quick Manual Setup
 
 1. **Install UV**
-   ```bash
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   ```
+    ```bash
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    ```
 
 2. **Create .env file**
-   ```bash
-   cp .env.example .env
-   nano .env  # Add your CONVEX_DEPLOYMENT_URL
-   ```
+    ```bash
+    cp .env.example .env
+    nano .env  # Add your CONVEX_DEPLOYMENT_URL
+    ```
 
 3. **Install dependencies**
-   ```bash
-   uv sync
-   ```
+    ```bash
+    uv sync
+    ```
 
 4. **Pair Bluetooth devices**
-   ```bash
-   sudo bluetoothctl
-   # power on, agent on, scan on, pair XX:XX:XX:XX:XX:XX, trust XX:XX:XX:XX:XX:XX
-   ```
+    ```bash
+    sudo bluetoothctl
+    # power on, agent on, scan on, pair XX:XX:XX:XX:XX:XX, trust XX:XX:XX:XX:XX:XX
+    ```
 
 5. **Register devices in Convex**
-   ```bash
-   npx convex run registerDevice --json '{"macAddress":"AA:BB:CC:DD:EE:FF","name":"My Device"}'
-   ```
+    ```bash
+    bunx convex run registerDevice --json '{"macAddress":"AA:BB:CC:DD:EE:FF","name":"My Device"}'
+    ```
 
 6. **Run the tracker**
-   ```bash
-   uv run presence_tracker.py
-   ```
+    ```bash
+    uv run src/presence_tracker.py
+    ```
 
 ## Systemd Service
 
@@ -165,27 +176,27 @@ sudo systemctl status presence-tracker.service
 
 ## Making the Pi Discoverable
 
-By default, the Raspberry Pi is not discoverable via Bluetooth. The setup script automatically configures the Pi to be discoverable and pairable, but you can manually configure it if needed.
+By default, the Raspberry Pi is not discoverable via Bluetooth. The setup script automatically configures the Pi to be discoverable and pairable.
 
-### Automatic Configuration
+### Using the Setup Script
 
-The setup script (`setup.sh`) installs the `bluetooth-discoverable.service` which automatically makes the Pi discoverable on boot. Your Pi will appear as **"IEEE Presence Tracker"** in Bluetooth scans.
-
-### Manual Configuration
-
-If you need to manually make the Pi discoverable:
+Run the setup script and select option 5:
 
 ```bash
-cd "/home/ieee/Desktop/IEEE Presence Tracker"
-./make_discoverable.sh
+./setup.sh
+# Select option 5) Make Bluetooth Discoverable
 ```
 
-This will:
-- Enable Bluetooth power
-- Set discoverable mode ON
-- Set pairable mode ON
-- Set the friendly name to "IEEE Presence Tracker"
-- Enable NoInputNoOutput agent (no PIN required for pairing)
+Your Pi will appear as **"IEEE Knock Knock"** in Bluetooth scans.
+
+### Configuration Details
+
+The discoverable configuration:
+- Enables Bluetooth power
+- Sets discoverable mode ON
+- Sets pairable mode ON
+- Sets the friendly name to "IEEE Knock Knock"
+- Enables NoInputNoOutput agent (no PIN required for pairing)
 
 ### Verify Discoverable Status
 
@@ -210,7 +221,7 @@ For detailed pairing instructions, see [PAIRING.md](PAIRING.md).
 Quick pairing steps:
 1. Open Bluetooth settings on your phone
 2. Scan for devices
-3. Find "IEEE Presence Tracker"
+3. Find "IEEE Knock Knock"
 4. Tap to pair (no PIN required)
 
 ### Troubleshooting Discoverability
@@ -226,8 +237,9 @@ sudo rfkill unblock bluetooth
 # Manually power on Bluetooth
 bluetoothctl power on
 
-# Re-run the discoverable script
-./make_discoverable.sh
+# Re-run setup script discoverable option
+./setup.sh
+# Select option 5) Make Bluetooth Discoverable
 
 # Check the discoverable service
 sudo systemctl status bluetooth-discoverable.service
@@ -274,27 +286,35 @@ sudo usermod -a -G bluetooth $USER
 
 ```
 .
-├── pyproject.toml                    # UV project configuration
-├── bluetooth_scanner.py              # Bluetooth detection functions
-├── presence_tracker.py               # Main presence tracking script
-├── .env.example                      # Environment variable template
-├── setup.sh                          # Automated setup script
-├── make_discoverable.sh              # Bluetooth discoverable configuration script
-├── bluetooth-discoverable.service    # Systemd service for persistent discovery
-├── presence-tracker.service          # Systemd service file for presence tracker
-├── DEPLOYMENT.md                     # Complete deployment guide
-├── PAIRING.md                        # Bluetooth pairing instructions
+├── src/                              # Python source files
+│   ├── bluetooth_agent.py            # Bluetooth agent for pairing
+│   ├── bluetooth_scanner.py          # Bluetooth detection functions
+│   └── presence_tracker.py           # Main presence tracking script
+├── logs/                             # Log files
+│   ├── bluetooth_agent.log           # Bluetooth agent logs
+│   └── presence_tracker.log          # Presence tracker logs
 ├── convex/                           # Convex backend
 │   ├── schema.ts                    # Database schema
 │   └── devices.ts                   # Device management functions
+├── frontend/                         # Web dashboard
+├── pyproject.toml                    # UV project configuration
+├── package.json                      # Bun project configuration
+├── .env.example                      # Environment variable template
+├── setup.sh                          # Interactive setup script
+├── DEPLOYMENT.md                     # Complete deployment guide
+├── PAIRING.md                        # Bluetooth pairing instructions
 └── README.md                         # This file
 ```
 
-## Convex Functions Used
+## Systemd Services
 
-- `getDevices` - Query all registered devices
-- `updateDeviceStatus` - Update device presence status
-- `registerDevice` - Register a new device
+The setup script automatically installs and configures three systemd services:
+
+- **presence-tracker.service** - Runs the main presence tracker (`src/presence_tracker.py`)
+- **bluetooth-agent.service** - Runs the Bluetooth pairing agent (`src/bluetooth_agent.py`)
+- **bluetooth-discoverable.service** - Makes the Pi discoverable on boot
+
+All services are automatically enabled and started during full installation.
 
 ## License
 

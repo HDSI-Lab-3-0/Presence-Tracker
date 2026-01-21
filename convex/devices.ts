@@ -1,7 +1,6 @@
 import { v } from "convex/values";
 import { action, mutation, query, internalMutation } from "./_generated/server";
 import { Doc } from "./_generated/dataModel";
-import { internal } from "./_generated/api";
 
 const GRACE_PERIOD_SECONDS = 300;
 
@@ -131,10 +130,6 @@ export const updateDeviceStatus = mutation({
       connectedSince: connectedSince,
     });
 
-    if (!existingDevice.pendingRegistration) {
-      await ctx.scheduler.runAfter(0, internal.notifications.updatePresenceNotifications, {});
-    }
-
     return {
       ...existingDevice,
       status: args.status,
@@ -250,8 +245,6 @@ export const completeDeviceRegistration = mutation({
       lastSeen: now,
       connectedSince: now,
     });
-
-    await ctx.scheduler.runAfter(0, internal.notifications.updatePresenceNotifications, {});
 
     // Log creation
     await ctx.db.insert("deviceLogs", {

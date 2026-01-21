@@ -8,10 +8,8 @@ the default Bluetooth agent and handles pairing, authorization, and
 trust requests automatically.
 
 Audio Routing Disabled:
-This agent now rejects Bluetooth audio profile connections (A2DP, HSP, HFP)
-to prevent audio output from being routed to the Raspberry Pi. Devices can
-still pair and stay connected for presence tracking, but audio profiles
-will not be established.
+This agent rejects Bluetooth audio profile connections (A2DP, HSP, HFP)
+to prevent audio output from being routed to the Raspberry Pi.
 """
 
 import dbus
@@ -27,7 +25,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler("/home/ieee/Desktop/IEEE Presence Tracker/bluetooth_agent.log"),
+        logging.FileHandler("bluetooth_agent.log"),
         logging.StreamHandler(),
     ],
 )
@@ -87,17 +85,38 @@ class BluetoothAgent(dbus.service.Object):
             logger.error(f"Error getting device info: {e}")
             return device_path
 
+    def _get_device_props(self, device_path):
+        """Fetch device properties for pairing decisions."""
+        device = dbus.Interface(
+            self.bus.get_object(BLUEZ_SERVICE, device_path),
+            "org.freedesktop.DBus.Properties"
+        )
+        return device.GetAll(DEVICE_INTERFACE)
+
     @dbus.service.method(AGENT_INTERFACE, in_signature="", out_signature="")
     def Release(self):
         """Called when the agent is unregistered."""
         logger.info("Agent released")
 
+    def _disconnect_audio_profile(self, device_path, uuid):
+        """Disconnect an audio profile from a device."""
+        try:
+            device = dbus.Interface(
+                self.bus.get_object(BLUEZ_SERVICE, device_path),
+                DEVICE_INTERFACE
+            )
+            device.DisconnectProfile(uuid)
+            logger.info(f"Disconnected audio profile {uuid} from {device_path}")
+        except Exception as e:
+            logger.error(f"Error disconnecting audio profile {uuid}: {e}")
+
     @dbus.service.method(AGENT_INTERFACE, in_signature="os", out_signature="")
     def AuthorizeService(self, device, uuid):
         """Authorize a service connection request."""
         device_info = self._get_device_info(device)
+        logger.info(f"==== AuthorizeService START ====")
         logger.info(f"AuthorizeService: {device_info} UUID: {uuid}")
-        
+
         # DISABLED: Bluetooth audio routing to prevent audio output to Pi
         # Audio profile UUIDs to reject:
         # A2DP (Advanced Audio Distribution Profile): 0000110d-0000-1000-8000-00805f9b34fb
@@ -110,16 +129,29 @@ class BluetoothAgent(dbus.service.Object):
             "0000111e-0000-1000-8000-00805f9b34fb",  # HFP
             "0000111f-0000-1000-8000-00805f9b34fb",  # HFP AG
         ]
-        
-        if uuid in audio_uuids:
-            # Reject audio profiles to prevent audio routing to Pi
-            logger.info(f"Rejecting audio service request: {uuid} for {device_info}")
+
+        is_audio = uuid in audio_uuids
+        logger.info(f"Is audio profile: {is_audio}")
+
+        try:
+            props = self._get_device_props(device)
+            is_paired = props.get("Paired", False)
+            is_trusted = props.get("Trusted", False)
+            is_connected = props.get("Connected", False)
+            logger.info(f"Device state - Paired: {is_paired}, Trusted: {is_trusted}, Connected: {is_connected}")
+        except Exception as e:
+            logger.error(f"Error reading device props for {device_info}: {e}")
+            is_trusted = False
+
+        if is_audio:
+            logger.info(f"REJECTING audio service request: {uuid} for {device_info}")
             raise Rejected("Audio profile connection rejected")
-        
+
         # Ensure the device is paired and trusted for non-audio services
         self._ensure_paired_and_trusted(device)
-        
+
         # Accept all non-audio service authorizations
+        logger.info(f"==== AuthorizeService END (accepting) ====")
         return
     
     def _ensure_paired_and_trusted(self, device_path):
@@ -169,7 +201,9 @@ class BluetoothAgent(dbus.service.Object):
     def RequestPinCode(self, device):
         """Request a PIN code for pairing."""
         device_info = self._get_device_info(device)
+        logger.info(f"==== RequestPinCode START ====")
         logger.info(f"RequestPinCode: {device_info}")
+        logger.info(f"==== RequestPinCode END (returning empty string) ====")
         # Return empty PIN for NoInputNoOutput capability
         return ""
 
@@ -177,7 +211,9 @@ class BluetoothAgent(dbus.service.Object):
     def RequestPasskey(self, device):
         """Request a passkey for pairing."""
         device_info = self._get_device_info(device)
+        logger.info(f"==== RequestPasskey START ====")
         logger.info(f"RequestPasskey: {device_info}")
+        logger.info(f"==== RequestPasskey END (returning 0) ====")
         # Return 0 for NoInputNoOutput capability
         return dbus.UInt32(0)
 
@@ -185,32 +221,40 @@ class BluetoothAgent(dbus.service.Object):
     def DisplayPasskey(self, device, passkey, entered):
         """Display a passkey during pairing."""
         device_info = self._get_device_info(device)
+        logger.info(f"==== DisplayPasskey START ====")
         logger.info(f"DisplayPasskey: {device_info} Passkey: {passkey:06d} Entered: {entered}")
+        logger.info(f"==== DisplayPasskey END ====")
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="os", out_signature="")
     def DisplayPinCode(self, device, pincode):
         """Display a PIN code during pairing."""
         device_info = self._get_device_info(device)
+        logger.info(f"==== DisplayPinCode START ====")
         logger.info(f"DisplayPinCode: {device_info} PIN: {pincode}")
+        logger.info(f"==== DisplayPinCode END ====")
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="ou", out_signature="")
     def RequestConfirmation(self, device, passkey):
         """Confirm a passkey during pairing."""
         device_info = self._get_device_info(device)
+        logger.info(f"==== RequestConfirmation START ====")
         logger.info(f"RequestConfirmation: {device_info} Passkey: {passkey:06d}")
         # Auto-confirm all pairing requests
         self._set_trusted(device)
         logger.info(f"Pairing confirmed for {device_info}")
+        logger.info(f"==== RequestConfirmation END ====")
         return
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="")
     def RequestAuthorization(self, device):
         """Authorize a pairing request."""
         device_info = self._get_device_info(device)
+        logger.info(f"==== RequestAuthorization START ====")
         logger.info(f"RequestAuthorization: {device_info}")
         # Auto-authorize all pairing requests
         self._set_trusted(device)
         logger.info(f"Authorization granted for {device_info}")
+        logger.info(f"==== RequestAuthorization END ====")
         return
 
     @dbus.service.method(AGENT_INTERFACE, in_signature="", out_signature="")

@@ -9,6 +9,7 @@ set -e
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Logging functions
@@ -24,390 +25,1029 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Track services that need to be restarted after installation
-TRACKED_SERVICES=(
-    "presence-tracker.service"
-    "web-dashboard.service"
-    "bluetooth-agent.service"
-    "bluetooth-discoverable.service"
-)
+log_step() {
+    echo -e "${BLUE}[STEP]${NC} $1"
+}
 
-# Array to store which services were running before installation
-SERVICES_TO_RESTART=()
+log_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
 
-# Check and track active services before installation
-log_info "Checking current service status..."
-for service in "${TRACKED_SERVICES[@]}"; do
-    if systemctl is-active --quiet "$service" 2>/dev/null; then
-        SERVICES_TO_RESTART+=("$service")
-        log_info "Service $service is currently active - will be restarted after installation"
-    else
-        log_info "Service $service is not currently active - will not be started automatically"
+# Dynamically detect script directory and project paths
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$SCRIPT_DIR"
+SRC_DIR="$PROJECT_DIR/src"
+LOGS_DIR="$PROJECT_DIR/logs"
+USER_HOME="$HOME"
+CURRENT_USER="$USER"
+
+# Default Bluetooth name
+BLUETOOTH_NAME="IEEE Knock Knock"
+
+# Deployment mode: convex, selfhosted, or none
+DEPLOYMENT_MODE=""
+
+# Ensure src and logs directories exist
+mkdir -p "$SRC_DIR"
+mkdir -p "$LOGS_DIR"
+
+# Function to display the main menu
+show_menu() {
+    echo ""
+    echo "=========================================="
+    echo "  IEEE Presence Tracker Setup Menu"
+    echo "=========================================="
+    echo ""
+    echo "  1) Full Install"
+    echo "  2) Update Config"
+    echo "  3) Resetup/Redeploy Backend"
+    echo "  4) Restart Services"
+    echo "  5) Make Bluetooth Discoverable"
+    echo "  6) Exit"
+    echo ""
+    echo "=========================================="
+}
+
+# Function to make Bluetooth discoverable (consolidated from make_discoverable.sh)
+make_bluetooth_discoverable() {
+    log_step "Configuring Bluetooth for discoverable mode..."
+    
+    local PI_NAME="$BLUETOOTH_NAME"
+    
+    log_info "Configuring Bluetooth for $PI_NAME..."
+    log_info "Setting friendly name to: $PI_NAME"
+
+    # Check if bluetoothctl is available
+    if ! command -v bluetoothctl &> /dev/null; then
+        log_error "bluetoothctl not found. Please install BlueZ first."
+        log_error "Run: sudo apt install bluez bluez-tools bluetooth"
+        return 1
     fi
-done
 
-# Check if running as root
-if [ "$EUID" -eq 0 ]; then
-    log_error "Please run this script as a regular user, not as root."
-    exit 1
-fi
-
-log_info "Starting IEEE Presence Tracker setup..."
-
-# Update package lists
-log_info "Updating package lists..."
-sudo apt update
-
-# Upgrade installed packages
-log_info "Upgrading installed packages..."
-sudo apt upgrade -y
-
-# Install BlueZ and Bluetooth tools
-log_info "Installing BlueZ and Bluetooth tools..."
-sudo apt install -y bluez bluez-tools bluetooth python3-dev libbluetooth-dev libcairo2-dev libgirepository1.0-dev gir1.2-gtk-3.0 build-essential pkg-config libdbus-1-dev libglib2.0-dev
-
-# Disable exit on error for Bluetooth handling (we warn instead)
-set +e
-
-# Enable Bluetooth service
-log_info "Enabling and starting Bluetooth service..."
-sudo systemctl enable bluetooth 2>/dev/null
-
-# Start bluetooth service with retry logic
-max_retries=3
-retry_count=0
-bluetooth_started=false
-while [ $retry_count -lt $max_retries ]; do
-    sudo systemctl start bluetooth 2>/dev/null
-    sleep 2
-    if sudo systemctl is-active --quiet bluetooth 2>/dev/null; then
-        bluetooth_started=true
-        break
-    fi
-    retry_count=$((retry_count + 1))
-    if [ $retry_count -lt $max_retries ]; then
-        log_warn "Bluetooth service start attempt $retry_count failed, retrying..."
+    # Ensure bluetooth service is running
+    if ! sudo systemctl is-active --quiet bluetooth 2>/dev/null; then
+        log_warn "Bluetooth service is not running. Starting it..."
+        sudo systemctl start bluetooth 2>/dev/null || {
+            log_error "Failed to start bluetooth service"
+            log_error "Try: sudo systemctl start bluetooth"
+            return 1
+        }
         sleep 2
     fi
-done
 
-if [ "$bluetooth_started" = true ]; then
-    log_info "Bluetooth service started successfully"
-    # Give the bluetooth daemon time to initialize and detect adapters
-    log_info "Waiting for bluetooth daemon to fully initialize..."
-    sleep 3
-else
-    log_warn "Could not start bluetooth service after $max_retries attempts"
-fi
+    log_info "Bluetooth service is running"
 
-# Verify bluetooth service status
-if sudo systemctl is-enabled --quiet bluetooth 2>/dev/null; then
-    log_info "Bluetooth service is enabled"
-else
-    log_warn "Bluetooth service is not enabled"
-fi
+    # Detect Bluetooth controller using sysfs (primary method)
+    log_info "Detecting Bluetooth controller..."
+    local CONTROLLER=""
 
-# Robust Bluetooth adapter detection with multiple fallback methods
-bluetooth_detected=false
-detection_method=""
-
-# Method 1: Check rfkill list
-log_info "Checking for Bluetooth adapter (rfkill)..."
-if command -v rfkill &> /dev/null; then
-    rfkill_output=$(rfkill list bluetooth 2>/dev/null || true)
-    if echo "$rfkill_output" | grep -q "Bluetooth"; then
-        bluetooth_detected=true
-        detection_method="rfkill"
-        log_info "Bluetooth adapter detected via rfkill"
-        if echo "$rfkill_output" | grep -q "Soft blocked: yes"; then
-            log_warn "Bluetooth is soft blocked. Try: sudo rfkill unblock bluetooth"
-        fi
-        if echo "$rfkill_output" | grep -q "Hard blocked: yes"; then
-            log_warn "Bluetooth is hard blocked (hardware switch)"
-        fi
-    fi
-fi
-
-# Method 2: Check /sys/class/bluetooth/ directory
-if [ "$bluetooth_detected" = false ]; then
-    log_info "Checking /sys/class/bluetooth/..."
-    if [ -d "/sys/class/bluetooth" ] && [ "$(ls -A /sys/class/bluetooth 2>/dev/null)" ]; then
-        bluetooth_detected=true
-        detection_method="sysfs"
-        hci_device=$(ls /sys/class/bluetooth 2>/dev/null | head -1)
-        log_info "Bluetooth adapter detected via /sys/class/bluetooth/ (found: ${hci_device})"
-    fi
-fi
-
-# Method 3: Check hciconfig
-if [ "$bluetooth_detected" = false ]; then
-    log_info "Checking hciconfig..."
-    if command -v hciconfig &> /dev/null; then
-        if hciconfig -a 2>/dev/null | grep -q "hci"; then
-            bluetooth_detected=true
-            detection_method="hciconfig"
-            log_info "Bluetooth adapter detected via hciconfig"
-        fi
-    fi
-fi
-
-# Method 4: Check lsusb for USB Bluetooth dongles
-if [ "$bluetooth_detected" = false ]; then
-    log_info "Checking lsusb for Bluetooth dongles..."
-    if command -v lsusb &> /dev/null; then
-        if lsusb 2>/dev/null | grep -iE "bluetooth|wireless controller" &> /dev/null; then
-            bluetooth_detected=true
-            detection_method="lsusb"
-            log_info "USB Bluetooth adapter detected via lsusb"
-        fi
-    fi
-fi
-
-# Method 5: Check bluetoothctl
-if [ "$bluetooth_detected" = false ]; then
-    log_info "Checking bluetoothctl..."
-    if command -v bluetoothctl &> /dev/null; then
-        if timeout 5 bluetoothctl list 2>/dev/null | grep -q "Controller"; then
-            bluetooth_detected=true
-            detection_method="bluetoothctl"
-            log_info "Bluetooth adapter detected via bluetoothctl"
-        fi
-    fi
-fi
-
-# Final determination
-if [ "$bluetooth_detected" = true ]; then
-    log_info "Bluetooth adapter successfully detected (via ${detection_method})"
-else
-    log_warn "Bluetooth adapter not detected automatically"
-    log_warn "This may be normal if:"
-    log_warn "  - Bluetooth is disabled in system settings"
-    log_warn "  - A USB Bluetooth dongle is not yet plugged in"
-    log_warn "  - Raspberry Pi model does not have built-in Bluetooth"
-    log_warn ""
-    log_warn "Manual verification steps:"
-    log_warn "  1. Check if bluetooth service is running: sudo systemctl status bluetooth"
-    log_warn "  2. Try starting bluetooth: sudo systemctl start bluetooth"
-    log_warn "  3. Check adapters: sudo rfkill list bluetooth"
-    log_warn "  4. Check sysfs: ls /sys/class/bluetooth/"
-    log_warn "  5. Check with bluetoothctl: bluetoothctl list"
-    log_warn ""
-    log_warn "If you have a Bluetooth adapter, you can continue the setup and configure it later."
-    log_warn "If you don't have Bluetooth, the presence tracker will not function."
-fi
-
-# Re-enable exit on error for the rest of the script
-set -e
-
-# Configure Bluetooth for discoverable mode (if adapter detected)
-if [ "$bluetooth_detected" = true ]; then
-    log_info "Configuring Bluetooth for discoverable mode..."
-    if [ -f "make_discoverable.sh" ]; then
-        chmod +x make_discoverable.sh
-        # Disable exit on error temporarily to handle Bluetooth setup failures gracefully
-        set +e
-        ./make_discoverable.sh
-        discoverable_exit_code=$?
-        set -e
-        
-        if [ $discoverable_exit_code -eq 0 ]; then
-            log_info "Bluetooth configured as discoverable and pairable"
-        else
-            log_warn "Bluetooth discoverable configuration failed (exit code: $discoverable_exit_code)"
-            log_warn "You can configure Bluetooth manually later by running: ./make_discoverable.sh"
-            log_warn "Continuing with the rest of the setup..."
-        fi
+    # Check /sys/class/bluetooth/ first
+    if [ -d "/sys/class/bluetooth/hci0" ]; then
+        CONTROLLER="hci0"
+        log_info "Bluetooth controller found via sysfs: $CONTROLLER"
     else
-        log_warn "make_discoverable.sh not found. Skipping Bluetooth discoverable configuration."
+        # Fallback to bluetoothctl list
+        CONTROLLER=$(bluetoothctl list 2>/dev/null | grep -oE "hci[0-9]+" | head -1)
+        if [ -n "$CONTROLLER" ]; then
+            log_info "Bluetooth controller found via bluetoothctl: $CONTROLLER"
+        fi
     fi
 
-    # Set persistent Bluetooth name via /etc/machine-info
-    # This ensures the name survives reboots (used by BlueZ hostname plugin)
-    log_info "Setting persistent Bluetooth name..."
-    echo "PRETTY_HOSTNAME=IEEE Presence Tracker" | sudo tee /etc/machine-info > /dev/null
-    log_info "Persistent Bluetooth name configured"
-    
-    # Install bluetooth-discoverable service for persistent discovery
-    if [ -f "bluetooth-discoverable.service" ]; then
-        log_info "Installing bluetooth-discoverable service..."
-        sudo cp bluetooth-discoverable.service /etc/systemd/system/bluetooth-discoverable.service
-        sudo systemctl daemon-reload
-        sudo systemctl enable bluetooth-discoverable.service
+    # Final check for controller
+    if [ -z "$CONTROLLER" ]; then
+        log_error "No Bluetooth controller found"
+        log_error ""
+        log_error "Troubleshooting steps:"
+        log_error "  1. Check if bluetooth service is running: sudo systemctl status bluetooth"
+        log_error "  2. Restart bluetooth: sudo systemctl restart bluetooth"
+        log_error "  3. Check for blocked adapters: sudo rfkill list bluetooth"
+        log_error "     If blocked, unblock: sudo rfkill unblock bluetooth"
+        log_error "  4. Check if adapter is detected: ls /sys/class/bluetooth/"
+        log_error "  5. Check dmesg for errors: dmesg | grep -i bluetooth"
+        log_error ""
+        log_error "If using a USB Bluetooth dongle:"
+        log_error "  - Make sure it's plugged in"
+        log_error "  - Try a different USB port"
+        log_error "  - Check with: lsusb | grep -i bluetooth"
+        return 1
+    fi
+
+    log_info "Controller $CONTROLLER detected, proceeding with configuration..."
+
+    # Configure Bluetooth using individual commands
+    log_info "Applying Bluetooth configuration..."
+
+    # Power on the adapter
+    log_info "Powering on Bluetooth adapter..."
+    sudo bluetoothctl --timeout 5 power on 2>/dev/null || log_warn "Power command may have failed"
+    sleep 1
+
+    # Set discoverable
+    log_info "Making adapter discoverable..."
+    sudo bluetoothctl --timeout 5 discoverable on 2>/dev/null || log_warn "Discoverable command may have failed"
+    sleep 1
+
+    # Set pairable
+    log_info "Making adapter pairable..."
+    sudo bluetoothctl --timeout 5 pairable on 2>/dev/null || log_warn "Pairable command may have failed"
+    sleep 1
+
+    # Disable timeouts so it stays visible
+    log_info "Disabling discoverable/pairable timeouts..."
+    sudo bluetoothctl --timeout 5 discoverable-timeout 0 2>/dev/null || log_warn "Discoverable timeout change may have failed"
+    if bluetoothctl help 2>/dev/null | grep -q "pairable-timeout"; then
+        sudo bluetoothctl --timeout 5 pairable-timeout 0 2>/dev/null || log_warn "Pairable timeout change may have failed"
+    fi
+    sleep 1
+
+    # Set up agent (no PIN required)
+    log_info "Setting up agent..."
+    sudo bluetoothctl --timeout 5 agent NoInputNoOutput 2>/dev/null || log_warn "Agent command may have failed"
+    sudo bluetoothctl --timeout 5 default-agent 2>/dev/null || log_warn "Default agent command may have failed"
+    sleep 1
+
+    # Set the friendly name
+    log_info "Setting friendly name to: $PI_NAME"
+    sudo hciconfig $CONTROLLER name "$PI_NAME" 2>/dev/null || log_warn "Name change may have failed"
+    sudo bluetoothctl --timeout 5 system-alias "$PI_NAME" 2>/dev/null || log_warn "Alias change may have failed"
+    sleep 1
+
+    # Verify the configuration
+    log_info "Verifying configuration..."
+    local HCI_STATUS=$(hciconfig $CONTROLLER 2>/dev/null || echo "")
+
+    if echo "$HCI_STATUS" | grep -q "UP RUNNING"; then
+        local POWERED="yes"
+        log_info "✓ Bluetooth adapter is powered on"
     else
-        log_warn "bluetooth-discoverable.service not found. Skipping service installation."
+        local POWERED="no"
+        log_warn "✗ Bluetooth adapter may not be powered on"
     fi
-else
-    log_warn "Skipping Bluetooth discoverable configuration - no adapter detected"
-    log_warn "You can run ./make_discoverable.sh manually after connecting a Bluetooth adapter"
-fi
 
-# Add user to bluetooth group
-if groups $USER | grep -q '\bbluetooth\b'; then
-    log_info "User $USER is already in the bluetooth group"
-else
-    log_info "Adding user $USER to bluetooth group..."
-    sudo usermod -a -G bluetooth $USER
-    log_warn "You will need to log out and log back in for group changes to take effect"
-fi
-
-# Install bun (JavaScript/Node.js package manager)
-if ! command -v bun &> /dev/null; then
-    log_info "Installing bun package manager..."
-    curl -fsSL https://bun.sh/install | bash
-    # Add bun to PATH for current session
-    export BUN_INSTALL="$HOME/.bun"
-    export PATH="$BUN_INSTALL/bin:$PATH"
-    log_info "Bun installed successfully"
-else
-    log_info "Bun is already installed (version: $(bun --version))"
-fi
-
-# Install UV package manager (Python dependencies)
-if ! command -v uv &> /dev/null; then
-    log_info "Installing UV package manager..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    source $HOME/.local/bin/env
-    log_info "UV installed successfully"
-else
-    log_info "UV is already installed (version: $(uv --version))"
-fi
-
-# Install Python dependencies
-if [ -f "pyproject.toml" ]; then
-    log_info "Installing Python dependencies with UV..."
-    uv sync
-    log_info "Dependencies installed successfully"
-else
-    log_error "pyproject.toml not found. Please run this script from the project directory."
-    exit 1
-fi
-
-# Install JavaScript/Node dependencies with bun
-if [ -f "package.json" ]; then
-    log_info "Installing JavaScript dependencies with bun..."
-    bun install
-    log_info "JavaScript dependencies installed successfully"
-else
-    log_info "No package.json found. Skipping JavaScript dependency installation."
-fi
-
-# Create .env file if it doesn't exist
-if [ ! -f ".env" ]; then
-    if [ -f ".env.example" ]; then
-        log_info "Creating .env file from .env.example..."
-        cp .env.example .env
-        log_warn "Please edit .env and add your CONVEX_DEPLOYMENT_URL"
+    if echo "$HCI_STATUS" | grep -q "PSCAN"; then
+        local DISCOVERABLE="yes"
+        log_info "✓ Bluetooth adapter is discoverable"
     else
-        log_error ".env.example not found. Please create .env file manually."
-        exit 1
+        local DISCOVERABLE="no"
+        log_warn "✗ Bluetooth adapter may not be discoverable"
     fi
-else
-    log_info ".env file already exists"
-fi
 
-# Install systemd services
-services_installed=false
+    if echo "$HCI_STATUS" | grep -q "ISCAN"; then
+        local PAIRABLE="yes"
+        log_info "✓ Bluetooth adapter is pairable"
+    else
+        local PAIRABLE="no"
+        log_warn "✗ Bluetooth adapter may not be pairable"
+    fi
 
-# Install presence-tracker service
-if [ -f "presence-tracker.service" ]; then
-    log_info "Installing presence-tracker service..."
-    sudo cp presence-tracker.service /etc/systemd/system/presence-tracker.service
-    sudo systemctl daemon-reload
-    sudo systemctl enable presence-tracker.service
-    services_installed=true
-else
-    log_warn "presence-tracker.service not found. Skipping service installation."
-fi
+    # Get the device name
+    local ALIAS=$(hciconfig $CONTROLLER name 2>/dev/null | grep -oP "Name: '\K[^']+")
+    if [ -n "$ALIAS" ]; then
+        log_info "✓ Device name: $ALIAS"
+    else
+        log_warn "✗ Could not retrieve device name"
+    fi
 
-# Install web-dashboard service
-if [ -f "web-dashboard.service" ]; then
-    log_info "Installing web-dashboard service..."
-    sudo cp web-dashboard.service /etc/systemd/system/web-dashboard.service
-    sudo systemctl daemon-reload
-    sudo systemctl enable web-dashboard.service
-    services_installed=true
-else
-    log_warn "web-dashboard.service not found. Skipping web dashboard installation."
-fi
-
-# Install bluetooth-agent service (for automatic pairing acceptance)
-if [ -f "bluetooth-agent.service" ]; then
-    log_info "Installing bluetooth-agent service..."
-    sudo cp bluetooth-agent.service /etc/systemd/system/bluetooth-agent.service
-    sudo systemctl daemon-reload
-    sudo systemctl enable bluetooth-agent.service
-    services_installed=true
-else
-    log_warn "bluetooth-agent.service not found. Skipping Bluetooth agent installation."
-fi
-
-# Reload systemd daemon if any services were installed
-if [ "$services_installed" = true ]; then
-    log_info "Reloading systemd daemon..."
-    sudo systemctl daemon-reload
-fi
-
-# Restart only services that were active before installation
-if [ ${#SERVICES_TO_RESTART[@]} -gt 0 ]; then
     log_info ""
-    log_info "Restarting services that were active before installation..."
+    log_info "Bluetooth configured successfully"
+    log_info ""
+    log_info "Current Bluetooth settings:"
+    log_info "  Power: $POWERED"
+    log_info "  Discoverable: $DISCOVERABLE"
+    log_info "  Pairable: $PAIRABLE"
+    log_info "  Alias: $ALIAS"
+    log_info "  Agent: NoInputNoOutput (no PIN required)"
+    log_info ""
+    log_info "Verification commands:"
+    log_info "  Check status: hciconfig $CONTROLLER"
+    log_info "  Check name: hciconfig $CONTROLLER name"
+    log_info "  Scan for devices: sudo bluetoothctl scan on"
+    log_info ""
+    log_info "The Pi is now discoverable and pairable!"
+    log_info "You can pair your phone by scanning for \"$PI_NAME\" in Bluetooth settings."
     
-    for service in "${SERVICES_TO_RESTART[@]}"; do
-        log_info "Restarting $service..."
-        set +e  # Don't exit if restart fails
-        sudo systemctl restart "$service" 2>/dev/null
-        restart_status=$?
-        set -e
-        
-        if [ $restart_status -eq 0 ]; then
-            log_info "Successfully restarted $service"
-        else
-            log_warn "Failed to restart $service (this may be normal on first run)"
+    return 0
+}
+
+# Function to detect Bluetooth adapter
+detect_bluetooth_adapter() {
+    local bluetooth_detected=false
+    local detection_method=""
+
+    # Method 1: Check rfkill list
+    log_info "Checking for Bluetooth adapter (rfkill)..."
+    if command -v rfkill &> /dev/null; then
+        local rfkill_output=$(rfkill list bluetooth 2>/dev/null || true)
+        if echo "$rfkill_output" | grep -q "Bluetooth"; then
+            bluetooth_detected=true
+            detection_method="rfkill"
+            log_info "Bluetooth adapter detected via rfkill"
+            if echo "$rfkill_output" | grep -q "Soft blocked: yes"; then
+                log_warn "Bluetooth is soft blocked. Try: sudo rfkill unblock bluetooth"
+            fi
+            if echo "$rfkill_output" | grep -q "Hard blocked: yes"; then
+                log_warn "Bluetooth is hard blocked (hardware switch)"
+            fi
+        fi
+    fi
+
+    # Method 2: Check /sys/class/bluetooth/ directory
+    if [ "$bluetooth_detected" = false ]; then
+        log_info "Checking /sys/class/bluetooth/..."
+        if [ -d "/sys/class/bluetooth" ] && [ "$(ls -A /sys/class/bluetooth 2>/dev/null)" ]; then
+            bluetooth_detected=true
+            detection_method="sysfs"
+            local hci_device=$(ls /sys/class/bluetooth 2>/dev/null | head -1)
+            log_info "Bluetooth adapter detected via /sys/class/bluetooth/ (found: ${hci_device})"
+        fi
+    fi
+
+    # Method 3: Check hciconfig
+    if [ "$bluetooth_detected" = false ]; then
+        log_info "Checking hciconfig..."
+        if command -v hciconfig &> /dev/null; then
+            if hciconfig -a 2>/dev/null | grep -q "hci"; then
+                bluetooth_detected=true
+                detection_method="hciconfig"
+                log_info "Bluetooth adapter detected via hciconfig"
+            fi
+        fi
+    fi
+
+    # Method 4: Check lsusb for USB Bluetooth dongles
+    if [ "$bluetooth_detected" = false ]; then
+        log_info "Checking lsusb for Bluetooth dongles..."
+        if command -v lsusb &> /dev/null; then
+            if lsusb 2>/dev/null | grep -iE "bluetooth|wireless controller" &> /dev/null; then
+                bluetooth_detected=true
+                detection_method="lsusb"
+                log_info "USB Bluetooth adapter detected via lsusb"
+            fi
+        fi
+    fi
+
+    # Method 5: Check bluetoothctl
+    if [ "$bluetooth_detected" = false ]; then
+        log_info "Checking bluetoothctl..."
+        if command -v bluetoothctl &> /dev/null; then
+            if timeout 5 bluetoothctl list 2>/dev/null | grep -q "Controller"; then
+                bluetooth_detected=true
+                detection_method="bluetoothctl"
+                log_info "Bluetooth adapter detected via bluetoothctl"
+            fi
+        fi
+    fi
+
+    # Final determination
+    if [ "$bluetooth_detected" = true ]; then
+        log_info "Bluetooth adapter successfully detected (via ${detection_method})"
+        return 0
+    else
+        log_warn "Bluetooth adapter not detected automatically"
+        log_warn "This may be normal if:"
+        log_warn "  - Bluetooth is disabled in system settings"
+        log_warn "  - A USB Bluetooth dongle is not yet plugged in"
+        log_warn "  - Raspberry Pi model does not have built-in Bluetooth"
+        return 1
+    fi
+}
+
+# Function to configure Bluetooth audio (disable it)
+configure_bluetooth_audio() {
+    log_info "Configuring Bluetooth audio to be disabled..."
+    
+    # Disable WirePlumber Bluetooth module
+    log_info "Disabling WirePlumber Bluetooth audio module..."
+    sudo mkdir -p /etc/wireplumber/wireplumber.conf.d
+    sudo bash -c 'cat > /etc/wireplumber/wireplumber.conf.d/10-disable-bluetooth.conf << "EOF"
+wireplumber.components = [
+  { name = libwireplumber-module-bluez, enabled = false }
+]
+EOF'
+    log_info "WirePlumber Bluetooth audio module disabled"
+    
+    log_info "Bluetooth audio routing has been disabled. Audio will NOT be routed to the Pi."
+}
+
+# Function to install system dependencies
+install_dependencies() {
+    log_step "Installing system dependencies..."
+    
+    # Update package lists
+    log_info "Updating package lists..."
+    sudo apt update
+
+    # Upgrade installed packages
+    log_info "Upgrading installed packages..."
+    sudo apt upgrade -y
+
+    # Install BlueZ and Bluetooth tools
+    log_info "Installing BlueZ and Bluetooth tools..."
+    sudo apt install -y bluez bluez-tools bluetooth python3-dev libbluetooth-dev libcairo2-dev libgirepository1.0-dev gir1.2-gtk-3.0 build-essential pkg-config libdbus-1-dev libglib2.0-dev
+}
+
+# Function to enable and start Bluetooth service
+start_bluetooth_service() {
+    log_step "Enabling and starting Bluetooth service..."
+    
+    # Disable exit on error for Bluetooth handling
+    set +e
+
+    # Enable Bluetooth service
+    log_info "Enabling Bluetooth service..."
+    sudo systemctl enable bluetooth 2>/dev/null
+
+    # Start bluetooth service with retry logic
+    local max_retries=3
+    local retry_count=0
+    local bluetooth_started=false
+    while [ $retry_count -lt $max_retries ]; do
+        sudo systemctl start bluetooth 2>/dev/null
+        sleep 2
+        if sudo systemctl is-active --quiet bluetooth 2>/dev/null; then
+            bluetooth_started=true
+            break
+        fi
+        retry_count=$((retry_count + 1))
+        if [ $retry_count -lt $max_retries ]; then
+            log_warn "Bluetooth service start attempt $retry_count failed, retrying..."
+            sleep 2
         fi
     done
-    
-    log_info "Service restarts completed"
-else
-    log_info ""
-    log_info "No services were active before installation - services will not be started automatically"
-    log_info "You can start services manually with:"
-    log_info "  sudo systemctl start presence-tracker.service"
-    log_info "  sudo systemctl start web-dashboard.service"
-    log_info "  sudo systemctl start bluetooth-agent.service"
-fi
 
-# Summary
-log_info ""
-log_info "=========================================="
-log_info "Setup completed successfully!"
-log_info "=========================================="
-log_info ""
-log_info "Installed components:"
-log_info "  - UV package manager (Python dependencies)"
-log_info "  - Bun package manager (JavaScript/Node dependencies)"
-log_info "  - BlueZ and Bluetooth tools"
-log_info "  - Systemd services (presence-tracker, web-dashboard, bluetooth-agent)"
-log_info ""
-log_info "Next steps:"
-log_info "1. Edit .env and add your CONVEX_DEPLOYMENT_URL"
-log_info "2. Access the web dashboard at http://$(hostname).local:5000 (or http://<pi-ip>:5000)"
-log_info "3. Use the dashboard to:"
-log_info "   - Scan for discoverable Bluetooth devices"
-log_info "   - View currently connected devices"
-log_info "   - Register devices with user names"
-log_info "   - Monitor registered device status"
-log_info "4. Services that were running before installation have been restarted"
-log_info "5. Start services manually (if needed):"
-log_info "   - sudo systemctl start presence-tracker.service"
-log_info "   - sudo systemctl start web-dashboard.service"
-log_info "   - sudo systemctl start bluetooth-agent.service"
-log_info "6. Monitor logs:"
-log_info "   - sudo journalctl -u presence-tracker -f"
-log_info "   - sudo journalctl -u web-dashboard -f"
-log_info "   - sudo journalctl -u bluetooth-agent -f"
-log_info ""
-log_info "Note: This script is idempotent and can be run multiple times safely."
-log_info ""
-log_info "For full deployment instructions, see DEPLOYMENT.md"
-log_info "For Bluetooth pairing guide, see PAIRING.md"
-log_info ""
+    if [ "$bluetooth_started" = true ]; then
+        log_info "Bluetooth service started successfully"
+        log_info "Waiting for bluetooth daemon to fully initialize..."
+        sleep 3
+    else
+        log_warn "Could not start bluetooth service after $max_retries attempts"
+    fi
+
+    # Verify bluetooth service status
+    if sudo systemctl is-enabled --quiet bluetooth 2>/dev/null; then
+        log_info "Bluetooth service is enabled"
+    else
+        log_warn "Bluetooth service is not enabled"
+    fi
+
+    # Re-enable exit on error
+    set -e
+}
+
+# Function to add user to bluetooth group
+configure_user_groups() {
+    log_step "Adding user to bluetooth group..."
+    
+    if groups $USER | grep -q '\bbluetooth\b'; then
+        log_info "User $USER is already in the bluetooth group"
+    else
+        log_info "Adding user $USER to bluetooth group..."
+        sudo usermod -a -G bluetooth $USER
+        log_warn "You will need to log out and log back in for group changes to take effect"
+    fi
+}
+
+# Function to install package managers
+install_package_managers() {
+    log_step "Installing package managers..."
+    
+    # Install bun
+    if ! command -v bun &> /dev/null; then
+        log_info "Installing bun package manager..."
+        curl -fsSL https://bun.sh/install | bash
+        export BUN_INSTALL="$HOME/.bun"
+        export PATH="$BUN_INSTALL/bin:$PATH"
+        log_info "Bun installed successfully"
+    else
+        log_info "Bun is already installed (version: $(bun --version))"
+    fi
+
+    # Install UV
+    if ! command -v uv &> /dev/null; then
+        log_info "Installing UV package manager..."
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        source $HOME/.local/bin/env
+        log_info "UV installed successfully"
+    else
+        log_info "UV is already installed (version: $(uv --version))"
+    fi
+}
+
+# Function to install Python and JavaScript dependencies
+install_project_dependencies() {
+    log_step "Installing project dependencies..."
+    
+    # Install Python dependencies
+    if [ -f "pyproject.toml" ]; then
+        log_info "Installing Python dependencies with UV..."
+        uv sync
+        log_info "Dependencies installed successfully"
+    else
+        log_error "pyproject.toml not found. Please run this script from the project directory."
+        exit 1
+    fi
+
+    # Install JavaScript/Node dependencies with bun
+    if [ -f "package.json" ]; then
+        log_info "Installing JavaScript dependencies with bun..."
+        bun install
+        log_info "JavaScript dependencies installed successfully"
+    else
+        log_info "No package.json found. Skipping JavaScript dependency installation."
+    fi
+}
+
+# Function to create .env file
+setup_environment() {
+    log_step "Setting up environment..."
+    
+    if [ ! -f ".env" ]; then
+        if [ -f ".env.example" ]; then
+            log_info "Creating .env file from .env.example..."
+            cp .env.example .env
+            log_warn "Please edit .env and add your CONVEX_DEPLOYMENT_URL (or CONVEX_SELF_HOSTED_URL and CONVEX_SELF_HOSTED_ADMIN_KEY for self-hosted)."
+        else
+            log_error ".env.example not found. Please create .env file manually."
+            exit 1
+        fi
+    else
+        log_info ".env file already exists"
+    fi
+}
+
+# Function to generate systemd service files
+generate_services() {
+    log_step "Generating systemd service files..."
+    
+    # Generate presence-tracker.service
+    log_info "Generating presence-tracker.service..."
+    sudo bash -c "cat > /etc/systemd/system/presence-tracker.service << 'EOF'
+[Unit]
+Description=IEEE Presence Tracker - Bluetooth Device Monitoring Service
+After=bluetooth.target network-online.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+User=$CURRENT_USER
+WorkingDirectory=$PROJECT_DIR
+EnvironmentFile=$PROJECT_DIR/.env
+ExecStart=$USER_HOME/.local/bin/uv run $SRC_DIR/presence_tracker.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF"
+
+    # Generate bluetooth-agent.service
+    log_info "Generating bluetooth-agent.service..."
+    sudo bash -c "cat > /etc/systemd/system/bluetooth-agent.service << 'EOF'
+[Unit]
+Description=IEEE Presence Tracker Bluetooth Agent
+Documentation=https://github.com/ieee/presence-tracker
+After=bluetooth.service
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=$USER_HOME/.local/bin/uv run --project \"$PROJECT_DIR\" \"$SRC_DIR/bluetooth_agent.py\"
+WorkingDirectory=$PROJECT_DIR
+User=root
+Group=bluetooth
+Restart=always
+RestartSec=5
+
+# Environment
+Environment=\"PATH=/usr/local/bin:/usr/bin:/bin\"
+
+[Install]
+WantedBy=multi-user.target
+EOF"
+
+    # Generate bluetooth-discoverable.service
+    log_info "Generating bluetooth-discoverable.service..."
+    sudo bash -c "cat > /etc/systemd/system/bluetooth-discoverable.service << 'EOF'
+[Unit]
+Description=IEEE Presence Tracker Bluetooth Discoverable Service
+After=bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/bluetooth-discoverable
+User=$CURRENT_USER
+Group=bluetooth
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF"
+
+    log_info "All systemd service files generated successfully"
+}
+
+# Function to detect existing Convex setup
+detect_existing_convex() {
+    local has_convex_setup=false
+
+    if [ -f "convex.json" ]; then
+        has_convex_setup=true
+    fi
+
+    if [ -d "convex" ] && [ "$(ls -A convex 2>/dev/null)" ]; then
+        has_convex_setup=true
+    fi
+
+    if [ -f "$HOME/.convex/config.json" ]; then
+        has_convex_setup=true
+    fi
+
+    if grep -q "CONVEX_DEPLOYMENT" .env .env.local 2>/dev/null; then
+        has_convex_setup=true
+    fi
+
+    if grep -q "CONVEX_DEPLOYMENT_URL" .env .env.local 2>/dev/null; then
+        has_convex_setup=true
+    fi
+
+    if grep -q "CONVEX_SELF_HOSTED_URL" .env .env.local 2>/dev/null; then
+        has_convex_setup=true
+    fi
+
+    if grep -q "CONVEX_SELF_HOSTED_ADMIN_KEY" .env .env.local 2>/dev/null; then
+        has_convex_setup=true
+    fi
+
+    if grep -q "CONVEX_URL" .env .env.local 2>/dev/null; then
+        has_convex_setup=true
+    fi
+
+    [ "$has_convex_setup" = true ]
+}
+
+# Function to deploy to Convex
+deploy_convex() {
+    log_step "Deploying to Convex..."
+
+    echo ""
+    echo "=========================================="
+    echo "Convex Deployment"
+    echo "=========================================="
+    log_info "You need to log in to Convex to deploy your backend."
+    echo "Press Enter when you're ready to log in to Convex..."
+    read
+
+    # Log in to Convex
+    log_info "Logging in to Convex..."
+    bunx convex login
+    log_info "Convex login completed"
+
+    # Deploy to Convex
+    log_info "Deploying to Convex..."
+    bunx convex deploy
+    log_info "Convex deployment completed"
+}
+
+# Function to deploy backend (handles all modes)
+deploy_backend() {
+    if [ "$DEPLOYMENT_MODE" = "none" ]; then
+        log_info "Skipping backend deployment (DEPLOYMENT_MODE=none)"
+        return 0
+    fi
+
+    if [ "$DEPLOYMENT_MODE" = "selfhosted" ]; then
+        setup_selfhosted
+        return $?
+    fi
+
+    # Convex deployment
+    if [ "$DEPLOYMENT_MODE" = "convex" ]; then
+        log_step "Deploying to Convex"
+
+        # Check if logged in
+        if [ ! -f "$HOME/.convex/config.json" ]; then
+            log_info "Not logged in to Convex. Running login..."
+            if ! bunx convex login; then
+                log_error "Convex login failed"
+                return 1
+            fi
+        fi
+
+        # Deploy
+        log_info "Running convex deploy..."
+        if ! bunx convex deploy; then
+            log_error "Convex deployment failed"
+            return 1
+        fi
+
+        log_success "Convex deployment complete"
+        return 0
+    fi
+
+    log_error "Unknown deployment mode: $DEPLOYMENT_MODE"
+    return 1
+}
+
+# Function to write self-hosted env values to a target env file
+write_selfhosted_env() {
+    local env_file="$1"
+    local include_extras="$2"
+
+    # Ensure env file exists
+    if [ ! -f "$env_file" ]; then
+        touch "$env_file"
+    fi
+
+    # Remove any existing backend-related variables
+    sed -i '/^CONVEX_/d' "$env_file"
+    if [ "$include_extras" = "true" ]; then
+        sed -i '/^DEPLOYMENT_MODE=/d' "$env_file"
+        sed -i '/^BACKEND_URL=/d' "$env_file"
+        sed -i '/^BACKEND_API_KEY=/d' "$env_file"
+        sed -i '/^FRONTEND_URL=/d' "$env_file"
+    fi
+
+    # Add self-hosted configuration
+    {
+        if [ "$include_extras" = "true" ]; then
+            echo "DEPLOYMENT_MODE=selfhosted"
+        fi
+        echo "CONVEX_SELF_HOSTED_URL=$SELF_HOSTED_URL"
+        if [ -n "$SELF_HOSTED_ADMIN_KEY" ]; then
+            echo "CONVEX_SELF_HOSTED_ADMIN_KEY=$SELF_HOSTED_ADMIN_KEY"
+        fi
+        echo "CONVEX_DEPLOYMENT_URL=$SELF_HOSTED_URL"
+        echo "CONVEX_URL=$SELF_HOSTED_URL"
+        if [ "$include_extras" = "true" ]; then
+            echo "BACKEND_URL=$SELF_HOSTED_URL"
+            if [ -n "$SELF_HOSTED_ADMIN_KEY" ]; then
+                echo "BACKEND_API_KEY=$SELF_HOSTED_ADMIN_KEY"
+            fi
+            echo "FRONTEND_URL=$FRONTEND_URL"
+        fi
+    } >> "$env_file"
+}
+
+# Function to setup self-hosted backend
+setup_selfhosted() {
+    log_step "Setting up Self-Hosted Backend (External Deployment)"
+    
+    echo ""
+    echo "Self-hosted deployment requires a Convex backend URL."
+    echo "This could be deployed on Coolify, Railway, Render, or your own server."
+    echo ""
+    
+    # Prompt for self-hosted Convex URL
+    read -p "Self-hosted Convex URL (e.g., https://backend.example.com): " SELF_HOSTED_URL
+    
+    if [ -z "$SELF_HOSTED_URL" ]; then
+        log_error "Self-hosted Convex URL is required"
+        return 1
+    fi
+    
+    # Remove trailing slash if present
+    SELF_HOSTED_URL=${SELF_HOSTED_URL%/}
+    
+    # Prompt for admin key (optional)
+    echo ""
+    read -p "Convex admin key (optional, press Enter to skip): " SELF_HOSTED_ADMIN_KEY
+    
+    # Prompt for frontend URL (defaults to same as Convex URL)
+    echo ""
+    read -p "Frontend URL (default: $SELF_HOSTED_URL): " FRONTEND_URL
+    FRONTEND_URL=${FRONTEND_URL:-$SELF_HOSTED_URL}
+    FRONTEND_URL=${FRONTEND_URL%/}
+    
+    # Update .env and .env.local files
+    write_selfhosted_env ".env" "true"
+    write_selfhosted_env ".env.local" "false"
+
+    log_success "Updated .env and .env.local with self-hosted configuration"
+    
+    # Display configuration summary
+    echo ""
+    log_info "Self-hosted configuration:"
+    echo "  Convex URL: $SELF_HOSTED_URL"
+    echo "  Frontend URL: $FRONTEND_URL"
+    if [ -n "$SELF_HOSTED_ADMIN_KEY" ]; then
+        echo "  Admin Key: (configured)"
+    else
+        echo "  Admin Key: (none)"
+    fi
+    
+    log_success "Self-hosted backend setup complete"
+}
+
+# Function to restart services
+restart_services() {
+    log_step "Restarting systemd services..."
+    
+    # Reload systemd daemon
+    log_info "Reloading systemd daemon..."
+    sudo systemctl daemon-reload
+
+    # Enable all services
+    log_info "Enabling systemd services..."
+    sudo systemctl enable presence-tracker.service
+    sudo systemctl enable bluetooth-agent.service
+    sudo systemctl enable bluetooth-discoverable.service
+
+    # Restart all services
+    log_info "Restarting systemd services..."
+    sudo systemctl restart presence-tracker.service
+    sudo systemctl restart bluetooth-agent.service
+    sudo systemctl restart bluetooth-discoverable.service
+
+    log_info "All services enabled and restarted successfully"
+}
+
+# Function to clean up old service files
+cleanup_service_files() {
+    log_step "Cleaning up old service files..."
+    
+    if [ -f "presence-tracker.service" ]; then
+        rm presence-tracker.service
+        log_info "Removed presence-tracker.service"
+    fi
+
+    if [ -f "bluetooth-agent.service" ]; then
+        rm bluetooth-agent.service
+        log_info "Removed bluetooth-agent.service"
+    fi
+
+    if [ -f "bluetooth-discoverable.service" ]; then
+        rm bluetooth-discoverable.service
+        log_info "Removed bluetooth-discoverable.service"
+    fi
+}
+
+# Function to prompt for Bluetooth name
+prompt_bluetooth_name() {
+    echo ""
+    echo "=========================================="
+    echo "Bluetooth Configuration"
+    echo "=========================================="
+    read -p "Enter Bluetooth device name (default: IEEE Knock Knock): " INPUT_NAME
+    BLUETOOTH_NAME=${INPUT_NAME:-"IEEE Knock Knock"}
+    log_info "Bluetooth name set to: $BLUETOOTH_NAME"
+    
+    # Set persistent Bluetooth name via /etc/machine-info
+    log_info "Setting persistent Bluetooth name to: $BLUETOOTH_NAME"
+    echo "PRETTY_HOSTNAME=$BLUETOOTH_NAME" | sudo tee /etc/machine-info > /dev/null
+    sudo bluetoothctl --timeout 5 system-alias "$BLUETOOTH_NAME" 2>/dev/null || true
+    log_info "Persistent Bluetooth name configured"
+    
+    # Keep /etc/hosts in sync
+    if [ -f /etc/hosts ]; then
+        sudo sed -i 's/\braspberrypi\b/IEEE-Knock-Knock/g' /etc/hosts
+        if ! grep -q "^127\.0\.1\.1[[:space:]].*IEEE-Knock-Knock" /etc/hosts; then
+            echo -e "127.0.1.1\tIEEE-Knock-Knock" | sudo tee -a /etc/hosts > /dev/null
+        fi
+    fi
+}
+
+# Function to select deployment mode
+select_deployment_mode() {
+    log_step "Selecting Deployment Mode"
+
+    if detect_existing_convex; then
+        echo ""
+        log_warn "Existing Convex setup detected!"
+        echo ""
+        echo "Current Convex configuration found. What would you like to do?"
+        echo ""
+        echo "  1) Keep Convex and modify current configuration"
+        echo "  2) Self-hosted (external URL - e.g., Coolify, Railway, Render)"
+        echo "  3) Skip backend setup entirely"
+        echo ""
+        read -p "Enter choice [1-3]: " choice
+
+        case $choice in
+            1)
+                DEPLOYMENT_MODE="convex"
+                log_info "Continuing with Convex deployment"
+                ;;
+            2)
+                DEPLOYMENT_MODE="selfhosted"
+                log_info "Switching to self-hosted deployment"
+                ;;
+            3)
+                DEPLOYMENT_MODE="none"
+                log_info "Skipping backend setup"
+                ;;
+            *)
+                log_error "Invalid choice. Defaulting to Convex."
+                DEPLOYMENT_MODE="convex"
+                ;;
+        esac
+    else
+        echo ""
+        echo "Select backend deployment mode:"
+        echo ""
+        echo "  1) Convex (cloud backend - recommended for easy setup)"
+        echo "  2) Self-hosted (external URL - e.g., Coolify, Railway, Render)"
+        echo "  3) Skip backend setup"
+        echo ""
+        read -p "Enter choice [1-3]: " choice
+
+        case $choice in
+            1)
+                DEPLOYMENT_MODE="convex"
+                log_info "Convex deployment selected"
+                ;;
+            2)
+                DEPLOYMENT_MODE="selfhosted"
+                log_info "Self-hosted deployment selected"
+                ;;
+            3)
+                DEPLOYMENT_MODE="none"
+                log_info "Skipping backend setup"
+                ;;
+            *)
+                log_error "Invalid choice. Defaulting to Convex."
+                DEPLOYMENT_MODE="convex"
+                ;;
+        esac
+    fi
+
+    echo ""
+}
+
+# Function: Full Install
+full_install() {
+    log_info "Starting full installation..."
+    log_info "Project directory detected: $PROJECT_DIR"
+    log_info "Current user: $CURRENT_USER"
+    log_info "User home: $USER_HOME"
+
+    # Select deployment mode
+    select_deployment_mode
+
+    # Check if running as root
+    if [ "$EUID" -eq 0 ]; then
+        log_error "Please run this script as a regular user, not as root."
+        exit 1
+    fi
+    
+    # Prompt for Bluetooth name
+    prompt_bluetooth_name
+    
+    # Install dependencies
+    install_dependencies
+    
+    # Start Bluetooth service
+    start_bluetooth_service
+    
+    # Detect Bluetooth adapter
+    if detect_bluetooth_adapter; then
+        # Configure Bluetooth for discoverable mode
+        make_bluetooth_discoverable
+        
+        # Disable Bluetooth audio
+        configure_bluetooth_audio
+    else
+        log_warn "Skipping Bluetooth configuration - no adapter detected"
+    fi
+    
+    # Configure user groups
+    configure_user_groups
+    
+    # Install package managers
+    install_package_managers
+    
+    # Install project dependencies
+    install_project_dependencies
+    
+    # Setup environment
+    setup_environment
+    
+    # Generate services
+    generate_services
+
+    # Deploy backend
+    deploy_backend
+    
+    # Restart services
+    restart_services
+    
+    # Cleanup old files
+    cleanup_service_files
+    
+    # Summary
+    log_info ""
+    log_info "=========================================="
+    log_info "Setup completed successfully!"
+    log_info "=========================================="
+    log_info ""
+    log_info "Installed components:"
+    log_info "  - UV package manager (Python dependencies)"
+    log_info "  - Bun package manager (JavaScript/Node dependencies)"
+    log_info "  - BlueZ and Bluetooth tools"
+    log_info "  - Systemd services (presence-tracker, bluetooth-agent, bluetooth-discoverable)"
+    log_info "  - Bluetooth audio routing disabled (audio will NOT route to Pi)"
+    if [ "$DEPLOYMENT_MODE" = "convex" ]; then
+        log_info "  - Convex backend deployed"
+    elif [ "$DEPLOYMENT_MODE" = "selfhosted" ]; then
+        log_info "  - Self-hosted backend configured"
+    else
+        log_info "  - Backend setup skipped"
+    fi
+    log_info ""
+    log_info "Configuration:"
+    log_info "  - Bluetooth name: $BLUETOOTH_NAME"
+    log_info "  - Project directory: $PROJECT_DIR"
+    log_info "  - User: $CURRENT_USER"
+    log_info ""
+    log_info "Next steps:"
+    log_info "1. Access the web dashboard at http://$(hostname).local:3000 (or http://<pi-ip>:3000)"
+    log_info "2. Use the dashboard to:"
+    log_info "   - Scan for discoverable Bluetooth devices"
+    log_info "   - View currently connected devices"
+    log_info "   - Register devices with user names"
+    log_info "   - Monitor registered device status"
+    log_info "3. Monitor logs:"
+    log_info "   - sudo journalctl -u presence-tracker -f"
+    log_info "   - sudo journalctl -u bluetooth-agent -f"
+    log_info "   - sudo journalctl -u bluetooth-discoverable -f"
+    log_info ""
+    log_info "Note: This script is idempotent and can be run multiple times safely."
+    log_info ""
+}
+
+# Function: Update Config
+update_config() {
+    log_info "Updating configuration..."
+    prompt_bluetooth_name
+    
+    # If adapter detected, update Bluetooth configuration
+    if detect_bluetooth_adapter; then
+        make_bluetooth_discoverable
+    fi
+    
+    log_info "Configuration updated successfully!"
+}
+
+# Function: Resetup/Redeploy Backend
+redeploy_backend() {
+    log_step "Resetup/Redeploy Backend"
+    select_deployment_mode
+    deploy_backend
+    restart_services
+}
+
+# Function: Restart Services
+restart_services_menu() {
+    log_info "Restarting services..."
+    restart_services
+    log_info "Services restarted successfully!"
+}
+
+# Function: Make Bluetooth Discoverable
+make_discoverable_menu() {
+    log_info "Making Bluetooth discoverable..."
+    if detect_bluetooth_adapter; then
+        make_bluetooth_discoverable
+    else
+        log_error "No Bluetooth adapter detected. Cannot make discoverable."
+    fi
+}
+
+# Main menu loop
+main() {
+    while true; do
+        show_menu
+        read -p "Select an option [1-6]: " choice
+        
+        case $choice in
+            1)
+                full_install
+                break
+                ;;
+            2)
+                update_config
+                ;;
+            3)
+                redeploy_backend
+                ;;
+            4)
+                restart_services_menu
+                ;;
+            5)
+                make_discoverable_menu
+                ;;
+            6)
+                log_info "Exiting..."
+                exit 0
+                ;;
+            *)
+                log_error "Invalid option. Please select 1-6."
+                ;;
+        esac
+    done
+}
+
+# Run main function
+main

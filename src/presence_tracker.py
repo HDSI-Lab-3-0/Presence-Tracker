@@ -25,15 +25,20 @@ logger = logging.getLogger(__name__)
 
 # Get Convex deployment URL from environment
 CONVEX_DEPLOYMENT_URL = os.getenv("CONVEX_DEPLOYMENT_URL")
+CONVEX_SELF_HOSTED_URL = os.getenv("CONVEX_SELF_HOSTED_URL")
+CONVEX_SELF_HOSTED_ADMIN_KEY = os.getenv("CONVEX_SELF_HOSTED_ADMIN_KEY")
+DEPLOYMENT_URL = CONVEX_SELF_HOSTED_URL or CONVEX_DEPLOYMENT_URL
 
-if not CONVEX_DEPLOYMENT_URL:
+if not DEPLOYMENT_URL:
     raise ValueError(
-        "CONVEX_DEPLOYMENT_URL environment variable is not set. "
-        "Please create a .env file with this variable."
+        "CONVEX_DEPLOYMENT_URL or CONVEX_SELF_HOSTED_URL environment variable is not set. "
+        "Please create a .env file with one of these variables."
     )
 
 # Initialize Convex client
-convex_client = convex.ConvexClient(CONVEX_DEPLOYMENT_URL)
+convex_client = convex.ConvexClient(DEPLOYMENT_URL)
+if CONVEX_SELF_HOSTED_ADMIN_KEY:
+    convex_client.client.set_admin_auth(CONVEX_SELF_HOSTED_ADMIN_KEY)
 
 # Polling interval in seconds
 POLLING_INTERVAL = 5
@@ -50,7 +55,7 @@ failed_connection_attempts: dict[str, int] = {}
 # Track previous status of each device for deduplication
 device_previous_status: dict[str, str] = {}
 
-# Threshold for consecutive failed connections before auto-removal
+# Threshold for consecutive failed connections before backing off
 FAILED_CONNECTION_THRESHOLD = 3
 
 
@@ -132,7 +137,7 @@ def cleanup_expired_devices() -> bool:
         True if cleanup was successful, False otherwise
     """
     try:
-        result = convex_client.mutation("devices:cleanupExpiredGracePeriods", {})
+        result = convex_client.action("devices:cleanupExpiredGracePeriods", {})
         deleted_count = result.get("deletedCount", 0)
         deleted_macs = result.get("deletedMacs", [])
         
@@ -167,13 +172,19 @@ def cleanup_stale_bluetooth_pairings() -> None:
         paired_set = set(paired_devices)
         logger.info(f"Found {len(paired_set)} paired device(s) in Bluetooth")
 
+        # Do not remove devices that are currently connected.
+        connected_devices = bluetooth_scanner.get_all_connected_devices()
+        connected_set = set(connected_devices)
+        if connected_set:
+            logger.info(f"Found {len(connected_set)} connected device(s) in Bluetooth")
+
         # Get all known devices from Convex
         convex_devices = get_known_devices()
         convex_macs = {device.get("macAddress") for device in convex_devices if device.get("macAddress")}
         logger.info(f"Found {len(convex_macs)} device(s) in Convex database")
 
         # Find devices that are paired but not in Convex
-        stale_devices = paired_set - convex_macs
+        stale_devices = paired_set - convex_macs - connected_set
 
         if stale_devices:
             logger.info(f"Found {len(stale_devices)} stale Bluetooth pairing(s) to clean up")
@@ -228,7 +239,9 @@ def log_attendance(mac_address: str, name: str, status: str) -> bool:
         return False
 
 
-def update_device_status(mac_address: str, is_connected: bool) -> bool:
+def update_device_status(
+    mac_address: str, is_connected: bool, current_status: str | None = None
+) -> bool:
     """
     Update a device's status in Convex using the updateDeviceStatus function.
     Only logs attendance if the status has actually changed (deduplication).
@@ -240,31 +253,24 @@ def update_device_status(mac_address: str, is_connected: bool) -> bool:
     Returns:
         True if the update was successful, False otherwise
     """
-    global device_previous_status
-
     try:
         new_status = "present" if is_connected else "absent"
-        previous_status = device_previous_status.get(mac_address)
+        previous_status = (
+            current_status if current_status is not None else device_previous_status.get(mac_address)
+        )
 
-        # Only proceed if status has changed
+        # Only update Convex when status changes
         if previous_status == new_status:
             logger.debug(
-                f"Status unchanged for {mac_address}: {new_status} (skipping attendance log)"
+                f"Status unchanged for {mac_address}: {new_status} (skipping Convex update)"
             )
-            # Still update Convex with current status/lastSeen
-            result = convex_client.mutation(
-                "devices:updateDeviceStatus",
-                {"macAddress": mac_address, "status": new_status},
-            )
+            device_previous_status[mac_address] = new_status
             return True
 
-        # Status changed - update and log attendance
         result = convex_client.mutation(
             "devices:updateDeviceStatus", {"macAddress": mac_address, "status": new_status}
         )
-        logger.info(
-            f"Updated device {mac_address} status to {new_status} -> {result}"
-        )
+        logger.info(f"Updated device {mac_address} status to {new_status} -> {result}")
 
         # Log attendance only for registered devices (not pending)
         device = get_device_by_mac(mac_address)
@@ -324,14 +330,14 @@ def check_and_update_devices() -> None:
 
             logger.info(f"Checking device: {display_name} ({mac_address})")
 
-            # Update status if changed
+            # Update only when status changes
             new_status = "present"
             if new_status != current_status:
                 logger.info(
                     f"Status changed for {display_name} ({mac_address}): "
                     f"{current_status} -> {new_status}"
                 )
-                if update_device_status(mac_address, True):
+                if update_device_status(mac_address, True, current_status):
                     updated_count += 1
             else:
                 logger.debug(f"No status change for {display_name} ({mac_address}): {current_status}")
@@ -367,39 +373,32 @@ def check_and_update_devices() -> None:
         if mac_address not in connected_set:
             logger.info(f"Checking device: {display_name} ({mac_address})")
 
-            # Only auto-connect to registered devices (not pending)
+            # Attempt auto-connect for registered devices; audio profiles are blocked by the agent.
             if name and not device.get("pendingRegistration"):
-                # Check if device is paired
                 paired_devices = bluetooth_scanner.get_paired_devices()
                 if mac_address in paired_devices:
                     logger.info(f"Attempting auto-connect to registered device: {display_name}")
                     if bluetooth_scanner.connect_device(mac_address):
-                        # Successfully connected - reset failed attempts counter
                         failed_connection_attempts.pop(mac_address, None)
-                        # Successfully connected - update status to present
                         if current_status != "present":
                             logger.info(f"Auto-connected to {display_name}, marking as present")
-                            if update_device_status(mac_address, True):
+                            if update_device_status(mac_address, True, current_status):
                                 updated_count += 1
                         continue  # Skip marking as absent
-                    else:
-                        # Connection failed - increment counter
-                        failed_connection_attempts[mac_address] = (
-                            failed_connection_attempts.get(mac_address, 0) + 1
-                        )
-                        failed_count = failed_connection_attempts[mac_address]
+
+                    failed_connection_attempts[mac_address] = (
+                        failed_connection_attempts.get(mac_address, 0) + 1
+                    )
+                    failed_count = failed_connection_attempts[mac_address]
+                    logger.warning(
+                        f"Failed to auto-connect to {display_name} ({mac_address}) - "
+                        f"Attempt {failed_count}/{FAILED_CONNECTION_THRESHOLD}"
+                    )
+                    if failed_count >= FAILED_CONNECTION_THRESHOLD:
                         logger.warning(
-                            f"Failed to auto-connect to {display_name} ({mac_address}) - "
-                            f"Attempt {failed_count}/{FAILED_CONNECTION_THRESHOLD}"
+                            f"Backing off auto-connect attempts for {display_name} ({mac_address})"
                         )
-                        # Check if threshold exceeded - just log, don't delete
-                        if failed_count >= FAILED_CONNECTION_THRESHOLD:
-                            logger.warning(
-                                f"Threshold exceeded for {display_name} ({mac_address}) - "
-                                f"device remains in database (deletion disabled)"
-                            )
-                            # Reset counter to avoid spamming the log
-                            failed_connection_attempts.pop(mac_address, None)
+                        failed_connection_attempts.pop(mac_address, None)
 
             # Device is not connected and couldn't auto-connect - mark as absent
             new_status = "absent"
@@ -408,7 +407,7 @@ def check_and_update_devices() -> None:
                     f"Status changed for {display_name} ({mac_address}): "
                     f"{current_status} -> {new_status}"
                 )
-                if update_device_status(mac_address, False):
+                if update_device_status(mac_address, False, current_status):
                     updated_count += 1
             else:
                 logger.debug(f"No status change for {display_name} ({mac_address}): {current_status}")

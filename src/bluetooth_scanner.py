@@ -1,9 +1,40 @@
 import subprocess
 import logging
+from logging.handlers import RotatingFileHandler
 from typing import Optional
 import bluetooth
+import time
+from threading import Lock
+from datetime import datetime, timedelta
+import os
 
+# Ensure logs directory exists
+os.makedirs("logs", exist_ok=True)
+
+# Configure logger for bluetooth_scanner
 logger = logging.getLogger(__name__)
+if not logger.handlers:
+    logger.setLevel(logging.DEBUG)
+    handler = RotatingFileHandler(
+        "logs/bluetooth_scanner.log",
+        maxBytes=100000,
+        backupCount=1,
+    )
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    )
+    logger.addHandler(handler)
+
+# Global state for auto-reconnection
+# Track last connection attempt time for each device to avoid spamming
+_last_connection_attempts: dict[str, float] = {}
+_connection_state_lock = Lock()
+
+# Cooldown period between connection attempts for the same device (seconds)
+RECONNECT_COOLDOWN = 30
+
+# How long to consider a device "recently attempted" (seconds)
+RECENT_ATTEMPT_WINDOW = 60
 
 
 def check_device_connected(mac_address: str) -> bool:
@@ -435,3 +466,218 @@ def get_paired_devices() -> list[str]:
     except Exception as e:
         logger.error(f"Error getting paired devices: {e}")
         return []
+
+
+def _can_attempt_reconnection(mac_address: str) -> bool:
+    """
+    Check if we can attempt reconnection to a device based on cooldown.
+
+    Args:
+        mac_address: The MAC address of the device
+
+    Returns:
+        True if reconnection can be attempted, False if in cooldown
+    """
+    with _connection_state_lock:
+        last_attempt = _last_connection_attempts.get(mac_address, 0)
+        time_since_attempt = time.time() - last_attempt
+
+        if time_since_attempt < RECONNECT_COOLDOWN:
+            logger.debug(
+                f"Device {mac_address} in cooldown: "
+                f"{time_since_attempt:.1f}s elapsed, need {RECONNECT_COOLDOWN}s"
+            )
+            return False
+
+        return True
+
+
+def _record_connection_attempt(mac_address: str) -> None:
+    """
+    Record a connection attempt for cooldown tracking.
+
+    Args:
+        mac_address: The MAC address of the device
+    """
+    with _connection_state_lock:
+        _last_connection_attempts[mac_address] = time.time()
+
+
+def _cleanup_old_attempts() -> None:
+    """
+    Clean up old connection attempts that are outside the time window.
+    """
+    with _connection_state_lock:
+        current_time = time.time()
+        to_remove = []
+
+        for mac_address, attempt_time in _last_connection_attempts.items():
+            if current_time - attempt_time > RECENT_ATTEMPT_WINDOW:
+                to_remove.append(mac_address)
+
+        for mac_address in to_remove:
+            del _last_connection_attempts[mac_address]
+
+        if to_remove:
+            logger.debug(f"Cleaned up {len(to_remove)} old connection attempt records")
+
+
+def scan_for_devices_in_range() -> set[str]:
+    """
+    Scan for Bluetooth devices that are currently in range.
+
+    Uses both pybluez discovery and bluetoothctl to get a comprehensive list
+    of devices that are discoverable or previously paired devices that are in range.
+
+    Returns:
+        Set of MAC addresses of devices in range
+    """
+    devices_in_range: set[str] = set()
+
+    # Method 1: Use pybluez to discover visible devices
+    try:
+        logger.debug("Scanning for discoverable devices using pybluez...")
+        discovered_devices = bluetooth.discover_devices(
+            duration=5, lookup_names=False, flush_cache=True
+        )
+        devices_in_range.update(discovered_devices)
+        logger.debug(f"Found {len(discovered_devices)} discoverable device(s)")
+    except bluetooth.BluetoothError as e:
+        logger.debug(f"Pybluez scan error: {e}")
+    except Exception as e:
+        logger.debug(f"Unexpected error during pybluez scan: {e}")
+
+    # Method 2: Use bluetoothctl to scan for paired devices that are in range
+    # This is more reliable for iOS devices and devices that don't advertise
+    try:
+        logger.debug("Checking for paired devices in range using bluetoothctl...")
+        # Get all known devices (both paired and discovered)
+        result = subprocess.run(
+            ["bluetoothctl", "devices"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if result.returncode == 0:
+            for line in result.stdout.split("\n"):
+                line = line.strip()
+                if line.startswith("Device "):
+                    parts = line.split(" ", 2)
+                    if len(parts) >= 2:
+                        mac_address = parts[1]
+                        # Check if the device is actually accessible by getting its info
+                        info_result = subprocess.run(
+                            ["bluetoothctl", "info", mac_address],
+                            capture_output=True,
+                            text=True,
+                            timeout=5,
+                        )
+                        # If we can get info, the device is in range
+                        if info_result.returncode == 0:
+                            devices_in_range.add(mac_address)
+                            logger.debug(f"Device in range: {mac_address}")
+
+        logger.debug(f"Total devices in range: {len(devices_in_range)}")
+    except subprocess.TimeoutExpired:
+        logger.debug("Timeout checking devices in range")
+    except Exception as e:
+        logger.debug(f"Error checking devices in range: {e}")
+
+    return devices_in_range
+
+
+def auto_reconnect_paired_devices() -> dict[str, bool]:
+    """
+    Automatically reconnect to paired devices that are detected in range.
+
+    This function:
+    1. Gets the list of paired devices
+    2. Scans for devices currently in range
+    3. For paired devices in range that are not connected, attempts reconnection
+    4. Respects cooldown periods to avoid spamming connection attempts
+    5. Tracks connection attempts and logs success/failure
+
+    Returns:
+        Dictionary mapping MAC addresses to connection results (True=success, False=failed)
+    """
+    results: dict[str, bool] = {}
+
+    try:
+        logger.info("=== Starting auto-reconnection cycle ===")
+
+        # Clean up old attempt records periodically
+        _cleanup_old_attempts()
+
+        # Get currently connected devices
+        connected_devices = get_all_connected_devices()
+        connected_set = set(connected_devices)
+        logger.info(f"Currently connected: {len(connected_set)} device(s)")
+
+        # Get paired devices
+        paired_devices = get_paired_devices()
+        paired_set = set(paired_devices)
+        logger.info(f"Paired devices: {len(paired_set)} device(s)")
+
+        # Get devices in range
+        devices_in_range = scan_for_devices_in_range()
+        logger.info(f"Devices in range: {len(devices_in_range)} device(s)")
+
+        # Find paired devices that are in range but not connected
+        devices_to_connect = (paired_set & devices_in_range) - connected_set
+
+        if not devices_to_connect:
+            logger.info("No paired devices in range that need connection")
+            return results
+
+        logger.info(f"Attempting to connect to {len(devices_to_connect)} device(s)")
+
+        # Attempt connection to each device
+        for mac_address in devices_to_connect:
+            # Check cooldown
+            if not _can_attempt_reconnection(mac_address):
+                logger.debug(f"Skipping {mac_address} - in cooldown")
+                continue
+
+            # Record attempt before trying
+            _record_connection_attempt(mac_address)
+
+            logger.info(f"Attempting auto-reconnection to: {mac_address}")
+
+            # Attempt connection
+            success = connect_device(mac_address)
+            results[mac_address] = success
+
+            if success:
+                logger.info(f"✓ Successfully auto-reconnected to: {mac_address}")
+            else:
+                logger.warning(f"✗ Failed to auto-reconnect to: {mac_address}")
+
+        logger.info("=== Auto-reconnection cycle complete ===")
+        return results
+
+    except Exception as e:
+        logger.error(f"Error during auto-reconnection: {e}")
+        return results
+
+
+def get_reconnection_status() -> dict[str, dict[str, any]]:
+    """
+    Get the current status of reconnection attempts.
+
+    Returns:
+        Dictionary with information about recent connection attempts
+    """
+    with _connection_state_lock:
+        current_time = time.time()
+        status = {}
+
+        for mac_address, attempt_time in _last_connection_attempts.items():
+            time_since = current_time - attempt_time
+            status[mac_address] = {
+                "last_attempt": datetime.fromtimestamp(attempt_time).isoformat(),
+                "seconds_ago": round(time_since, 1),
+                "in_cooldown": time_since < RECONNECT_COOLDOWN,
+            }
+
+        return status
