@@ -1,7 +1,19 @@
-// Initialize Convex Client
-window.convexClient = new convex.ConvexClient(window.CONVEX_URL, {
-    skipConvexDeploymentUrlCheck: true
-});
+// Initialize Convex Client with support for self-hosted deployments
+window.convexClient = null;
+
+if (window.CONVEX_URL) {
+    try {
+        // For self-hosted Convex, we need to skip the URL validation
+        window.convexClient = new convex.ConvexClient(window.CONVEX_URL, {
+            skipConvexDeploymentUrlCheck: window.DEPLOYMENT_MODE === 'selfhosted' || true
+        });
+    } catch (error) {
+        console.error('Failed to initialize Convex client:', error);
+        console.error('CONVEX_URL:', window.CONVEX_URL);
+        console.error('DEPLOYMENT_MODE:', window.DEPLOYMENT_MODE);
+        alert('Failed to connect to backend. Please check your configuration.');
+    }
+}
 const convexClient = window.convexClient;
 
 // State
@@ -24,6 +36,10 @@ window.initializeApp = function () {
 }
 
 function setupConvexSubscription() {
+    if (!convexClient) {
+        console.error('Convex client not initialized');
+        return;
+    }
     // Subscribe to the getDevices query
     convexClient.onUpdate("devices:getDevices", {}, (devices) => {
         renderDevices(devices);
@@ -347,6 +363,11 @@ window.submitRegistration = async function () {
     btn.textContent = 'Registering...';
     btn.disabled = true;
 
+    if (!convexClient) {
+        showToast('Convex client not initialized', 'error');
+        return;
+    }
+
     try {
         // Call the mutation
         await convexClient.mutation("devices:completeDeviceRegistration", {
@@ -377,6 +398,10 @@ window.openEditModal = function (id, firstName, lastName) {
     const logsContainer = document.getElementById('edit-logs');
     if (logsContainer) {
         logsContainer.innerHTML = 'Loading logs...';
+        if (!convexClient) {
+            logsContainer.innerHTML = 'Convex client not initialized';
+            return;
+        }
         convexClient.query("devices:getDeviceLogs", { deviceId: id }).then(logs => {
             if (logs.length === 0) {
                 logsContainer.innerHTML = '<div style="color: var(--text-secondary); padding: 4px;">No logs found.</div>';
@@ -412,6 +437,11 @@ window.submitEdit = async function () {
         return;
     }
 
+    if (!convexClient) {
+        showToast('Convex client not initialized', 'error');
+        return;
+    }
+
     try {
         await convexClient.mutation("devices:updateDeviceDetails", {
             id: id,
@@ -428,6 +458,11 @@ window.submitEdit = async function () {
 
 window.forgetDevice = async function (deviceId, macAddress) {
     if (!confirm(`Are you sure you want to forget this device? This will remove it from the system and unpair it from Bluetooth.\n\nMAC: ${macAddress}`)) {
+        return;
+    }
+
+    if (!convexClient) {
+        showToast('Convex client not initialized', 'error');
         return;
     }
 

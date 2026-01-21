@@ -23,4 +23,8 @@ if [ -z "$URL" ]; then
   exit 1
 fi
 
+# Deployment mode
+export DEPLOYMENT_MODE="${DEPLOYMENT_MODE:-${MODE}}"
+
 echo "window.CONVEX_URL = '$URL';" > /usr/share/nginx/html/config.js
+echo "window.DEPLOYMENT_MODE = '$DEPLOYMENT_MODE';" >> /usr/share/nginx/html/config.js
