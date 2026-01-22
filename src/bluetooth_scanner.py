@@ -587,7 +587,7 @@ def scan_for_devices_in_range() -> set[str]:
     return devices_in_range
 
 
-def auto_reconnect_paired_devices() -> dict[str, bool]:
+def auto_reconnect_paired_devices(whitelist_macs: set[str] | None = None) -> dict[str, bool]:
     """
     Automatically reconnect to paired devices that are detected in range.
 
@@ -597,6 +597,10 @@ def auto_reconnect_paired_devices() -> dict[str, bool]:
     3. For paired devices in range that are not connected, attempts reconnection
     4. Respects cooldown periods to avoid spamming connection attempts
     5. Tracks connection attempts and logs success/failure
+
+    Args:
+        whitelist_macs: Optional set of MAC addresses to limit reconnection attempts to.
+                       If provided, only devices in this set will be candidates.
 
     Returns:
         Dictionary mapping MAC addresses to connection results (True=success, False=failed)
@@ -625,6 +629,13 @@ def auto_reconnect_paired_devices() -> dict[str, bool]:
 
         # Find paired devices that are in range but not connected
         devices_to_connect = (paired_set & devices_in_range) - connected_set
+
+        # Apply whitelist if provided
+        if whitelist_macs is not None:
+            logger.debug(f"Applying whitelist: {len(whitelist_macs)} allowed device(s)")
+            original_count = len(devices_to_connect)
+            devices_to_connect = devices_to_connect & whitelist_macs
+            logger.debug(f"Filtered candidates from {original_count} to {len(devices_to_connect)}")
 
         if not devices_to_connect:
             logger.info("No paired devices in range that need connection")

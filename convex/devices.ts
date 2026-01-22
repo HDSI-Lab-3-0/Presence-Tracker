@@ -4,6 +4,14 @@ import { Doc } from "./_generated/dataModel";
 
 const GRACE_PERIOD_SECONDS = 300;
 
+export const getOrganizationName = query({
+  args: {},
+  handler: async (ctx) => {
+    // @ts-ignore - process.env is available in Convex functions
+    return process.env.ORGANIZATION_NAME || "IEEE";
+  },
+});
+
 export const getDeviceLogs = query({
   args: { deviceId: v.id("devices") },
   handler: async (ctx, args) => {
@@ -356,6 +364,7 @@ export const getAttendanceLogs = query({
     adminPassword: v.string(),
   },
   handler: async (ctx, args) => {
+    // @ts-ignore - process.env is available in Convex functions
     const environment = process.env;
     const adminPassword = environment.ADMIN_PASSWORD;
     if (args.adminPassword !== adminPassword) {

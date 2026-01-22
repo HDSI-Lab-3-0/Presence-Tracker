@@ -98,21 +98,15 @@ export const updateIntegrationMessage = internalMutation({
     },
 });
 
-export const updateIntegration = internalMutation({
+export const updateIntegrationMessageId = internalMutation({
     args: {
-        type: v.union(v.literal("discord"), v.literal("slack")),
-        messageId: v.optional(v.string()),
+        id: v.id("integrations"),
+        messageId: v.string(),
     },
     handler: async (ctx, args) => {
-        const existing = await ctx.db
-            .query("integrations")
-            .withIndex("by_type", (q) => q.eq("type", args.type))
-            .first();
-
-        if (existing) {
-            await ctx.db.patch(existing._id, {
-                messageId: args.messageId,
-            });
-        }
+        await ctx.db.patch(args.id, {
+            messageId: args.messageId,
+        });
     },
 });
+

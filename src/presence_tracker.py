@@ -7,6 +7,7 @@ from typing import Any
 import convex
 from dotenv import load_dotenv
 import bluetooth_scanner
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 
 # Load environment variables
 load_dotenv()
@@ -35,10 +36,19 @@ if not DEPLOYMENT_URL:
         "Please create a .env file with one of these variables."
     )
 
-# Initialize Convex client
-convex_client = convex.ConvexClient(DEPLOYMENT_URL)
-if CONVEX_SELF_HOSTED_ADMIN_KEY:
-    convex_client.client.set_admin_auth(CONVEX_SELF_HOSTED_ADMIN_KEY)
+# Convex client will be initialized lazily to avoid startup hangs
+_convex_client: convex.ConvexClient | None = None
+
+def get_convex_client() -> convex.ConvexClient:
+    """Get or initialize the Convex client."""
+    global _convex_client
+    if _convex_client is None:
+        logger.info("Initializing Convex client...")
+        _convex_client = convex.ConvexClient(DEPLOYMENT_URL)
+        if CONVEX_SELF_HOSTED_ADMIN_KEY:
+            _convex_client.client.set_admin_auth(CONVEX_SELF_HOSTED_ADMIN_KEY)
+        logger.info("Convex client initialized")
+    return _convex_client
 
 # Polling interval in seconds
 POLLING_INTERVAL = 5
@@ -46,8 +56,8 @@ POLLING_INTERVAL = 5
 # Grace period for new device registration in seconds
 GRACE_PERIOD_SECONDS = int(os.getenv("GRACE_PERIOD_SECONDS", "300"))
 
-# Track connected devices across cycles
-recently_connected: set[str] = set()
+# Track devices that failed to register, so we retry them
+failed_registrations: set[str] = set()
 
 # Track consecutive failed connection attempts per device
 failed_connection_attempts: dict[str, int] = {}
@@ -58,18 +68,35 @@ device_previous_status: dict[str, str] = {}
 # Threshold for consecutive failed connections before backing off
 FAILED_CONNECTION_THRESHOLD = 3
 
+# Timeout for Convex queries in seconds
+CONVEX_QUERY_TIMEOUT = 10
+
+# Track if Convex is responsive (skip if too many timeouts)
+convex_responsive = True
+consecutive_timeouts = 0
+MAX_CONSECUTIVE_TIMEOUTS = 3
+
 
 def get_known_devices() -> list[dict[str, Any]]:
     """
     Fetch all known devices from Convex using the getDevices function.
+    Uses a thread executor to enforce timeout.
 
     Returns:
         List of device dictionaries with macAddress, name, status, and lastSeen fields
     """
+    def _query():
+        return get_convex_client().query("devices:getDevices")
+    
     try:
-        result = convex_client.query("devices:getDevices")
-        logger.info(f"Retrieved {len(result)} devices from Convex")
-        return result
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_query)
+            result = future.result(timeout=CONVEX_QUERY_TIMEOUT)
+            logger.info(f"Retrieved {len(result)} devices from Convex")
+            return result
+    except TimeoutError:
+        logger.error(f"Convex query timed out after {CONVEX_QUERY_TIMEOUT} seconds")
+        return []
     except Exception as e:
         logger.error(f"Error fetching devices from Convex: {e}")
         return []
@@ -110,21 +137,31 @@ def register_new_device(mac_address: str, name: str | None = None) -> bool:
     Returns:
         True if registration was successful, False otherwise
     """
-    try:
-        logger.info(f"→ register_new_device called: mac={mac_address}, name='{name}'")
-        result = convex_client.mutation(
+    def _mutation():
+        return get_convex_client().mutation(
             "devices:registerPendingDevice",
             {
                 "macAddress": mac_address,
                 "name": name or "",
             },
         )
-        logger.info(
-            f"✓ Registered new device {mac_address} (name='{name or 'unknown'}') in pending state -> {result}"
-        )
-        return True
+    
+    try:
+        logger.info(f"→ register_new_device called: mac={mac_address}, name='{name}'")
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_mutation)
+            result = future.result(timeout=CONVEX_QUERY_TIMEOUT)
+            logger.info(
+                f"✓ Registered new device {mac_address} (name='{name or 'unknown'}') in pending state -> {result}"
+            )
+            return True
+    except TimeoutError:
+        logger.error(f"✗ Convex mutation timed out after {CONVEX_QUERY_TIMEOUT} seconds for {mac_address}")
+        logger.info(f"  Device {mac_address} will be retried on next polling cycle")
+        return False
     except Exception as e:
         logger.error(f"✗ Error registering new device {mac_address}: {e}")
+        logger.info(f"  Device {mac_address} will be retried on next polling cycle")
         return False
 
 
@@ -136,27 +173,39 @@ def cleanup_expired_devices() -> bool:
     Returns:
         True if cleanup was successful, False otherwise
     """
+    global failed_registrations
+    
+    def _action():
+        return get_convex_client().action("devices:cleanupExpiredGracePeriods", {})
+    
     try:
-        result = convex_client.action("devices:cleanupExpiredGracePeriods", {})
-        deleted_count = result.get("deletedCount", 0)
-        deleted_macs = result.get("deletedMacs", [])
-        
-        if deleted_count > 0:
-            logger.info(f"Cleaned up {deleted_count} expired grace period(s)")
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_action)
+            result = future.result(timeout=CONVEX_QUERY_TIMEOUT)
+            deleted_count = result.get("deletedCount", 0)
+            deleted_macs = result.get("deletedMacs", [])
             
-            # Disconnect and remove Bluetooth pairing for deleted devices
-            for mac_address in deleted_macs:
-                try:
-                    logger.info(f"Disconnecting and removing expired device: {mac_address}")
-                    bluetooth_scanner.disconnect_device(mac_address)
-                    bluetooth_scanner.remove_device(mac_address)
-                    logger.info(f"Successfully removed Bluetooth pairing for: {mac_address}")
-                except Exception as e:
-                    logger.error(f"Error removing Bluetooth device {mac_address}: {e}")
-        else:
-            logger.debug("No expired grace periods to clean up")
-            
-        return True
+            if deleted_count > 0:
+                logger.info(f"Cleaned up {deleted_count} expired grace period(s)")
+                
+                # Disconnect and remove Bluetooth pairing for deleted devices
+                for mac_address in deleted_macs:
+                    try:
+                        logger.info(f"Disconnecting and removing expired device: {mac_address}")
+                        bluetooth_scanner.disconnect_device(mac_address)
+                        bluetooth_scanner.remove_device(mac_address)
+                        logger.info(f"Successfully removed Bluetooth pairing for: {mac_address}")
+                        # Remove from failed registrations since device was cleaned up
+                        failed_registrations.discard(mac_address)
+                    except Exception as e:
+                        logger.error(f"Error removing Bluetooth device {mac_address}: {e}")
+            else:
+                logger.debug("No expired grace periods to clean up")
+                
+            return True
+    except TimeoutError:
+        logger.error(f"Convex action timed out after {CONVEX_QUERY_TIMEOUT} seconds")
+        return False
     except Exception as e:
         logger.error(f"Error cleaning up expired devices: {e}")
         return False
@@ -165,23 +214,28 @@ def cleanup_expired_devices() -> bool:
 def cleanup_stale_bluetooth_pairings() -> None:
     """
     Remove Bluetooth pairings for devices that are no longer in the Convex database.
+    Only runs during normal polling cycles, not at startup to avoid hangs.
     """
     try:
         # Get all paired devices from Bluetooth
         paired_devices = bluetooth_scanner.get_paired_devices()
         paired_set = set(paired_devices)
-        logger.info(f"Found {len(paired_set)} paired device(s) in Bluetooth")
+        logger.debug(f"Found {len(paired_set)} paired device(s) in Bluetooth")
 
         # Do not remove devices that are currently connected.
         connected_devices = bluetooth_scanner.get_all_connected_devices()
         connected_set = set(connected_devices)
         if connected_set:
-            logger.info(f"Found {len(connected_set)} connected device(s) in Bluetooth")
+            logger.debug(f"Found {len(connected_set)} connected device(s) in Bluetooth")
 
-        # Get all known devices from Convex
+        # Get all known devices from Convex (with timeout)
         convex_devices = get_known_devices()
+        if not convex_devices:
+            logger.debug("Skipping stale cleanup - no devices retrieved from Convex")
+            return
+            
         convex_macs = {device.get("macAddress") for device in convex_devices if device.get("macAddress")}
-        logger.info(f"Found {len(convex_macs)} device(s) in Convex database")
+        logger.debug(f"Found {len(convex_macs)} device(s) in Convex database")
 
         # Find devices that are paired but not in Convex
         stale_devices = paired_set - convex_macs - connected_set
@@ -195,7 +249,7 @@ def cleanup_stale_bluetooth_pairings() -> None:
                 except Exception as e:
                     logger.error(f"Failed to remove stale pairing {mac_address}: {e}")
         else:
-            logger.info("No stale Bluetooth pairings found")
+            logger.debug("No stale Bluetooth pairings found")
     except Exception as e:
         logger.error(f"Error during stale Bluetooth pairing cleanup: {e}")
 
@@ -222,8 +276,8 @@ def log_attendance(mac_address: str, name: str, status: str) -> bool:
     Returns:
         True if log was successful, False otherwise
     """
-    try:
-        result = convex_client.mutation(
+    def _mutation():
+        return get_convex_client().mutation(
             "devices:logAttendance",
             {
                 "userId": mac_address,
@@ -232,10 +286,20 @@ def log_attendance(mac_address: str, name: str, status: str) -> bool:
                 "deviceId": mac_address,
             },
         )
+    
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_mutation)
+            future.result(timeout=CONVEX_QUERY_TIMEOUT)
         logger.info(f"✓ Logged attendance: {name} -> {status}")
         return True
+    except TimeoutError:
+        logger.error(f"✗ Convex mutation timed out after {CONVEX_QUERY_TIMEOUT} seconds for attendance logging")
+        logger.info(f"  Attendance logging will be retried on next polling cycle")
+        return False
     except Exception as e:
         logger.error(f"✗ Error logging attendance for {mac_address}: {e}")
+        logger.info(f"  Attendance logging will be retried on next polling cycle")
         return False
 
 
@@ -253,6 +317,11 @@ def update_device_status(
     Returns:
         True if the update was successful, False otherwise
     """
+    def _mutation():
+        return get_convex_client().mutation(
+            "devices:updateDeviceStatus", {"macAddress": mac_address, "status": new_status}
+        )
+    
     try:
         new_status = "present" if is_connected else "absent"
         previous_status = (
@@ -267,10 +336,10 @@ def update_device_status(
             device_previous_status[mac_address] = new_status
             return True
 
-        result = convex_client.mutation(
-            "devices:updateDeviceStatus", {"macAddress": mac_address, "status": new_status}
-        )
-        logger.info(f"Updated device {mac_address} status to {new_status} -> {result}")
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_mutation)
+            result = future.result(timeout=CONVEX_QUERY_TIMEOUT)
+            logger.info(f"Updated device {mac_address} status to {new_status} -> {result}")
 
         # Log attendance only for registered devices (not pending)
         device = get_device_by_mac(mac_address)
@@ -283,8 +352,13 @@ def update_device_status(
         # Update previous status
         device_previous_status[mac_address] = new_status
         return True
+    except TimeoutError:
+        logger.error(f"Convex mutation timed out after {CONVEX_QUERY_TIMEOUT} seconds for {mac_address}")
+        logger.info(f"  Status update will be retried on next polling cycle")
+        return False
     except Exception as e:
         logger.error(f"Error updating device status for {mac_address}: {e}")
+        logger.info(f"  Status update will be retried on next polling cycle")
         return False
 
 
@@ -297,7 +371,7 @@ def check_and_update_devices() -> None:
     - Marks devices as absent when they disconnect
     - Cleans up expired pending devices at end of cycle
     """
-    global recently_connected
+    global failed_registrations
 
     # Get all connected Bluetooth devices
     connected_devices = scan_all_connected_devices()
@@ -310,6 +384,25 @@ def check_and_update_devices() -> None:
         logger.warning("No devices found in Convex database")
     else:
         logger.info(f"Found {len(devices)} known device(s) in Convex")
+
+    # PRE-SCAN RECONNECTION:
+    # Attempt to reconnect to any known, registered devices that are in range but disconnected.
+    # This prevents blocking on individual device checks later.
+    registered_macs = {
+        d.get("macAddress") 
+        for d in devices 
+        if d.get("macAddress") and not d.get("pendingRegistration")
+    }
+    
+    if registered_macs:
+        logger.info(f"Running auto-reconnect for {len(registered_macs)} registered device(s)...")
+        reconnect_results = bluetooth_scanner.auto_reconnect_paired_devices(whitelist_macs=registered_macs)
+        
+        # If any succeeded, refresh our connected list
+        if any(reconnect_results.values()):
+            logger.info("Some devices reconnected, refreshing connected list...")
+            connected_devices = scan_all_connected_devices()
+            connected_set = set(connected_devices)
 
     updated_count = 0
     newly_registered_count = 0
@@ -339,22 +432,35 @@ def check_and_update_devices() -> None:
                 )
                 if update_device_status(mac_address, True, current_status):
                     updated_count += 1
+                
+                # Identify if this was a recent reconnection
+                # Note: We can't easily know if it was *just* reconnected, but we can clear failed attempts
+                if mac_address in failed_connection_attempts:
+                     failed_connection_attempts.pop(mac_address, None)
             else:
                 logger.debug(f"No status change for {display_name} ({mac_address}): {current_status}")
+            
+            # Remove from failed registrations if device is now known
+            failed_registrations.discard(mac_address)
         else:
             # New device - register as pending with device name from Bluetooth
-            if mac_address not in recently_connected:
-                # Get device name from Bluetooth
-                device_name = bluetooth_scanner.get_device_name(mac_address)
+            # Check if we've tried registering this device before and failed
+            if mac_address in failed_registrations:
                 logger.info(
-                    f"New device detected: {mac_address} ({device_name or 'unknown'}) - registering as pending"
+                    f"Retrying registration for previously failed device: {mac_address}"
                 )
-                if register_new_device(mac_address, device_name):
-                    newly_registered_count += 1
-                    recently_connected.add(mac_address)
-
-    # Track connected devices for next cycle (remove old ones after 2 cycles)
-    recently_connected = connected_set
+            
+            # Get device name from Bluetooth
+            device_name = bluetooth_scanner.get_device_name(mac_address)
+            logger.info(
+                f"New device detected: {mac_address} ({device_name or 'unknown'}) - registering as pending"
+            )
+            if register_new_device(mac_address, device_name):
+                newly_registered_count += 1
+                failed_registrations.discard(mac_address)
+            else:
+                # Track failed registration for retry on next cycle
+                failed_registrations.add(mac_address)
 
     # Process known devices that are NOT connected
     for device in devices:
@@ -373,34 +479,13 @@ def check_and_update_devices() -> None:
         if mac_address not in connected_set:
             logger.info(f"Checking device: {display_name} ({mac_address})")
 
-            # Attempt auto-connect for registered devices; audio profiles are blocked by the agent.
-            if name and not device.get("pendingRegistration"):
-                paired_devices = bluetooth_scanner.get_paired_devices()
-                if mac_address in paired_devices:
-                    logger.info(f"Attempting auto-connect to registered device: {display_name}")
-                    if bluetooth_scanner.connect_device(mac_address):
-                        failed_connection_attempts.pop(mac_address, None)
-                        if current_status != "present":
-                            logger.info(f"Auto-connected to {display_name}, marking as present")
-                            if update_device_status(mac_address, True, current_status):
-                                updated_count += 1
-                        continue  # Skip marking as absent
-
-                    failed_connection_attempts[mac_address] = (
-                        failed_connection_attempts.get(mac_address, 0) + 1
-                    )
-                    failed_count = failed_connection_attempts[mac_address]
-                    logger.warning(
-                        f"Failed to auto-connect to {display_name} ({mac_address}) - "
-                        f"Attempt {failed_count}/{FAILED_CONNECTION_THRESHOLD}"
-                    )
-                    if failed_count >= FAILED_CONNECTION_THRESHOLD:
-                        logger.warning(
-                            f"Backing off auto-connect attempts for {display_name} ({mac_address})"
-                        )
-                        failed_connection_attempts.pop(mac_address, None)
-
-            # Device is not connected and couldn't auto-connect - mark as absent
+            # Device is not connected
+            # Attempting auto-connect is now handled in bulk at the start of the cycle
+            
+            # Check if this device has failed too many connection attempts (tracked by the scanner's cooldown)
+            # but we also track consecutive failures here for reporting if needed
+            
+            # Mark as absent
             new_status = "absent"
             if new_status != current_status:
                 logger.info(
@@ -414,6 +499,9 @@ def check_and_update_devices() -> None:
 
     # Clean up expired grace periods
     cleanup_expired_devices()
+    
+    # Clean up stale Bluetooth pairings (every cycle)
+    cleanup_stale_bluetooth_pairings()
 
     # Log summary
     if newly_registered_count > 0:
@@ -435,9 +523,10 @@ def run_presence_tracker() -> None:
     logger.info("Starting IEEE Presence Tracker")
     logger.info(f"Polling interval: {POLLING_INTERVAL} seconds")
     logger.info(f"Grace period for new devices: {GRACE_PERIOD_SECONDS} seconds")
+    logger.info(f"Convex query timeout: {CONVEX_QUERY_TIMEOUT} seconds")
 
-    # Cleanup stale Bluetooth pairings at startup
-    cleanup_stale_bluetooth_pairings()
+    # Skip startup cleanup to avoid hanging on Convex connection
+    # Stale Bluetooth pairings will be cleaned during polling cycles
 
     try:
         while True:
