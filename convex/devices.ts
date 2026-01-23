@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { action, mutation, query, internalMutation } from "./_generated/server";
 import { Doc } from "./_generated/dataModel";
+import { api } from "./_generated/api";
 
 const GRACE_PERIOD_SECONDS = 300;
 
@@ -64,6 +65,12 @@ export const upsertDevice = mutation({
         status: args.status,
         lastSeen: now,
       });
+      await ctx.db.insert("deviceLogs", {
+        deviceId: existingDevice._id,
+        changeType: "update",
+        timestamp: now,
+        details: `Name updated to: ${args.name}`
+      });
       return { ...existingDevice, name: args.name, status: args.status, lastSeen: now };
     } else {
       // Fix: New devices should be pending by default
@@ -76,6 +83,12 @@ export const upsertDevice = mutation({
         firstSeen: now,
         gracePeriodEnd,
         pendingRegistration: true,
+      });
+      await ctx.db.insert("deviceLogs", {
+        deviceId,
+        changeType: "create",
+        timestamp: now,
+        details: `Device created: ${args.name}`
       });
       return {
         _id: deviceId,
@@ -171,6 +184,12 @@ export const registerDevice = mutation({
       gracePeriodEnd: now,
       pendingRegistration: false,
     });
+    await ctx.db.insert("deviceLogs", {
+      deviceId,
+      changeType: "create",
+      timestamp: now,
+      details: `Device registered: ${args.name}`
+    });
 
     return {
       _id: deviceId,
@@ -213,6 +232,12 @@ export const registerPendingDevice = mutation({
       firstSeen: now,
       gracePeriodEnd,
       pendingRegistration: true,
+    });
+    await ctx.db.insert("deviceLogs", {
+      deviceId,
+      changeType: "create",
+      timestamp: now,
+      details: `Pending device created: ${deviceName || args.macAddress}`
     });
 
     return {

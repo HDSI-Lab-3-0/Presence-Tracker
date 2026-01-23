@@ -42,7 +42,7 @@ async function fetchLogs() {
 
     try {
         const adminPassword = sessionStorage.getItem('ieee_presence_password') || '';
-        allLogs = await window.convexClient.query("logs:getAllStatusLogs", { adminPassword });
+        allLogs = await window.convexClient.query("devices:getAttendanceLogs", { adminPassword });
         renderCurrentView();
     } catch (error) {
         console.error('Error fetching logs:', error);
@@ -79,7 +79,7 @@ function renderLogsByPerson(container) {
     const logsByPerson = {};
 
     allLogs.forEach(log => {
-        const personName = log.personName || 'Unknown';
+        const personName = log.userName || 'Unknown';
         if (!logsByPerson[personName]) {
             logsByPerson[personName] = [];
         }
@@ -136,12 +136,12 @@ function renderLogEntry(log) {
     return `
         <div class="log-entry">
             <div class="log-entry-header">
-                <div class="log-person">${escapeHtml(log.personName)}</div>
+                <div class="log-person">${escapeHtml(log.userName)}</div>
                 <div class="log-status"><span class="status-badge ${statusClass}">${statusText}</span></div>
             </div>
             <div class="log-entry-details">
                 <div class="log-time">${dateStr} at ${timeStr}</div>
-                <div class="log-device">${escapeHtml(log.macAddress)}</div>
+                <div class="log-device">${escapeHtml(log.deviceId)}</div>
             </div>
         </div>
     `;
@@ -175,11 +175,11 @@ window.exportToCSV = function() {
     let rows = [];
 
     if (currentView === 'by-person') {
-        csv = 'Person Name,MAC Address,Status,Timestamp\n';
+        csv = 'Person Name,Device ID,Status,Timestamp\n';
 
         const logsByPerson = {};
         allLogs.forEach(log => {
-            const personName = log.personName || 'Unknown';
+            const personName = log.userName || 'Unknown';
             if (!logsByPerson[personName]) {
                 logsByPerson[personName] = [];
             }
@@ -195,8 +195,8 @@ window.exportToCSV = function() {
             logs.forEach(log => {
                 const date = new Date(log.timestamp);
                 rows.push({
-                    personName: log.personName,
-                    macAddress: log.macAddress,
+                    personName: log.userName,
+                    deviceId: log.deviceId,
                     status: log.status,
                     timestamp: date.toISOString()
                 });
@@ -207,17 +207,17 @@ window.exportToCSV = function() {
             if (row.separator) {
                 csv += `"${escapeCsv(row.value)}"\n`;
             } else {
-                csv += `"${escapeCsv(row.personName)}","${escapeCsv(row.macAddress)}","${escapeCsv(row.status)}","${escapeCsv(row.timestamp)}"\n`;
+                csv += `"${escapeCsv(row.personName)}","${escapeCsv(row.deviceId)}","${escapeCsv(row.status)}","${escapeCsv(row.timestamp)}"\n`;
             }
         });
 
     } else {
-        csv = 'Person Name,MAC Address,Status,Timestamp\n';
+        csv = 'Person Name,Device ID,Status,Timestamp\n';
 
         const sortedLogs = [...allLogs].sort((a, b) => b.timestamp - a.timestamp);
         sortedLogs.forEach(log => {
             const date = new Date(log.timestamp);
-            csv += `"${escapeCsv(log.personName)}","${escapeCsv(log.macAddress)}","${escapeCsv(log.status)}","${escapeCsv(date.toISOString())}"\n`;
+            csv += `"${escapeCsv(log.userName)}","${escapeCsv(log.deviceId)}","${escapeCsv(log.status)}","${escapeCsv(date.toISOString())}"\n`;
         });
     }
 

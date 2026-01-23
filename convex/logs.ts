@@ -1,6 +1,27 @@
 import { v } from "convex/values";
-import { query } from "./_generated/server";
+import { mutation, query } from "./_generated/server";
 import { Doc } from "./_generated/dataModel";
+
+/**
+ * Log a device change event (create, update, status_change, etc.)
+ */
+export const logDeviceChange = mutation({
+  args: {
+    deviceId: v.id("devices"),
+    changeType: v.string(),
+    details: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    await ctx.db.insert("deviceLogs", {
+      deviceId: args.deviceId,
+      changeType: args.changeType,
+      timestamp: now,
+      details: args.details,
+    });
+    return { success: true };
+  },
+});
 
 /**
  * Fetch all device status change logs with device information joined.
@@ -17,7 +38,7 @@ export const getAllStatusLogs = query({
     }
 
     // Fetch all device logs
-    const logs = await ctx.db.query("deviceLogs").order("desc").collect();
+    const logs = await ctx.db.query("deviceLogs").withIndex("by_timestamp").order("desc").collect();
 
     // Fetch all devices to join information
     const devices = await ctx.db.query("devices").collect();
