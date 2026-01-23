@@ -943,8 +943,9 @@ body:not(.role-admin) .admin-only {
 
 .log-entry-header {
     display: flex;
-    justify-content: space-between;
+    justify-content: flex-start;
     align-items: center;
+    gap: 1rem;
     margin-bottom: 0.4rem;
 }
 
@@ -956,8 +957,9 @@ body:not(.role-admin) .admin-only {
 
 .log-entry-details {
     display: flex;
-    justify-content: space-between;
+    justify-content: flex-start;
     align-items: center;
+    gap: 1rem;
     font-size: 0.75rem;
     color: var(--text-secondary);
 }

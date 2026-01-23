@@ -174,7 +174,7 @@ function renderLogsByPerson(container) {
                 <span class="log-count">${personLogs.length} entries</span>
             </div>
             <div class="logs-list">
-                ${personLogs.map(log => renderLogEntry(log)).join('')}
+                ${personLogs.map(log => renderLogEntry(log, true)).join('')}
             </div>
         </div>
     `;
@@ -221,7 +221,7 @@ function renderLogsByDate(container) {
     container.innerHTML = html;
 }
 
-function renderLogEntry(log) {
+function renderLogEntry(log, hidePerson = false) {
     const date = new Date(log.timestamp);
     const dateStr = date.toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles' });
     const timeStr = date.toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles' });
@@ -231,12 +231,11 @@ function renderLogEntry(log) {
     return `
         <div class="log-entry">
             <div class="log-entry-header">
-                <div class="log-person">${escapeHtml(log.userName)}</div>
+                ${!hidePerson ? `<div class="log-person">${escapeHtml(log.userName)}</div>` : ''}
                 <div class="log-status"><span class="status-badge ${statusClass}">${statusText}</span></div>
             </div>
             <div class="log-entry-details">
                 <div class="log-time">${dateStr} at ${timeStr}</div>
-                <div class="log-device">${escapeHtml(log.deviceId)}</div>
             </div>
         </div>
     `;
