@@ -8,7 +8,9 @@ Bluetooth-based presence detection system using Convex backend, designed for Ras
 
 ## Quick Links
 
-- [Quick Start](#quick-start) - Get started in minutes
+- [Initial Setup](#initial-setup) - Get started in minutes
+- [Quick Start](#quick-start) - Detailed installation instructions
+- [Deploy to GitHub Pages](#deploy-web-dashboard-to-github-pages) - Host web dashboard for free
 - [Architecture](#architecture) - System overview and data flow
 - [Troubleshooting](#troubleshooting) - Common issues and solutions
 
@@ -208,6 +210,155 @@ docker-compose up -d
 # Access at http://localhost:3000 (or http://<pi-ip>:3000)
 ```
 
+### Deploy Web Dashboard to GitHub Pages
+
+You can automatically deploy the web dashboard to GitHub Pages using GitHub Actions. This provides free hosting with HTTPS and automatic deployments when changes are pushed to the `main` branch.
+
+**Setup Steps:**
+
+1. **Add GitHub Secrets**
+
+   Go to your repository **Settings > Secrets and variables > Actions** and add:
+
+   | Secret Name | Value | Required |
+   |-------------|-------|----------|
+   | `CONVEX_DEPLOYMENT_URL` | Your Convex backend URL (e.g., `https://chatty-akita-508.convex.cloud`) | ✅ Yes |
+   | `CONVEX_URL_MODE` | `convex` (default) or `selfhosted` | Optional |
+   | `CONVEX_SELF_HOSTED_URL` | Self-hosted Convex URL | Only for self-hosted |
+
+2. **Enable GitHub Pages**
+
+   Go to repository **Settings > Pages**:
+   - **Build and deployment** > **Source**: Select **GitHub Actions**
+   - The workflow will handle deployment automatically
+
+3. **Configure CORS in Convex**
+
+   Add your GitHub Pages URL to Convex CORS settings:
+
+   ```
+   https://<username>.github.io
+   ```
+
+   1. Go to [Convex dashboard](https://dashboard.convex.dev)
+   2. Select your deployment
+   3. Navigate to **Settings > CORS**
+   4. Add your GitHub Pages URL
+
+4. **Push and Deploy**
+
+   Push changes to `main` branch:
+   ```bash
+   git push origin main
+   ```
+
+   The workflow will automatically:
+   - Generate `config.js` with your Convex URL from secrets
+   - Deploy the frontend to GitHub Pages
+   - Provide the live URL in the workflow run logs
+
+5. **Access Your Dashboard**
+
+   Your dashboard will be available at:
+   ```
+   https://<username>.github.io/<repository-name>/
+   ```
+
+**Manual Deployment:**
+
+You can also manually trigger the deployment from GitHub Actions:
+1. Go to **Actions** tab
+2. Select **Deploy Website to GitHub Pages** workflow
+3. Click **Run workflow** > **Run workflow**
+
+**GitHub Actions Workflow:**
+
+The workflow file is located at `.github/workflows/deploy-website.yml`.
+
+Features:
+- ✅ Auto-deploys on push to `main`
+- ✅ Manual trigger available
+- ✅ Supports both Convex cloud and self-hosted deployments
+- ✅ Validates secrets before deployment
+- ✅ Free hosting with HTTPS
+
+**Comparing Deployment Options:**
+
+| Option | Use Case | Pros | Cons |
+|--------|----------|------|------|
+| **Docker** | Raspberry Pi/local hosting | No setup required, runs with tracker | Need Docker, manage updates manually |
+| **GitHub Pages** | Public web dashboard | Free, HTTPS, auto-deploys, CDN | Cannot access on offline network |
+
+## Initial Setup
+
+Follow these steps to get your presence tracker up and running:
+
+### 1. Set Up Convex Backend
+
+1. Create a free account at [convex.dev](https://convex.dev)
+2. Create a new deployment
+3. In your Convex dashboard, navigate to **Settings > Environment Variables** and add:
+   - **Required**: `AUTH_PASSWORD` - Set a password for regular user access (view-only)
+   - **Optional**: `ADMIN_PASSWORD` - Set a password for admin access (full permissions)
+4. In **Settings > CORS**, add your web dashboard URL:
+   - If using GitHub Pages: `https://<username>.github.io`
+   - If using Docker locally: `http://localhost:3000`
+
+### 2. Deploy the Web Dashboard
+
+Choose one of the deployment options:
+
+**Option A: GitHub Pages (Recommended)**
+1. Follow the [Deploy Web Dashboard to GitHub Pages](#deploy-web-dashboard-to-github-pages) section
+2. Add the `CONVEX_DEPLOYMENT_URL` secret in GitHub
+3. Push to `main` to trigger deployment
+
+**Option B: Docker**
+1. Set `CONVEX_DEPLOYMENT_URL` in your `.env` file
+2. Run `docker-compose up -d`
+3. Access at `http://localhost:3000`
+
+### 3. Connect to the Raspberry Pi
+
+1. SSH into your Raspberry Pi or connect directly
+2. Run the setup script:
+   ```bash
+   cd "/path/to/Presence-Tracker"
+   ./setup.sh
+   ```
+3. Select **Option 1: Full Install**
+4. Follow the prompts:
+   - Select deployment mode (Convex, self-hosted, or skip)
+   - Set your Bluetooth device name
+   - The script will handle all installation and configuration
+
+### 4. Login to the Web Dashboard
+
+1. Open your web dashboard in a browser:
+   - GitHub Pages: `https://<username>.github.io/<repository-name>/`
+   - Docker: `http://<pi-ip>:3000` or `http://localhost:3000`
+2. Enter the password you set in Step 1 (`AUTH_PASSWORD` or `ADMIN_PASSWORD`)
+3. **Important**: It may take up to a minute for the dashboard to fully load and connect to the backend
+
+### 5. Register Your Device
+
+1. Once logged in, click **"Scan for Devices"** to discover your Bluetooth device
+2. Find your device in the scan results and click **"Register"**
+3. Enter your **first name** and **last name**
+4. Click **"Save"** to complete registration
+
+**You're all set!** 🎉
+
+Your device will now be tracked for presence. The tracker will automatically:
+- Detect when your device is connected/present
+- Update the dashboard in real-time
+- Log attendance history
+
+**What's Next:**
+- Pair other devices and repeat Step 5 to register them
+- Configure Discord/Slack integrations for notifications (see dashboard settings)
+- Monitor attendance logs in the dashboard
+
 ## Environment Configuration
 
 Create a `.env` file by copying the example:
@@ -222,6 +373,29 @@ cp .env.example .env
 |----------|-------------|---------|
 | `CONVEX_DEPLOYMENT_URL` | Your Convex backend deployment URL (required) | `https://chatty-akita-508.convex.cloud` |
 | `ORGANIZATION_NAME` | Display name for your organization (e.g., "My Organization") | - |
+
+Note: `CONVEX_DEPLOYMENT_URL` is for the tracker/`.env` file. For the web dashboard, configure `CONVEX_DEPLOYMENT_URL` in GitHub Secrets (if using GitHub Pages) or as a Docker environment variable.
+
+### Convex Environment Variables (Authentication)
+
+The web dashboard uses password authentication to protect access. Configure these in your **Convex dashboard** under **Settings > Environment Variables**:
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `AUTH_PASSWORD` | Regular user password - provides view-only access | ✅ Yes |
+| `ADMIN_PASSWORD` | Admin password - provides full access to all features (edit, delete, manage) | Optional |
+
+**Setting up Authentication:**
+
+1. Go to your [Convex dashboard](https://dashboard.convex.dev)
+2. Select your deployment
+3. Navigate to **Settings > Environment Variables**
+4. Add `AUTH_PASSWORD` with your desired user password
+5. (Optional) Add `ADMIN_PASSWORD` for admin-level access
+
+**Access Levels:**
+- **User** (AUTH_PASSWORD): View device status, attendance logs, and run Bluetooth scans
+- **Admin** (ADMIN_PASSWORD): All user permissions plus device registration, editing, deletion, and integration management
 
 ### Presence Tracking Configuration
 

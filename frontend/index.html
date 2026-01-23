@@ -45,6 +45,9 @@
                 <h1 id="main-title">Presence Tracker</h1>
             </div>
             <div class="header-actions" style="display: flex; gap: 0.75rem; align-items: center;">
+                <button id="view-logs-btn" class="btn btn-secondary admin-only" onclick="showLogsView()">
+                    View Logs
+                </button>
                 <button class="btn btn-secondary" onclick="logout()">
                     Log Out
                 </button>
@@ -82,6 +85,22 @@
                 </div>
             </section>
         </main>
+
+        <!-- Logs View (Hidden by default) -->
+        <div id="logs-view" class="logs-view" style="display: none;">
+            <div class="logs-header">
+                <button class="btn btn-secondary" onclick="hideLogsView()">← Back</button>
+                <h2>Device Status Logs</h2>
+                <button class="btn btn-primary admin-only" onclick="exportToCSV()">Export CSV</button>
+            </div>
+            <div class="logs-tabs">
+                <button class="log-tab active" data-tab="by-person" onclick="switchTab('by-person')">By Person</button>
+                <button class="log-tab" data-tab="by-date" onclick="switchTab('by-date')">By Date</button>
+            </div>
+            <div class="logs-content" id="logs-content">
+                <div class="loading-state">Loading logs...</div>
+            </div>
+        </div>
     </div>
 
     <!-- Registration Modal -->
@@ -164,6 +183,7 @@
 
     <script src="./auth.js?v=3"></script>
     <script src="./app.js?v=3"></script>
+    <script src="./logs.js?v=3"></script>
     <script src="./integrations.js?v=3"></script>
 </body>
 

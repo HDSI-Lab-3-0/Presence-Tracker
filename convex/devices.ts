@@ -123,13 +123,12 @@ export const updateDeviceStatus = mutation({
 
     // Log status change if meaningful (e.g. absent <-> present)
     if (existingDevice.status !== args.status) {
-      // Optional: Log status changes. Might be too noisy.
-      // await ctx.db.insert("deviceLogs", {
-      //     deviceId: existingDevice._id,
-      //     changeType: "status_change",
-      //     timestamp: now,
-      //     details: `Status changed from ${existingDevice.status} to ${args.status}`
-      // });
+      await ctx.db.insert("deviceLogs", {
+        deviceId: existingDevice._id,
+        changeType: "status_change",
+        timestamp: now,
+        details: `Status changed from ${existingDevice.status} to ${args.status}`
+      });
     }
 
     await ctx.db.patch(existingDevice._id, {
