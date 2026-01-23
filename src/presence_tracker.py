@@ -59,6 +59,10 @@ GRACE_PERIOD_SECONDS = int(os.getenv("GRACE_PERIOD_SECONDS", "300"))
 # Presence TTL for recently seen devices (seconds)
 PRESENT_TTL_SECONDS = int(os.getenv("PRESENT_TTL_SECONDS", "120"))
 
+# Grace period for newly registered devices to enter polling cycle (seconds)
+# Ensures first-time registered devices are immediately tracked for connect/disconnect
+NEWLY_REGISTERED_GRACE_PERIOD = int(os.getenv("NEWLY_REGISTERED_GRACE_PERIOD", "120"))
+
 # Full probe interval (seconds): attempt connect+disconnect to each device
 FULL_PROBE_ENABLED = os.getenv("FULL_PROBE_ENABLED", "true").lower() in (
     "1",
@@ -445,6 +449,26 @@ def check_and_update_devices() -> None:
     # Track recently seen devices (connected or successfully pinged)
     for mac in connected_set | reconnected_success:
         recently_seen_devices[mac] = now
+
+    # Add newly registered devices to present_set to ensure they enter polling cycle immediately
+    # This fixes the bug where first-time registered devices are not properly tracked
+    for device in devices:
+        mac_address = device.get("macAddress")
+        if not mac_address:
+            continue
+        connected_since = device.get("connectedSince")
+        status = device.get("status")
+
+        # If device was just registered (has recent connectedSince) and status is "present"
+        # Always include it in present_set to add it to the polling cycle
+        if (connected_since and
+            status == "present" and
+            now - (connected_since / 1000) <= NEWLY_REGISTERED_GRACE_PERIOD):
+            recently_seen_devices[mac_address] = now
+            logger.debug(
+                f"Added newly registered device to present_set: {mac_address} "
+                f"(connectedSince: {connected_since / 1000:.1f}s ago)"
+            )
 
     present_set = {
         mac

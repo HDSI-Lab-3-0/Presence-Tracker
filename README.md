@@ -269,6 +269,15 @@ sudo usermod -a -G bluetooth $USER
 3. Check device Bluetooth is enabled and in range
 4. Some devices disconnect when locked (especially iOS)
 
+### Newly Registered Device Not Updating Immediately
+
+When you first register a device (transition from pending to registered), there is an automatic grace period (120 seconds by default) that ensures the device enters the polling cycle immediately. During this time:
+- The device will be tracked for connect/disconnect management
+- Presence status will update within the next polling cycle
+- The grace period prevents race conditions between device registration and Bluetooth polling
+
+If you need to adjust this grace period, set `NEWLY_REGISTERED_GRACE_PERIOD` in your `.env` file.
+
 ### iOS Specific Notes
 
 - iOS devices don't appear in Bluetooth scans when paired
