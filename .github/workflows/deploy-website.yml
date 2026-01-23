@@ -1,0 +1,73 @@
+name: Deploy Website to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # Allow manual trigger from GitHub Actions UI
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generate config.js
+        shell: bash
+        run: |
+          CONVEX_URL_MODE="${CONVEX_URL_MODE:-convex}"
+          
+          case "$CONVEX_URL_MODE" in
+            selfhosted)
+              CONVEX_URL="$CONVEX_SELF_HOSTED_URL"
+              ;;
+            convex|cloud|"")
+              CONVEX_URL="$CONVEX_DEPLOYMENT_URL"
+              ;;
+            *)
+              echo "Invalid CONVEX_URL_MODE: $CONVEX_URL_MODE"
+              exit 1
+              ;;
+          esac
+          
+          if [ -z "$CONVEX_URL" ]; then
+            echo "Error: Convex URL is empty. Set CONVEX_DEPLOYMENT_URL or CONVEX_SELF_HOSTED_URL secret."
+            exit 1
+          fi
+          
+          echo "window.CONVEX_URL = '$CONVEX_URL';" > frontend/config.js
+          echo "window.DEPLOYMENT_MODE = '$CONVEX_URL_MODE';" >> frontend/config.js
+          
+          echo "Generated config.js:"
+          cat frontend/config.js
+        env:
+          CONVEX_URL_MODE: ${{ secrets.CONVEX_URL_MODE }}
+          CONVEX_DEPLOYMENT_URL: ${{ secrets.CONVEX_DEPLOYMENT_URL }}
+          CONVEX_SELF_HOSTED_URL: ${{ secrets.CONVEX_SELF_HOSTED_URL }}
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: './frontend'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
