@@ -3,6 +3,13 @@ let allLogs = [];
 let currentView = 'by-person';
 let selectedPerson = null;
 let selectedDate = null;
+let personModeSelectedPerson = null;
+let dateModeSelectedDate = null;
+
+function convertToPST_PDT(timestamp) {
+    const date = new Date(timestamp);
+    return date.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' });
+}
 
 window.showLogsView = async function() {
     const mainApp = document.getElementById('main-app');
@@ -86,11 +93,13 @@ function populatePersonSelect() {
 
 function handlePersonChange(e) {
     selectedPerson = e.target.value;
+    personModeSelectedPerson = e.target.value;
     renderCurrentView();
 }
 
 function handleDateChange(e) {
     selectedDate = e.target.value;
+    dateModeSelectedDate = e.target.value;
     renderCurrentView();
 }
 
@@ -103,15 +112,25 @@ window.switchTab = function(tabName) {
 
     const personFilter = document.getElementById('person-filter');
     const dateFilter = document.getElementById('date-filter');
+    const personSelect = document.getElementById('person-select');
+    const datePicker = document.getElementById('date-picker');
 
     if (currentView === 'by-person') {
         personFilter.style.display = 'flex';
         dateFilter.style.display = 'none';
-        selectedDate = null;
+        dateModeSelectedDate = selectedDate;
+        selectedPerson = personModeSelectedPerson;
+        if (personSelect) {
+            personSelect.value = personModeSelectedPerson || '';
+        }
     } else {
         personFilter.style.display = 'none';
         dateFilter.style.display = 'flex';
-        selectedPerson = null;
+        personModeSelectedPerson = selectedPerson;
+        selectedDate = dateModeSelectedDate;
+        if (datePicker) {
+            datePicker.value = dateModeSelectedDate || '';
+        }
     }
 
     renderCurrentView();
@@ -169,10 +188,10 @@ function renderLogsByDate(container) {
     }
 
     const startDate = new Date(selectedDate);
-    startDate.setHours(0, 0, 0, 0);
+    startDate.setUTCHours(0, 0, 0, 0);
 
     const endDate = new Date(selectedDate);
-    endDate.setHours(23, 59, 59, 999);
+    endDate.setUTCHours(23, 59, 59, 999);
 
     const dateLogs = allLogs.filter(log => {
         const logDate = new Date(log.timestamp);
@@ -189,7 +208,7 @@ function renderLogsByDate(container) {
     let html = `
         <div class="date-view">
             <div class="date-header">
-                <strong>${escapeHtml(new Date(selectedDate).toLocaleDateString())}</strong>
+                <strong>${escapeHtml(new Date(selectedDate).toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles' }))}</strong>
                 <span class="log-count">${dateLogs.length} entries</span>
             </div>
             <div class="logs-list">
@@ -203,8 +222,8 @@ function renderLogsByDate(container) {
 
 function renderLogEntry(log) {
     const date = new Date(log.timestamp);
-    const dateStr = date.toLocaleDateString();
-    const timeStr = date.toLocaleTimeString();
+    const dateStr = date.toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles' });
+    const timeStr = date.toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles' });
     const statusClass = log.status === 'present' ? 'present' : 'absent';
     const statusText = log.status === 'present' ? 'Present' : 'Absent';
 
@@ -244,9 +263,9 @@ window.exportToCSV = function() {
             return;
         }
         const startDate = new Date(selectedDate);
-        startDate.setHours(0, 0, 0, 0);
+        startDate.setUTCHours(0, 0, 0, 0);
         const endDate = new Date(selectedDate);
-        endDate.setHours(23, 59, 59, 999);
+        endDate.setUTCHours(23, 59, 59, 999);
         logsToExport = allLogs.filter(log => {
             const logDate = new Date(log.timestamp);
             return logDate >= startDate && logDate <= endDate;
@@ -265,7 +284,8 @@ window.exportToCSV = function() {
     let csvContent = csv;
     sortedLogs.forEach(log => {
         const date = new Date(log.timestamp);
-        csvContent += `"${escapeCsv(log.userName)}","${escapeCsv(log.deviceId)}","${escapeCsv(log.status)}","${escapeCsv(date.toISOString())}"\n`;
+        const pacificDateStr = date.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' });
+        csvContent += `"${escapeCsv(log.userName)}","${escapeCsv(log.deviceId)}","${escapeCsv(log.status)}","${escapeCsv(pacificDateStr)}"\n`;
     });
 
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
