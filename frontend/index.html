@@ -96,6 +96,7 @@
             <div class="logs-tabs">
                 <button class="log-tab active" data-tab="by-person" onclick="switchTab('by-person')">By Person</button>
                 <button class="log-tab" data-tab="by-date" onclick="switchTab('by-date')">By Date</button>
+                <button class="log-tab" data-tab="all" onclick="switchTab('all')">All</button>
             </div>
             <div class="logs-filter-container" id="logs-filter-container">
                 <!-- Person Selection (shown in by-person mode) -->
@@ -109,6 +110,14 @@
                 <div class="logs-filter" id="date-filter" style="display: none;">
                     <label for="date-picker">Select Date:</label>
                     <input type="date" id="date-picker">
+                </div>
+                <!-- View Mode Selector (shown in all mode) -->
+                <div class="logs-filter" id="all-filter" style="display: none;">
+                    <label for="all-view-mode">View Mode:</label>
+                    <select id="all-view-mode">
+                        <option value="by-time">By Time</option>
+                        <option value="by-person-per-day">By Person Per Day</option>
+                    </select>
                 </div>
             </div>
             <div class="logs-content" id="logs-content">

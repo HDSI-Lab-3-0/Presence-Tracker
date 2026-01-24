@@ -5,6 +5,8 @@ let selectedPerson = null;
 let selectedDate = null;
 let personModeSelectedPerson = null;
 let dateModeSelectedDate = null;
+let allModeViewMode = 'by-time';
+let allModeSelectedViewMode = 'by-time';
 
 function convertToPST_PDT(timestamp) {
     const date = new Date(timestamp);
@@ -65,6 +67,7 @@ async function fetchLogs() {
 function setupEventListeners() {
     const personSelect = document.getElementById('person-select');
     const datePicker = document.getElementById('date-picker');
+    const allViewModeSelect = document.getElementById('all-view-mode');
 
     if (personSelect && !personSelect.dataset.setup) {
         personSelect.addEventListener('change', handlePersonChange);
@@ -74,6 +77,11 @@ function setupEventListeners() {
     if (datePicker && !datePicker.dataset.setup) {
         datePicker.addEventListener('change', handleDateChange);
         datePicker.dataset.setup = 'true';
+    }
+
+    if (allViewModeSelect && !allViewModeSelect.dataset.setup) {
+        allViewModeSelect.addEventListener('change', handleAllViewModeChange);
+        allViewModeSelect.dataset.setup = 'true';
     }
 }
 
@@ -104,6 +112,12 @@ function handleDateChange(e) {
     renderCurrentView();
 }
 
+function handleAllViewModeChange(e) {
+    allModeViewMode = e.target.value;
+    allModeSelectedViewMode = e.target.value;
+    renderCurrentView();
+}
+
 window.switchTab = function(tabName) {
     currentView = tabName;
 
@@ -113,24 +127,36 @@ window.switchTab = function(tabName) {
 
     const personFilter = document.getElementById('person-filter');
     const dateFilter = document.getElementById('date-filter');
+    const allFilter = document.getElementById('all-filter');
     const personSelect = document.getElementById('person-select');
     const datePicker = document.getElementById('date-picker');
+    const allViewModeSelect = document.getElementById('all-view-mode');
 
     if (currentView === 'by-person') {
         personFilter.style.display = 'flex';
         dateFilter.style.display = 'none';
+        allFilter.style.display = 'none';
         dateModeSelectedDate = selectedDate;
         selectedPerson = personModeSelectedPerson;
         if (personSelect) {
             personSelect.value = personModeSelectedPerson || '';
         }
-    } else {
+    } else if (currentView === 'by-date') {
         personFilter.style.display = 'none';
         dateFilter.style.display = 'flex';
+        allFilter.style.display = 'none';
         personModeSelectedPerson = selectedPerson;
         selectedDate = dateModeSelectedDate;
         if (datePicker) {
             datePicker.value = dateModeSelectedDate || '';
+        }
+    } else if (currentView === 'all') {
+        personFilter.style.display = 'none';
+        dateFilter.style.display = 'none';
+        allFilter.style.display = 'flex';
+        allModeViewMode = allModeSelectedViewMode;
+        if (allViewModeSelect) {
+            allViewModeSelect.value = allModeSelectedViewMode || 'by-time';
         }
     }
 
@@ -147,8 +173,14 @@ function renderCurrentView() {
 
     if (currentView === 'by-person') {
         renderLogsByPerson(logsContent);
-    } else {
+    } else if (currentView === 'by-date') {
         renderLogsByDate(logsContent);
+    } else if (currentView === 'all') {
+        if (allModeViewMode === 'by-time') {
+            renderLogsByTime(logsContent);
+        } else {
+            renderLogsByPersonPerDay(logsContent);
+        }
     }
 }
 
@@ -215,6 +247,107 @@ function renderLogsByDate(container) {
             <div class="logs-list">
                 ${dateLogs.map(log => renderLogEntry(log)).join('')}
             </div>
+        </div>
+    `;
+
+    container.innerHTML = html;
+}
+
+function renderLogsByTime(container) {
+    const sortedLogs = [...allLogs].sort((a, b) => b.timestamp - a.timestamp);
+
+    let html = `
+        <div class="all-time-view">
+            <div class="all-time-header">
+                <strong>All Logs</strong>
+                <span class="log-count">${sortedLogs.length} entries</span>
+            </div>
+            <div class="logs-list">
+                ${sortedLogs.map(log => renderLogEntry(log, false)).join('')}
+            </div>
+        </div>
+    `;
+
+    container.innerHTML = html;
+}
+
+function renderLogsByPersonPerDay(container) {
+    const persons = [...new Set(allLogs.map(log => log.userName).filter(Boolean))].sort();
+    
+    let html = '';
+    let totalEntries = 0;
+
+    persons.forEach(person => {
+        const personLogs = allLogs.filter(log => log.userName === person);
+        totalEntries += personLogs.length;
+
+        const dateGroups = {};
+        personLogs.forEach(log => {
+            const date = new Date(log.timestamp);
+            const dateKey = date.toLocaleDateString('en-US', {
+                timeZone: 'America/Los_Angeles',
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit'
+            });
+            if (!dateGroups[dateKey]) {
+                dateGroups[dateKey] = [];
+            }
+            dateGroups[dateKey].push(log);
+        });
+
+        const sortedDates = Object.keys(dateGroups).sort((a, b) => {
+            const dateA = new Date(a);
+            const dateB = new Date(b);
+            return dateB - dateA;
+        });
+
+        html += `
+            <div class="person-group-all">
+                <div class="person-header">
+                    <div class="person-info">
+                        <strong>${escapeHtml(person)}</strong>
+                    </div>
+                    <span class="log-count">${personLogs.length} entries</span>
+                </div>
+                <div class="person-logs">
+        `;
+
+        sortedDates.forEach(dateKey => {
+            const dateLogs = dateGroups[dateKey];
+            dateLogs.sort((a, b) => b.timestamp - a.timestamp);
+
+            html += `
+                <div class="date-group-all">
+                    <div class="date-group-header">
+                        <span class="date-label">${escapeHtml(dateKey)}</span>
+                        <span class="log-count">${dateLogs.length}</span>
+                    </div>
+                    <div class="logs-list">
+                        ${dateLogs.map(log => renderLogEntry(log, true)).join('')}
+                    </div>
+                </div>
+            `;
+        });
+
+        html += `
+                </div>
+            </div>
+        `;
+    });
+
+    if (html === '') {
+        container.innerHTML = '<div class="empty-state">No logs found.</div>';
+        return;
+    }
+
+    html = `
+        <div class="all-person-per-day-view">
+            <div class="all-view-header">
+                <strong>All Logs by Person Per Day</strong>
+                <span class="log-count">${totalEntries} total entries</span>
+            </div>
+            ${html}
         </div>
     `;
 

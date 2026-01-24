@@ -1079,3 +1079,70 @@ body:not(.role-admin) .admin-only {
     font-weight: 600;
     color: var(--text-main);
 }
+
+/* All Time View */
+.all-time-view {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+.all-time-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background: var(--bg-app);
+    border-bottom: 1px solid var(--border);
+}
+
+/* All Person Per Day View */
+.all-person-per-day-view {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+.all-view-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 1rem;
+    background: var(--bg-app);
+    border-bottom: 1px solid var(--border);
+}
+
+.person-group-all {
+    margin-bottom: 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+.person-group-all:last-child {
+    margin-bottom: 0;
+}
+
+.date-group-all {
+    border-bottom: 1px solid var(--border-light);
+}
+
+.date-group-all:last-child {
+    border-bottom: none;
+}
+
+.date-group-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 1rem;
+    background: var(--bg-app);
+    border-bottom: 1px solid var(--border-light);
+}
+
+.date-label {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+}
