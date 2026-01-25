@@ -1,5 +1,5 @@
 services:
-  frontend:
+  web-dashboard:
     build:
       context: .
       dockerfile: Dockerfile
