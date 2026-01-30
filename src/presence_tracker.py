@@ -563,13 +563,14 @@ def check_and_update_devices() -> None:
         else:
             display_name = f"[pending] {mac_address}"
 
-        is_present = mac_address in present_set
+        is_present_now = mac_address in present_set
         held_present_reasons: list[str] = []
+        streak = absence_miss_streaks.get(mac_address, 0)
 
-        if is_present:
+        if is_present_now:
             absence_miss_streaks.pop(mac_address, None)
         else:
-            streak = absence_miss_streaks.get(mac_address, 0) + 1
+            streak += 1
             absence_miss_streaks[mac_address] = streak
 
             if streak < ABSENCE_HYSTERESIS_CYCLES:
@@ -588,12 +589,17 @@ def check_and_update_devices() -> None:
                     "no presence signals detected this cycle (within silent timeout)"
                 )
 
-            if held_present_reasons:
-                is_present = True
+        final_is_present = is_present_now
+        if (
+            not is_present_now
+            and held_present_reasons
+            and current_status == "present"
+        ):
+            final_is_present = True
 
-        new_status = "present" if is_present else "absent"
+        new_status = "present" if final_is_present else "absent"
 
-        if held_present_reasons and new_status == "present" and current_status != "absent":
+        if held_present_reasons and new_status == "present" and current_status == "present":
             logger.debug(
                 "Holding %s (%s) as present due to %s",
                 display_name,
