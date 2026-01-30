@@ -784,38 +784,6 @@ uv run src/presence_tracker.py
 - Disable full probing if not needed: `FULL_PROBE_ENABLED=false`
 - Check for Bluetooth adapter issues
 
-### Performance Optimizations
-
-The system includes several performance optimizations to improve device detection throughput:
-
-#### Optimized Probe Timeouts
-- **PROBE_CONNECT_TIMEOUT_SECONDS**: Reduced from 10s to 5s for probe operations
-- **Impact**: Doubles throughput for missing devices during probing
-- **Affects**: `probe_devices()` and `auto_reconnect_paired_devices()` functions
-- **Configuration**: Set via `PROBE_CONNECT_TIMEOUT_SECONDS` environment variable
-
-#### In-Range Detection Optimization
-- **Current**: Uses 5-second discovery windows that block the main loop
-- **Trade-off**: Blocking approach is safer for stability but slower
-- **Future**: Could be moved to separate thread or always-on discovery (higher CPU)
-
-#### Serial vs Parallel Operations
-- **Current**: Serial D-Bus operations to avoid thread safety issues
-- **Rationale**: D-Bus is not thread-safe in Python
-- **Alternative**: bluetoothctl fallback could be parallelized
-
-To tune performance for your environment:
-```bash
-# Faster probing (reduced timeouts)
-PROBE_CONNECT_TIMEOUT_SECONDS=3
-
-# Slower but more reliable probing
-PROBE_CONNECT_TIMEOUT_SECONDS=10
-
-# Adjust discovery scan time
-IN_RANGE_SCAN_SECONDS=3
-```
-
 ### Setup Issues
 
 #### Bun Command Not Found After Setup Script
