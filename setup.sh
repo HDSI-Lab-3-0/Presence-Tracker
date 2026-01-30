@@ -762,6 +762,10 @@ setup_environment() {
 generate_services() {
     log_step "Generating systemd service files..."
     
+    # Define deployment directory
+    DEPLOY_DIR="$PROJECT_DIR/deploy"
+    mkdir -p "$DEPLOY_DIR"
+    
     # Generate presence-tracker.service
     log_info "Generating presence-tracker.service..."
     sudo bash -c "cat > /etc/systemd/system/presence-tracker.service << 'EOF'
@@ -778,7 +782,7 @@ EnvironmentFile=$PROJECT_DIR/.env
 Environment=\"PATH=$BUN_INSTALL/bin:/usr/local/bin:/usr/bin:/bin\"
 Environment=\"BUN_INSTALL=$BUN_INSTALL\"
 ExecStartPre=/bin/bash -c 'source $HOME/.bashrc || true'
-ExecStart=$USER_HOME/.local/bin/uv run $SRC_DIR/presence_tracker.py
+ExecStart=$USER_HOME/.local/bin/uv run $DEPLOY_DIR/presence_tracker.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -799,7 +803,7 @@ Requires=bluetooth.service
 
 [Service]
 Type=simple
-ExecStart=$USER_HOME/.local/bin/uv run --project \"$PROJECT_DIR\" \"$SRC_DIR/bluetooth_agent.py\"
+ExecStart=$USER_HOME/.local/bin/uv run --project \"$PROJECT_DIR\" \"$DEPLOY_DIR/bluetooth_agent.py\"
 WorkingDirectory=$PROJECT_DIR
 User=root
 Group=bluetooth
@@ -1068,6 +1072,22 @@ setup_selfhosted() {
 # Function to restart services
 restart_services() {
     log_step "Restarting systemd services..."
+    
+    # Update Python scripts from src to latest version
+    log_info "Updating Python scripts from $SRC_DIR..."
+    
+    # Define deployment directory for Python scripts
+    DEPLOY_DIR="$PROJECT_DIR/deploy"
+    mkdir -p "$DEPLOY_DIR"
+    
+    # Copy Python scripts from src to deploy directory
+    if [ -d "$SRC_DIR" ]; then
+        log_info "Copying Python scripts to $DEPLOY_DIR..."
+        cp -f "$SRC_DIR"/*.py "$DEPLOY_DIR/" 2>/dev/null || true
+        log_info "Python scripts updated successfully"
+    else
+        log_warn "Source directory $SRC_DIR not found, skipping script update"
+    fi
     
     # Reload systemd daemon
     log_info "Reloading systemd daemon..."
