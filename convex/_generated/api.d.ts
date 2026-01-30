@@ -13,6 +13,7 @@ import type * as crons from "../crons.js";
 import type * as devices from "../devices.js";
 import type * as fixPendingDevices from "../fixPendingDevices.js";
 import type * as integrations from "../integrations.js";
+import type * as logs from "../logs.js";
 import type * as notifications from "../notifications.js";
 
 import type {
@@ -27,6 +28,7 @@ declare const fullApi: ApiFromModules<{
   devices: typeof devices;
   fixPendingDevices: typeof fixPendingDevices;
   integrations: typeof integrations;
+  logs: typeof logs;
   notifications: typeof notifications;
 }>;
 

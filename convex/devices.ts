@@ -330,9 +330,23 @@ export const deleteDevice = mutation({
     id: v.id("devices"),
   },
   handler: async (ctx, args) => {
-    // Deletion disabled - devices should never be deleted
-    console.log(`[deleteDevice] Deletion attempted for ${args.id} but deletion is disabled`);
-    return { success: false, message: "Device deletion is disabled" };
+    const device = await ctx.db.get(args.id);
+    if (!device) {
+      return { success: false, message: "Device not found" };
+    }
+
+    const relatedLogs = await ctx.db
+      .query("deviceLogs")
+      .withIndex("by_deviceId", (q) => q.eq("deviceId", args.id))
+      .collect();
+
+    for (const log of relatedLogs) {
+      await ctx.db.delete(log._id);
+    }
+
+    await ctx.db.delete(args.id);
+
+    return { success: true };
   },
 });
 
