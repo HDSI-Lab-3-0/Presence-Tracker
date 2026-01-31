@@ -22,11 +22,11 @@ export const updatePresenceNotifications = internalAction({
 
             let message = "";
             if (userList.length === 0) {
-                message = "Project Space is currently empty.";
+                message = "No one is is currently in the Lab";
             } else {
                 const header = integration.type === "discord"
-                    ? "**Currently in Project Space:**"
-                    : "Currently in Project Space:";
+                    ? "**Currently in the Lab:**"
+                    : "Currently in the Lab:";
 
                 message = `${header}\n` + userList.map(n => `• ${n}`).join("\n");
             }
