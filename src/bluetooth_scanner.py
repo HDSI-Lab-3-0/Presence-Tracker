@@ -43,6 +43,9 @@ CONNECT_TIMEOUT_SECONDS = int(os.getenv("CONNECT_TIMEOUT_SECONDS", "10"))
 # How long to run bluetoothctl scan for in-range detection (seconds)
 IN_RANGE_SCAN_SECONDS = int(os.getenv("IN_RANGE_SCAN_SECONDS", "5"))
 
+# Optional staggered scan chunk length (seconds) for faster partial refreshes
+SCAN_STAGGER_SECONDS = int(os.getenv("SCAN_STAGGER_SECONDS", "2"))
+
 # Whether to disconnect after a successful auto-reconnect to free connection slots
 DISCONNECT_AFTER_SUCCESS = os.getenv("DISCONNECT_AFTER_SUCCESS", "true").lower() in (
     "1",
@@ -58,6 +61,102 @@ ALLOW_PAIRED_PROBE_ON_EMPTY_SCAN = os.getenv(
 
 # Cap reconnection attempts per cycle to avoid long stalls
 MAX_RECONNECT_PER_CYCLE = int(os.getenv("MAX_RECONNECT_PER_CYCLE", "4"))
+
+# Thread pool size for probing / verification work
+THREAD_PROBE_WORKERS = max(1, int(os.getenv("THREAD_PROBE_WORKERS", "8")))
+
+# Cache TTL for bluetoothctl info calls (seconds)
+DEVICE_INFO_CACHE_SECONDS = int(os.getenv("DEVICE_INFO_CACHE_SECONDS", "5"))
+
+
+class DeviceInfoCache:
+    """Simple in-memory cache for bluetoothctl info responses."""
+
+    def __init__(self, ttl_seconds: int) -> None:
+        self.ttl = max(0, ttl_seconds)
+        self._cache: dict[str, tuple[float, str]] = {}
+        self._lock = Lock()
+        self._hits = 0
+        self._misses = 0
+        self._refreshes = 0
+
+    def get(self, mac_address: str) -> Optional[str]:
+        if self.ttl <= 0:
+            return None
+        now = time.time()
+        with self._lock:
+            entry = self._cache.get(mac_address)
+            if not entry:
+                self._misses += 1
+                return None
+            ts, value = entry
+            if now - ts > self.ttl:
+                self._cache.pop(mac_address, None)
+                self._misses += 1
+                return None
+            self._hits += 1
+            return value
+
+    def set(self, mac_address: str, data: str) -> None:
+        if self.ttl <= 0:
+            return
+        with self._lock:
+            self._cache[mac_address] = (time.time(), data)
+            self._refreshes += 1
+
+    def snapshot(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "size": len(self._cache),
+                "hits": self._hits,
+                "misses": self._misses,
+                "refreshes": self._refreshes,
+            }
+
+
+_device_info_cache = DeviceInfoCache(DEVICE_INFO_CACHE_SECONDS)
+
+logger.info(
+    "Bluetooth scanner config -> connect_timeout=%ss, scan_window=%ss, "
+    "scan_stagger=%ss, probe_workers=%s, info_cache_ttl=%ss",
+    CONNECT_TIMEOUT_SECONDS,
+    IN_RANGE_SCAN_SECONDS,
+    SCAN_STAGGER_SECONDS,
+    THREAD_PROBE_WORKERS,
+    DEVICE_INFO_CACHE_SECONDS,
+)
+
+
+def _bluetoothctl_info(mac_address: str) -> Optional[str]:
+    """Fetch bluetoothctl info output, using the cache when possible."""
+
+    cached = _device_info_cache.get(mac_address)
+    if cached is not None:
+        return cached
+
+    try:
+        result = subprocess.run(
+            ["bluetoothctl", "info", mac_address],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(f"Timeout fetching info for {mac_address}")
+        return None
+    except FileNotFoundError:
+        logger.error("bluetoothctl not found. Bluetooth may not be available.")
+        return None
+    except Exception as exc:
+        logger.error(f"Error fetching info for {mac_address}: {exc}")
+        return None
+
+    if result.returncode != 0:
+        logger.debug(f"Failed to fetch info for {mac_address}: {result.stderr.strip()}")
+        return None
+
+    _device_info_cache.set(mac_address, result.stdout)
+    return result.stdout
 
 
 def _device_info_indicates_in_range(info_output: str) -> bool:
@@ -131,36 +230,17 @@ def check_device_connected(mac_address: str) -> bool:
     Returns:
         True if the device is connected, False otherwise
     """
-    try:
-        # Use bluetoothctl to check if device is connected
-        result = subprocess.run(
-            ["bluetoothctl", "info", mac_address],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-
-        if result.returncode != 0:
-            logger.debug(f"Device {mac_address} not found or bluetoothctl error")
-            return False
-
-        # Check if "Connected: yes" is in the output
-        if "Connected: yes" in result.stdout:
-            logger.debug(f"Device {mac_address} is connected")
-            return True
-        else:
-            logger.debug(f"Device {mac_address} is not connected")
-            return False
-
-    except subprocess.TimeoutExpired:
-        logger.warning(f"Timeout checking connection for {mac_address}")
+    info = _bluetoothctl_info(mac_address)
+    if not info:
+        logger.debug(f"No bluetoothctl info available for {mac_address}")
         return False
-    except FileNotFoundError:
-        logger.error("bluetoothctl not found. Bluetooth may not be available.")
-        return False
-    except Exception as e:
-        logger.error(f"Error checking device connection: {e}")
-        return False
+
+    if _device_info_indicates_in_range(info):
+        logger.debug(f"Device {mac_address} is connected (cache-backed)")
+        return True
+
+    logger.debug(f"Device {mac_address} is not connected (cache-backed)")
+    return False
 
 
 def scan_for_devices() -> dict[str, str]:
@@ -211,42 +291,20 @@ def get_device_name(mac_address: str) -> Optional[str]:
     Returns:
         The device name if found, None otherwise
     """
-    try:
-        result = subprocess.run(
-            ["bluetoothctl", "info", mac_address],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-
-        if result.returncode != 0:
-            logger.debug(f"Device {mac_address} not found")
-            logger.debug(f"bluetoothctl stderr: {result.stderr}")
-            return None
-
-        # Log full output for debugging
-        logger.info(f"bluetoothctl info for {mac_address}:\n{result.stdout}")
-
-        # Parse the output to find the device name
-        for line in result.stdout.split("\n"):
-            if "Name:" in line:
-                name = line.split(":", 1)[1].strip()
-                if name:
-                    logger.info(f"✓ Device {mac_address} name found: '{name}'")
-                    return name
-
-        logger.warning(f"✗ No Name field found for device {mac_address}")
+    info = _bluetoothctl_info(mac_address)
+    if not info:
+        logger.debug(f"No bluetoothctl info available when fetching name for {mac_address}")
         return None
 
-    except subprocess.TimeoutExpired:
-        logger.warning(f"✗ Timeout getting name for {mac_address}")
-        return None
-    except FileNotFoundError:
-        logger.error("✗ bluetoothctl not found. Bluetooth may not be available.")
-        return None
-    except Exception as e:
-        logger.error(f"✗ Error getting device name: {e}")
-        return None
+    for line in info.split("\n"):
+        if "Name:" in line:
+            name = line.split(":", 1)[1].strip()
+            if name:
+                logger.info(f"✓ Device {mac_address} name found: '{name}'")
+                return name
+
+    logger.warning(f"✗ No Name field found for device {mac_address}")
+    return None
 
 
 def scan_paired_devices() -> dict[str, str]:
@@ -310,9 +368,10 @@ def get_all_connected_devices() -> list[str]:
         List of MAC addresses of connected devices
     """
     connected_devices: list[str] = []
+    verification_results: dict[str, bool] = {}
+    start_time = time.perf_counter()
 
     try:
-        # Directly get connected devices using new bluetoothctl syntax
         result = subprocess.run(
             ["bluetoothctl", "devices", "Connected"],
             capture_output=True,
@@ -324,8 +383,6 @@ def get_all_connected_devices() -> list[str]:
             logger.error("Failed to get connected devices")
             return []
 
-        # Extract MAC addresses from connected devices
-        # Output format: "Device XX:XX:XX:XX:XX:XX Device Name"
         for line in result.stdout.split("\n"):
             line = line.strip()
             if line.startswith("Device "):
@@ -333,9 +390,21 @@ def get_all_connected_devices() -> list[str]:
                 if len(parts) >= 2:
                     mac_address = parts[1]
                     connected_devices.append(mac_address)
-                    logger.debug(f"Connected device: {mac_address}")
 
-        logger.info(f"Found {len(connected_devices)} connected device(s)")
+        if connected_devices:
+            verification_results = verify_devices_connected(connected_devices)
+            connected_devices = [mac for mac, ok in verification_results.items() if ok]
+        duration = time.perf_counter() - start_time
+        cache_snapshot = _device_info_cache.snapshot()
+        logger.info(
+            "Connected devices discovered=%s verified=%s in %.2fs (cache hits=%s misses=%s refreshes=%s)",
+            len(verification_results) or len(connected_devices),
+            len(connected_devices),
+            duration,
+            cache_snapshot.get("hits", 0),
+            cache_snapshot.get("misses", 0),
+            cache_snapshot.get("refreshes", 0),
+        )
         return connected_devices
 
     except subprocess.TimeoutExpired:
@@ -680,23 +749,65 @@ def probe_devices(mac_addresses: list[str], disconnect_after: bool = True) -> di
     
     if not mac_addresses:
         return results
-    
-    # Determine concurrency limit - use MAX_RECONNECT_PER_CYCLE or reasonable default
-    max_workers = MAX_RECONNECT_PER_CYCLE if MAX_RECONNECT_PER_CYCLE > 0 else min(len(mac_addresses), 4)
-    
-    # Use ThreadPoolExecutor for concurrent connection attempts
+
+    max_workers = min(len(mac_addresses), THREAD_PROBE_WORKERS)
+    start = time.perf_counter()
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # Submit all connection tasks
         future_to_mac = {
             executor.submit(_probe_single_device, mac_address, disconnect_after): mac_address
             for mac_address in mac_addresses
         }
-        
-        # Collect results as they complete
+
         for future in as_completed(future_to_mac):
-            mac_address, success = future.result()
-            results[mac_address] = success
-    
+            mac_address = future_to_mac[future]
+            try:
+                mac, success = future.result()
+                results[mac] = success
+            except Exception as exc:
+                logger.error(f"Probe task failed for {mac_address}: {exc}")
+                results[mac_address] = False
+
+    duration = time.perf_counter() - start
+    successes = sum(1 for success in results.values() if success)
+    logger.debug(
+        "Probe batch complete -> total=%s success=%s workers=%s duration=%.2fs",
+        len(results),
+        successes,
+        max_workers,
+        duration,
+    )
+    return results
+
+
+def verify_devices_connected(mac_addresses: list[str]) -> dict[str, bool]:
+    """Concurrent helper to confirm device connectivity state."""
+
+    results: dict[str, bool] = {}
+    if not mac_addresses:
+        return results
+
+    start = time.perf_counter()
+    max_workers = min(len(mac_addresses), THREAD_PROBE_WORKERS)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(check_device_connected, mac): mac for mac in mac_addresses
+        }
+        for future in as_completed(future_map):
+            mac = future_map[future]
+            try:
+                results[mac] = future.result()
+            except Exception as exc:
+                logger.error(f"Error verifying device {mac}: {exc}")
+                results[mac] = False
+
+    duration = time.perf_counter() - start
+    logger.debug(
+        "Verified %s device(s) in %.2fs using %s worker(s)",
+        len(results),
+        duration,
+        max_workers,
+    )
     return results
 
 
@@ -721,18 +832,32 @@ def scan_for_devices_in_range() -> set[str]:
     except Exception as e:
         logger.debug(f"Error getting connected devices: {e}")
 
-    # Method 2: Use pybluez to discover visible devices (less reliable but still connection-based)
-    try:
-        logger.debug("Scanning for discoverable devices using pybluez...")
-        discovered_devices = bluetooth.discover_devices(
-            duration=5, lookup_names=False, flush_cache=True
-        )
-        devices_in_range.update(discovered_devices)
-        logger.debug(f"Found {len(discovered_devices)} discoverable device(s)")
-    except bluetooth.BluetoothError as e:
-        logger.debug(f"Pybluez scan error: {e}")
-    except Exception as e:
-        logger.debug(f"Unexpected error during pybluez scan: {e}")
+    # Method 2: Staggered pybluez scans for rapid detection
+    total_window = max(1, IN_RANGE_SCAN_SECONDS)
+    chunk_seconds = max(1, min(SCAN_STAGGER_SECONDS, total_window))
+    scan_deadline = time.time() + total_window
+
+    while time.time() < scan_deadline:
+        try:
+            remaining = max(1, int(scan_deadline - time.time()))
+            duration = min(chunk_seconds, remaining)
+            logger.debug(
+                "Scanning for discoverable devices using pybluez (chunk=%ss)...",
+                duration,
+            )
+            discovered_devices = bluetooth.discover_devices(
+                duration=duration, lookup_names=False, flush_cache=True
+            )
+            devices_in_range.update(discovered_devices)
+            logger.debug(f"Chunk discovered {len(discovered_devices)} device(s)")
+        except bluetooth.BluetoothError as e:
+            logger.debug(f"Pybluez scan error: {e}")
+            break
+        except Exception as e:
+            logger.debug(f"Unexpected error during pybluez scan: {e}")
+            break
+        if len(discovered_devices) == 0 and duration < chunk_seconds:
+            break
 
     logger.debug(f"Total devices in range (connection-based): {len(devices_in_range)}")
     return devices_in_range

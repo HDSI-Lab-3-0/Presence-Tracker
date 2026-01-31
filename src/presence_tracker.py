@@ -3,7 +3,7 @@ import time
 import logging
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 import convex
 from dotenv import load_dotenv
 import bluetooth_scanner
@@ -74,6 +74,16 @@ ALL_SILENT_ABSENCE_CYCLES = max(0, int(os.getenv("ALL_SILENT_ABSENCE_CYCLES", "2
 # Ensures first-time registered devices are immediately tracked for connect/disconnect
 NEWLY_REGISTERED_GRACE_PERIOD = int(os.getenv("NEWLY_REGISTERED_GRACE_PERIOD", "120"))
 
+# Additional presence smoothing configuration
+PRESENCE_RECHECK_INTERVAL_SECONDS = int(
+    os.getenv("PRESENCE_RECHECK_INTERVAL_SECONDS", "30")
+)
+RECHECK_RESULT_TTL_SECONDS = int(os.getenv("RECHECK_RESULT_TTL_SECONDS", "60"))
+PRESENCE_SIGNAL_DECAY_SECONDS = max(
+    1, int(os.getenv("PRESENCE_SIGNAL_DECAY_SECONDS", "120"))
+)
+PRESENCE_CONFIDENCE_MIN = float(os.getenv("PRESENCE_CONFIDENCE_MIN", "0.4"))
+
 # Full probe interval (seconds): attempt connect+disconnect to each device
 FULL_PROBE_ENABLED = os.getenv("FULL_PROBE_ENABLED", "true").lower() in (
     "1",
@@ -120,6 +130,11 @@ POSITIVE_DETECTION_CONFIRMATIONS = max(1, int(os.getenv("POSITIVE_DETECTION_CONF
 # Track consecutive cycles where a device was missing from the presence set
 absence_miss_streaks: dict[str, int] = {}
 
+# Pending and recent absence recheck tracking
+pending_absence_rechecks: dict[str, float] = {}
+recent_recheck_results: dict[str, tuple[float, bool]] = {}
+device_confidence_scores: dict[str, float] = {}
+
 # Track consecutive polling cycles where no presence signals were observed
 silent_cycle_streak = 0
 
@@ -136,6 +151,85 @@ CONVEX_QUERY_TIMEOUT = 10
 convex_responsive = True
 consecutive_timeouts = 0
 MAX_CONSECUTIVE_TIMEOUTS = 3
+
+
+def _prune_recheck_state(now: float) -> None:
+    """Remove expired recheck state to avoid stale decisions."""
+
+    expired = [
+        mac
+        for mac, (ts, _) in recent_recheck_results.items()
+        if now - ts > RECHECK_RESULT_TTL_SECONDS
+    ]
+    for mac in expired:
+        recent_recheck_results.pop(mac, None)
+
+
+def _should_attempt_recheck(
+    mac_address: str, now: float, current_status: Optional[str]
+) -> bool:
+    """Determine whether a device should trigger an immediate bluetoothctl recheck."""
+
+    last_request = pending_absence_rechecks.get(mac_address)
+    if last_request and now - last_request < PRESENCE_RECHECK_INTERVAL_SECONDS:
+        return False
+
+    last_recheck = recent_recheck_results.get(mac_address)
+    if last_recheck and now - last_recheck[0] <= RECHECK_RESULT_TTL_SECONDS:
+        return False
+
+    # Only recheck devices that were recently seen or are still marked present
+    if current_status == "present":
+        return True
+
+    last_signal = last_presence_signal.get(mac_address)
+    if last_signal and now - last_signal <= PRESENCE_SIGNAL_DECAY_SECONDS:
+        return True
+
+    streak = absence_miss_streaks.get(mac_address, 0)
+    return streak < ABSENCE_HYSTERESIS_CYCLES
+
+
+def _perform_absence_rechecks(candidates: set[str]) -> dict[str, bool]:
+    """Run concurrent rechecks for candidate devices and record results."""
+
+    if not candidates:
+        return {}
+
+    results = bluetooth_scanner.verify_devices_connected(sorted(candidates))
+    timestamp = time.time()
+    for mac, success in results.items():
+        pending_absence_rechecks[mac] = timestamp
+        recent_recheck_results[mac] = (timestamp, success)
+    return results
+
+
+def _calculate_presence_confidence(
+    mac_address: str, now: float, signal_detected: bool
+) -> float:
+    """Compute a confidence score [0-1] for a device being present."""
+
+    if signal_detected:
+        score = 1.0
+    else:
+        score = 0.0
+        last_signal = last_presence_signal.get(mac_address)
+        if last_signal:
+            age = now - last_signal
+            if age <= PRESENCE_SIGNAL_DECAY_SECONDS:
+                score = max(score, 1 - (age / PRESENCE_SIGNAL_DECAY_SECONDS))
+
+        recheck_entry = recent_recheck_results.get(mac_address)
+        if recheck_entry:
+            ts, success = recheck_entry
+            if now - ts <= RECHECK_RESULT_TTL_SECONDS:
+                if success:
+                    score = max(score, 0.9)
+                else:
+                    score = min(score, 0.1)
+
+    device_confidence_scores[mac_address] = score
+    return score
 
 
 def get_known_devices() -> list[dict[str, Any]]:
@@ -459,6 +553,7 @@ def check_and_update_devices() -> None:
     reconnected_success: set[str] = set()
 
     now = time.time()
+    _prune_recheck_state(now)
 
     # Always use full probe mode (connect + disconnect) to check presence
     if registered_macs and FULL_PROBE_ENABLED:
@@ -474,7 +569,7 @@ def check_and_update_devices() -> None:
 
     global silent_cycle_streak
 
-    presence_signals_this_cycle = connected_set | reconnected_success
+    presence_signals_this_cycle: set[str] = connected_set | reconnected_success
 
     if presence_signals_this_cycle:
         if silent_cycle_streak:
@@ -529,6 +624,31 @@ def check_and_update_devices() -> None:
 
     logger.info(f"Present devices (connected/recently seen): {len(present_set)} device(s)")
 
+    # Identify devices that need a quick bluetoothctl recheck before declaring absence
+    recheck_candidates: set[str] = set()
+    for device in devices:
+        mac_address = device.get("macAddress")
+        if not mac_address or mac_address in present_set:
+            continue
+        current_status = device.get("status") or "unknown"
+        if _should_attempt_recheck(mac_address, now, current_status):
+            recheck_candidates.add(mac_address)
+
+    if recheck_candidates:
+        logger.debug(f"Scheduling {len(recheck_candidates)} absence recheck(s)")
+    recheck_results = _perform_absence_rechecks(recheck_candidates)
+    recheck_successes = {mac for mac, success in recheck_results.items() if success}
+
+    if recheck_successes:
+        logger.info(
+            "Rechecks recovered %d device(s) before absence flip", len(recheck_successes)
+        )
+        presence_signals_this_cycle.update(recheck_successes)
+        for mac in recheck_successes:
+            recently_seen_devices[mac] = now
+            last_presence_signal[mac] = now
+            present_set.add(mac)
+
     updated_count = 0
     newly_registered_count = 0
 
@@ -569,17 +689,19 @@ def check_and_update_devices() -> None:
         else:
             display_name = f"[pending] {mac_address}"
 
-        is_present_now = mac_address in present_set
+        signal_detected = mac_address in presence_signals_this_cycle
+        is_present_now = signal_detected
         held_present_reasons: list[str] = []
         streak = absence_miss_streaks.get(mac_address, 0)
 
-        if is_present_now:
+        if signal_detected:
             # Reset absence streak
             absence_miss_streaks.pop(mac_address, None)
-            
+            pending_absence_rechecks.pop(mac_address, None)
+
             # Increment positive detection counter
             consecutive_positive_detections[mac_address] = consecutive_positive_detections.get(mac_address, 0) + 1
-            
+
             # Check if we have enough confirmations to consider device present
             if consecutive_positive_detections[mac_address] < POSITIVE_DETECTION_CONFIRMATIONS:
                 is_present_now = False
@@ -589,7 +711,7 @@ def check_and_update_devices() -> None:
         else:
             # Reset positive detection counter
             consecutive_positive_detections[mac_address] = 0
-            
+
             # Increment absence streak
             streak += 1
             absence_miss_streaks[mac_address] = streak
@@ -610,13 +732,18 @@ def check_and_update_devices() -> None:
                     "no presence signals detected this cycle (within silent timeout)"
                 )
 
+            if mac_address in recheck_candidates and mac_address not in recheck_successes:
+                held_present_reasons.append("recent recheck failure")
+
         final_is_present = is_present_now
+        confidence = _calculate_presence_confidence(mac_address, now, signal_detected)
         if (
-            not is_present_now
-            and held_present_reasons
+            not final_is_present
             and current_status == "present"
+            and confidence >= PRESENCE_CONFIDENCE_MIN
         ):
             final_is_present = True
+            held_present_reasons.append(f"confidence {confidence:.2f}")
 
         new_status = "present" if final_is_present else "absent"
 
@@ -638,7 +765,13 @@ def check_and_update_devices() -> None:
             if update_device_status(mac_address, final_is_present, current_status):
                 updated_count += 1
         else:
-            logger.debug(f"No status change for {display_name} ({mac_address}): {current_status}")
+            logger.debug(
+                "No status change for %s (%s): %s (confidence %.2f)",
+                display_name,
+                mac_address,
+                current_status,
+                device_confidence_scores.get(mac_address, 0.0),
+            )
             device_previous_status[mac_address] = new_status
 
     # Optionally disconnect devices to avoid hitting adapter connection limits

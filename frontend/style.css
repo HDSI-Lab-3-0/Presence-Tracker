@@ -517,26 +517,57 @@ body {
 }
 
 /* Integrations */
+#integrations-list {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+}
+
+@media (max-width: 640px) {
+    #integrations-list {
+        grid-template-columns: 1fr;
+    }
+}
+
+#integrations-modal .modal-content {
+    max-width: 720px;
+    width: 90%;
+}
+
 .integration-card {
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 1rem;
-    margin-bottom: 1rem;
-    background: #F8FAFC;
+    padding: 1.25rem;
+    background: var(--bg-card);
+    display: flex;
+    flex-direction: column;
 }
 
 .integration-card h4 {
-    margin-bottom: 0.75rem;
-    font-size: 0.9rem;
+    margin-bottom: 1rem;
+    font-size: 0.85rem;
     text-transform: uppercase;
     color: var(--text-secondary);
+    letter-spacing: 0.05em;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border-light);
 }
 
-.form-actions {
+.integration-card .form-group {
+    margin-bottom: 1rem;
+}
+
+.integration-card .form-group:last-of-type {
+    margin-bottom: 0;
+}
+
+.integration-card .form-actions {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-top: 1rem;
+    margin-top: auto;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border-light);
 }
 
 /* Toggle Switch */
