@@ -37,7 +37,8 @@ RECONNECT_COOLDOWN = 30
 # L2PING configuration for passive detection
 L2PING_TIMEOUT_SECONDS = int(os.getenv("L2PING_TIMEOUT_SECONDS", "2"))
 L2PING_COUNT = int(os.getenv("L2PING_COUNT", "1"))
-L2PING_CONCURRENT_WORKERS = int(os.getenv("L2PING_CONCURRENT_WORKERS", "10"))
+# Keep concurrency low (2-3) to avoid "Too many links" errors from saturating the Bluetooth adapter
+L2PING_CONCURRENT_WORKERS = int(os.getenv("L2PING_CONCURRENT_WORKERS", "2"))
 
 # Name request timeout for fallback detection
 NAME_REQUEST_TIMEOUT_SECONDS = int(os.getenv("NAME_REQUEST_TIMEOUT_SECONDS", "3"))
@@ -175,10 +176,12 @@ def l2ping_device(mac_address: str, count: int = None, timeout: int = None) -> b
         if success:
             logger.debug(f"l2ping success for {mac_address}")
         else:
-            # Check for permission error
+            # Check for common errors
             stderr = result.stderr.strip().lower()
             if "permission" in stderr or "operation not permitted" in stderr:
                 logger.warning(f"l2ping permission denied for {mac_address} - run with sudo or set CAP_NET_RAW")
+            elif "too many links" in stderr:
+                logger.debug(f"l2ping failed for {mac_address}: Bluetooth adapter connection limit reached")
             else:
                 logger.debug(f"l2ping failed for {mac_address}: {result.stderr.strip() or result.stdout.strip()}")
         return success
@@ -198,6 +201,29 @@ def _l2ping_single(mac_address: str) -> tuple[str, bool]:
     return (mac_address, l2ping_device(mac_address))
 
 
+def _get_active_connection_count() -> int:
+    """Get the number of active Bluetooth ACL connections."""
+    try:
+        result = subprocess.run(
+            ["hcitool", "con"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return 0
+        # Count lines starting with "< ACL" or containing "handle"
+        lines = [l for l in result.stdout.split("\n") if "ACL" in l and "handle" in l]
+        return len(lines)
+    except Exception as e:
+        logger.debug(f"Error getting connection count: {e}")
+        return 0
+
+
+# Maximum ACL connections a typical Bluetooth adapter supports
+MAX_BLUETOOTH_CONNECTIONS = 7
+
+
 def batch_l2ping_devices(mac_addresses: list[str]) -> dict[str, bool]:
     """
     Ping multiple devices concurrently using l2ping.
@@ -213,8 +239,21 @@ def batch_l2ping_devices(mac_addresses: list[str]) -> dict[str, bool]:
     if not mac_addresses:
         return results
     
-    max_workers = min(len(mac_addresses), L2PING_CONCURRENT_WORKERS)
+    # Check if adapter has available connection slots for l2ping
+    active_connections = _get_active_connection_count()
+    available_slots = max(0, MAX_BLUETOOTH_CONNECTIONS - active_connections)
+    
+    if available_slots == 0:
+        logger.warning(
+            f"Skipping l2ping batch: Bluetooth adapter saturated with {active_connections} connections"
+        )
+        # Return all as failed so fallback methods are used
+        return {mac: False for mac in mac_addresses}
+    
+    # Limit concurrency to available slots
+    max_workers = min(len(mac_addresses), L2PING_CONCURRENT_WORKERS, available_slots)
     start = time.perf_counter()
+    logger.debug(f"l2ping batch starting with {max_workers} workers ({active_connections} existing connections)")
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_mac = {
