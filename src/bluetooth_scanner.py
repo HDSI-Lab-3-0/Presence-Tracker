@@ -51,8 +51,9 @@ DISCONNECT_AFTER_SUCCESS = os.getenv("DISCONNECT_AFTER_SUCCESS", "true").lower()
 )
 
 # Whether to probe paired devices if scan finds nothing in range
+# Setting this to false will prevent false presence detection when scan fails
 ALLOW_PAIRED_PROBE_ON_EMPTY_SCAN = os.getenv(
-    "ALLOW_PAIRED_PROBE_ON_EMPTY_SCAN", "true"
+    "ALLOW_PAIRED_PROBE_ON_EMPTY_SCAN", "false"
 ).lower() in ("1", "true", "yes")
 
 # Cap reconnection attempts per cycle to avoid long stalls
@@ -63,12 +64,38 @@ def _device_info_indicates_in_range(info_output: str) -> bool:
     """
     Heuristic to decide if a device is currently in range based on bluetoothctl info output.
 
-    We treat a device as "in range" if it's connected or has a recent RSSI/TxPower.
+    We treat a device as "in range" if:
+    1. It's currently connected, or
+    2. It has a recent RSSI value that indicates proximity (stronger than -80 dBm)
     """
+    # If device is connected, it's definitely in range
     if "Connected: yes" in info_output:
         return True
-    if "RSSI:" in info_output or "TxPower:" in info_output:
-        return True
+        
+    # Check for RSSI value and ensure it indicates proximity
+    if "RSSI:" in info_output:
+        # Extract RSSI value
+        for line in info_output.split('\n'):
+            if "RSSI:" in line:
+                try:
+                    # Extract the numeric value
+                    rssi_str = line.split("RSSI:")[1].strip()
+                    rssi = int(rssi_str)
+                    
+                    # RSSI threshold for "in range" - typical Bluetooth range:
+                    # -50 to -30 dBm: Very close (few meters)
+                    # -80 to -50 dBm: Medium range
+                    # < -80 dBm: Far/weak signal
+                    if rssi > -80:  # Only consider devices with reasonable signal strength
+                        logger.debug(f"Device in range with RSSI: {rssi} dBm")
+                        return True
+                    else:
+                        logger.debug(f"Device has weak RSSI: {rssi} dBm, considered out of range")
+                        return False
+                except (ValueError, IndexError) as e:
+                    logger.debug(f"Could not parse RSSI value: {e}")
+                    
+    # TxPower alone is not a reliable indicator of proximity
     return False
 
 
