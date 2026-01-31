@@ -65,6 +65,9 @@ MAX_RECONNECT_PER_CYCLE = int(os.getenv("MAX_RECONNECT_PER_CYCLE", "4"))
 # Thread pool size for probing / verification work
 THREAD_PROBE_WORKERS = max(1, int(os.getenv("THREAD_PROBE_WORKERS", "8")))
 
+# Max concurrent Bluetooth connections during probing (Bluetooth adapters typically limit to 7 ACL connections)
+PROBE_CONCURRENT_CONNECTIONS = max(1, int(os.getenv("PROBE_CONCURRENT_CONNECTIONS", "3")))
+
 # Cache TTL for bluetoothctl info calls (seconds)
 DEVICE_INFO_CACHE_SECONDS = int(os.getenv("DEVICE_INFO_CACHE_SECONDS", "5"))
 
@@ -118,18 +121,22 @@ _device_info_cache = DeviceInfoCache(DEVICE_INFO_CACHE_SECONDS)
 
 logger.info(
     "Bluetooth scanner config -> connect_timeout=%ss, scan_window=%ss, "
-    "scan_stagger=%ss, probe_workers=%s, info_cache_ttl=%ss",
+    "scan_stagger=%ss, probe_workers=%s, probe_concurrent=%s, info_cache_ttl=%ss",
     CONNECT_TIMEOUT_SECONDS,
     IN_RANGE_SCAN_SECONDS,
     SCAN_STAGGER_SECONDS,
     THREAD_PROBE_WORKERS,
+    PROBE_CONCURRENT_CONNECTIONS,
     DEVICE_INFO_CACHE_SECONDS,
 )
 
 
 def _bluetoothctl_info(mac_address: str) -> Optional[str]:
     """Fetch bluetoothctl info output, using the cache when possible."""
-
+    if not _is_valid_mac(mac_address):
+        logger.error(f"Invalid MAC address format: {mac_address}")
+        return None
+    
     cached = _device_info_cache.get(mac_address)
     if cached is not None:
         return cached
@@ -430,6 +437,10 @@ def trust_device(mac_address: str) -> bool:
     Returns:
         True if the device was trusted successfully, False otherwise
     """
+    if not _is_valid_mac(mac_address):
+        logger.error(f"Invalid MAC address format: {mac_address}")
+        return False
+    
     try:
         result = subprocess.run(
             ["bluetoothctl", "trust", mac_address],
@@ -478,6 +489,19 @@ def is_device_trusted(mac_address: str) -> bool:
         return False
 
 
+def _is_valid_mac(mac_address: str) -> bool:
+    """Validate MAC address format (XX:XX:XX:XX:XX:XX)."""
+    if not mac_address or len(mac_address) != 17:
+        return False
+    parts = mac_address.split(":")
+    if len(parts) != 6:
+        return False
+    for part in parts:
+        if len(part) != 2 or not all(c in "0123456789ABCDEFabcdef" for c in part):
+            return False
+    return True
+
+
 def connect_device(mac_address: str) -> bool:
     """
     Attempt to connect to a Bluetooth device.
@@ -488,11 +512,13 @@ def connect_device(mac_address: str) -> bool:
     Returns:
         True if connected successfully, False otherwise
     """
+    if not _is_valid_mac(mac_address):
+        logger.error(f"Invalid MAC address format: {mac_address}")
+        return False
+    
     try:
-        # First ensure the device is trusted
-        if not is_device_trusted(mac_address):
-            logger.info(f"Device {mac_address} not trusted, trusting now...")
-            trust_device(mac_address)
+        # Trust device unconditionally (idempotent operation)
+        trust_device(mac_address)
 
         logger.info(f"Attempting to connect to {mac_address}...")
         result = subprocess.run(
@@ -526,6 +552,10 @@ def disconnect_device(mac_address: str) -> bool:
     Returns:
         True if disconnected successfully, False otherwise
     """
+    if not _is_valid_mac(mac_address):
+        logger.error(f"Invalid MAC address format: {mac_address}")
+        return False
+    
     try:
         logger.info(f"Disconnecting from {mac_address}...")
         result = subprocess.run(
@@ -535,12 +565,18 @@ def disconnect_device(mac_address: str) -> bool:
             timeout=10,
         )
 
-        if "Successful disconnected" in result.stdout or not check_device_connected(mac_address):
+        if "Successful disconnected" in result.stdout:
             logger.info(f"Successfully disconnected from {mac_address}")
             return True
         else:
-            logger.debug(f"Could not disconnect from {mac_address}: {result.stdout.strip()}")
-            return False
+            # Don't trust cache - verify directly with fresh check
+            is_connected = _bluetoothctl_info(mac_address)
+            if is_connected and "Connected: yes" in is_connected:
+                logger.debug(f"Could not disconnect from {mac_address}: {result.stdout.strip()}")
+                return False
+            else:
+                logger.info(f"Device {mac_address} already disconnected")
+                return True
 
     except subprocess.TimeoutExpired:
         logger.warning(f"Timeout disconnecting from {mac_address}")
@@ -559,6 +595,10 @@ def remove_device(mac_address: str) -> bool:
     Returns:
         True if the device was successfully removed, False otherwise
     """
+    if not _is_valid_mac(mac_address):
+        logger.error(f"Invalid MAC address format: {mac_address}")
+        return False
+    
     try:
         result = subprocess.run(
             ["bluetoothctl", "remove", mac_address],
@@ -644,12 +684,21 @@ def _can_attempt_reconnection(mac_address: str) -> bool:
 def _record_connection_attempt(mac_address: str) -> None:
     """
     Record a connection attempt for cooldown tracking.
-
-    Args:
-        mac_address: The MAC address of the device
+    Also performs periodic cleanup to prevent unbounded growth.
     """
     with _connection_state_lock:
         _last_connection_attempts[mac_address] = time.time()
+        # Periodic cleanup: if dict is large, remove old entries
+        if len(_last_connection_attempts) > 100:
+            current_time = time.time()
+            to_remove = [
+                mac for mac, attempt_time in _last_connection_attempts.items()
+                if current_time - attempt_time > RECENT_ATTEMPT_WINDOW
+            ]
+            for mac in to_remove:
+                del _last_connection_attempts[mac]
+            if to_remove:
+                logger.debug(f"Cleaned up {len(to_remove)} old connection attempts")
 
 
 def _cleanup_old_attempts() -> None:
@@ -750,7 +799,7 @@ def probe_devices(mac_addresses: list[str], disconnect_after: bool = True) -> di
     if not mac_addresses:
         return results
 
-    max_workers = min(len(mac_addresses), THREAD_PROBE_WORKERS)
+    max_workers = min(len(mac_addresses), PROBE_CONCURRENT_CONNECTIONS)
     start = time.perf_counter()
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:

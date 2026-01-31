@@ -153,6 +153,36 @@ consecutive_timeouts = 0
 MAX_CONSECUTIVE_TIMEOUTS = 3
 
 
+def _prune_device_state(registered_macs: set[str], now: float) -> None:
+    """Remove state for devices that are no longer registered."""
+    global failed_connection_attempts, device_previous_status
+    global last_presence_signal, consecutive_positive_detections
+    global absence_miss_streaks, device_confidence_scores
+    
+    # Find MACs to remove (present in state but not in registered devices)
+    all_state_keys = (
+        set(failed_connection_attempts.keys()) |
+        set(device_previous_status.keys()) |
+        set(last_presence_signal.keys()) |
+        set(consecutive_positive_detections.keys()) |
+        set(absence_miss_streaks.keys()) |
+        set(device_confidence_scores.keys())
+    )
+    
+    to_remove = all_state_keys - registered_macs
+    
+    for mac in to_remove:
+        failed_connection_attempts.pop(mac, None)
+        device_previous_status.pop(mac, None)
+        last_presence_signal.pop(mac, None)
+        consecutive_positive_detections.pop(mac, None)
+        absence_miss_streaks.pop(mac, None)
+        device_confidence_scores.pop(mac, None)
+    
+    if to_remove:
+        logger.debug(f"Pruned state for {len(to_remove)} removed device(s)")
+
+
 def _prune_recheck_state(now: float) -> None:
     """Remove expired recheck state to avoid stale decisions."""
 
@@ -240,17 +270,33 @@ def get_known_devices() -> list[dict[str, Any]]:
     Returns:
         List of device dictionaries with macAddress, name, status, and lastSeen fields
     """
+    global convex_responsive, consecutive_timeouts
+    
     def _query():
         return get_convex_client().query("devices:getDevices")
+    
+    if not convex_responsive and consecutive_timeouts >= MAX_CONSECUTIVE_TIMEOUTS:
+        logger.warning(f"Convex temporarily unavailable ({consecutive_timeouts} consecutive timeouts), skipping query")
+        return []
     
     try:
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(_query)
             result = future.result(timeout=CONVEX_QUERY_TIMEOUT)
             logger.info(f"Retrieved {len(result)} devices from Convex")
+            # Reset timeout counter on success
+            if consecutive_timeouts > 0:
+                consecutive_timeouts = 0
+                convex_responsive = True
+                logger.info("Convex connection recovered")
             return result
     except TimeoutError:
-        logger.error(f"Convex query timed out after {CONVEX_QUERY_TIMEOUT} seconds")
+        consecutive_timeouts += 1
+        if consecutive_timeouts >= MAX_CONSECUTIVE_TIMEOUTS:
+            convex_responsive = False
+            logger.error(f"Convex query timed out ({consecutive_timeouts}x) - entering circuit breaker mode")
+        else:
+            logger.error(f"Convex query timed out after {CONVEX_QUERY_TIMEOUT} seconds ({consecutive_timeouts}/{MAX_CONSECUTIVE_TIMEOUTS})")
         return []
     except Exception as e:
         logger.error(f"Error fetching devices from Convex: {e}")
@@ -459,7 +505,8 @@ def log_attendance(mac_address: str, name: str, status: str) -> bool:
 
 
 def update_device_status(
-    mac_address: str, is_connected: bool, current_status: str | None = None
+    mac_address: str, is_connected: bool, current_status: str | None = None,
+    device_info: dict[str, Any] | None = None
 ) -> bool:
     """
     Update a device's status in Convex using the updateDeviceStatus function.
@@ -468,6 +515,8 @@ def update_device_status(
     Args:
         mac_address: The MAC address of the device to update
         is_connected: True if the device is present (connected), False if absent
+        current_status: Optional current status to avoid extra lookup
+        device_info: Optional device dict to avoid redundant Convex query
 
     Returns:
         True if the update was successful, False otherwise
@@ -497,7 +546,8 @@ def update_device_status(
             logger.info(f"Updated device {mac_address} status to {new_status} -> {result}")
 
         # Log attendance only for registered devices (not pending)
-        device = get_device_by_mac(mac_address)
+        # Use device_info if provided, otherwise fetch from Convex
+        device = device_info if device_info is not None else get_device_by_mac(mac_address)
         if device and not device.get("pendingRegistration"):
             name = device.get("name", mac_address)
             if device.get("firstName") and device.get("lastName"):
@@ -762,7 +812,7 @@ def check_and_update_devices() -> None:
                 f"Status changed for {display_name} ({mac_address}): "
                 f"{current_status} -> {new_status}"
             )
-            if update_device_status(mac_address, final_is_present, current_status):
+            if update_device_status(mac_address, final_is_present, current_status, device):
                 updated_count += 1
         else:
             logger.debug(
@@ -773,6 +823,9 @@ def check_and_update_devices() -> None:
                 device_confidence_scores.get(mac_address, 0.0),
             )
             device_previous_status[mac_address] = new_status
+
+    # Clean up state for devices that are no longer registered
+    _prune_device_state(registered_macs, now)
 
     # Optionally disconnect devices to avoid hitting adapter connection limits
     if DISCONNECT_CONNECTED_AFTER_CYCLE and connected_set:
