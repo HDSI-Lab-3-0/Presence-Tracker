@@ -87,8 +87,8 @@ async function handleDiscord(
 
     const now = new Date();
     const unixTimestamp = Math.floor(now.getTime() / 1000);
-    // Discord native timestamp format for relative time (e.g., "Today at 3:15 PM")
-    const discordTimestamp = `<t:${unixTimestamp}:R>`;
+    const relativeDiscordTimestamp = `<t:${unixTimestamp}:R>`;
+    const embedTimestamp = now.toISOString();
 
     let payload: any;
 
@@ -111,14 +111,16 @@ async function handleDiscord(
         }
 
         payload = {
+            content: null,
             embeds: [{
                 title: `${displayName} Status`,
                 description: `Currently ${presentNames.length} people IN`,
                 color: 3066993,
                 fields: fields,
                 footer: {
-                    text: `Last updated: ${discordTimestamp}`,
+                    text: "Last updated",
                 },
+                timestamp: embedTimestamp,
             }],
         };
     } else {
@@ -134,8 +136,8 @@ async function handleDiscord(
             content += "\n";
         }
 
-        content += `\n_Last updated: ${discordTimestamp}_`;
-        payload = { content };
+        content += `\n_Last updated: ${relativeDiscordTimestamp}_`;
+        payload = { content, embeds: [] };
     }
 
     let messageSent = false;

@@ -570,6 +570,66 @@ body {
     border-top: 1px solid var(--border-light);
 }
 
+.checkbox-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.checkbox-group {
+    margin-bottom: 0;
+}
+
+.checkbox-control {
+    display: flex;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius);
+    background: var(--bg-app);
+    cursor: pointer;
+    transition: border-color 0.2s, background-color 0.2s;
+}
+
+.checkbox-control:hover {
+    border-color: var(--primary);
+    background: #E0F2FE;
+}
+
+.checkbox-control input {
+    margin-top: 0.2rem;
+}
+
+.checkbox-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+
+.checkbox-title {
+    font-weight: 600;
+    font-size: 0.9rem;
+    color: var(--text-main);
+}
+
+.checkbox-description {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+@media (max-width: 520px) {
+    .integration-card .form-actions {
+        flex-direction: column;
+        gap: 0.75rem;
+        align-items: flex-start;
+    }
+
+    .checkbox-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
 /* Toggle Switch */
 .switch {
     display: flex;

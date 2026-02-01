@@ -1,13 +1,16 @@
+import json
 import os
 import time
 import logging
+from collections import deque
+from pathlib import Path
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from typing import Any, Optional
 import convex
 from dotenv import load_dotenv
 import bluetooth_scanner
-from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
 # Load environment variables
 load_dotenv()
@@ -57,46 +60,29 @@ POLLING_INTERVAL = 5
 GRACE_PERIOD_SECONDS = int(os.getenv("GRACE_PERIOD_SECONDS", "300"))
 
 # Presence TTL for recently seen devices (seconds)
-# Increased to 45s to give more grace period with passive detection
 PRESENT_TTL_SECONDS = int(os.getenv("PRESENT_TTL_SECONDS", "45"))
 
-# Require at least one positive presence signal per cycle before marking any device absent
-REQUIRE_PRESENCE_SIGNAL_FOR_ABSENCE = os.getenv(
-    "REQUIRE_PRESENCE_SIGNAL_FOR_ABSENCE", "true"
-).lower() in ("1", "true", "yes")
+# Adaptive smoothing / diagnostics configuration
+def _env_flag(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).lower() in ("1", "true", "yes", "on")
 
-# Require N consecutive absence detections before flipping a device to absent
-ABSENCE_HYSTERESIS_CYCLES = max(1, int(os.getenv("ABSENCE_HYSTERESIS_CYCLES", "2")))
 
-# Allow absence flips after this many consecutive "all silent" cycles (0 means don't wait)
-ALL_SILENT_ABSENCE_CYCLES = max(0, int(os.getenv("ALL_SILENT_ABSENCE_CYCLES", "2")))
+ENABLE_DEVICE_DIAGNOSTICS = _env_flag("ENABLE_DEVICE_DIAGNOSTICS", "false")
+ENABLE_ADAPTIVE_HYSTERESIS = _env_flag("ENABLE_ADAPTIVE_HYSTERESIS", "true")
+ABSENCE_HOLD_SECONDS = int(os.getenv("ABSENCE_HOLD_SECONDS", "120"))
+ABSENCE_CONSECUTIVE_MISS_THRESHOLD = int(os.getenv("ABSENCE_CONSECUTIVE_MISS_THRESHOLD", "3"))
+FLAP_MONITOR_WINDOW_SECONDS = int(os.getenv("FLAP_MONITOR_WINDOW_SECONDS", "3600"))
+FLAP_ALERT_THRESHOLD = int(os.getenv("FLAP_ALERT_THRESHOLD", "4"))
+ENABLE_AUTO_FREEZE_ON_FLAP = _env_flag("ENABLE_AUTO_FREEZE_ON_FLAP", "true")
+AUTO_FREEZE_DURATION_SECONDS = int(os.getenv("AUTO_FREEZE_DURATION_SECONDS", "300"))
+DEVICE_OVERRIDE_FILE = os.getenv("DEVICE_OVERRIDE_FILE", "config/device_overrides.json")
+DEVICE_OVERRIDE_REFRESH_SECONDS = int(os.getenv("DEVICE_OVERRIDE_REFRESH_SECONDS", "30"))
 
-# Grace period for newly registered devices to enter polling cycle (seconds)
-# Ensures first-time registered devices are immediately tracked for connect/disconnect
-NEWLY_REGISTERED_GRACE_PERIOD = int(os.getenv("NEWLY_REGISTERED_GRACE_PERIOD", "120"))
+# Retry cadence for publishing newly seen devices to Convex (seconds)
+REGISTRATION_RETRY_SECONDS = int(os.getenv("REGISTRATION_RETRY_SECONDS", "5"))
 
-# Additional presence smoothing configuration
-PRESENCE_RECHECK_INTERVAL_SECONDS = int(
-    os.getenv("PRESENCE_RECHECK_INTERVAL_SECONDS", "30")
-)
-RECHECK_RESULT_TTL_SECONDS = int(os.getenv("RECHECK_RESULT_TTL_SECONDS", "60"))
-PRESENCE_SIGNAL_DECAY_SECONDS = max(
-    1, int(os.getenv("PRESENCE_SIGNAL_DECAY_SECONDS", "120"))
-)
-PRESENCE_CONFIDENCE_MIN = float(os.getenv("PRESENCE_CONFIDENCE_MIN", "0.4"))
-
-# Full probe interval (seconds): attempt connect+disconnect to each device
-FULL_PROBE_ENABLED = os.getenv("FULL_PROBE_ENABLED", "true").lower() in (
-    "1",
-    "true",
-    "yes",
-)
-FULL_PROBE_INTERVAL_SECONDS = int(os.getenv("FULL_PROBE_INTERVAL_SECONDS", "60"))
-FULL_PROBE_DISCONNECT_AFTER = os.getenv("FULL_PROBE_DISCONNECT_AFTER", "true").lower() in (
-    "1",
-    "true",
-    "yes",
-)
+# How long to keep retrying to publish a device after it disconnects (seconds)
+UNPUBLISHED_DEVICE_TTL_SECONDS = int(os.getenv("UNPUBLISHED_DEVICE_TTL_SECONDS", "600"))
 
 
 
@@ -110,41 +96,28 @@ DISCONNECT_CONNECTED_AFTER_CYCLE = os.getenv("DISCONNECT_CONNECTED_AFTER_CYCLE",
 # Track devices that failed to register, so we retry them
 failed_registrations: set[str] = set()
 
-# Track consecutive failed connection attempts per device
-failed_connection_attempts: dict[str, int] = {}
-
 # Track previous status of each device for deduplication
 device_previous_status: dict[str, str] = {}
 
-# Track devices seen recently to smooth presence when disconnecting after checks
-recently_seen_devices: dict[str, float] = {}
-
-# Track the last time we recorded any positive signal per device (not pruned with TTL)
+# Track the last time we recorded any positive signal per device
 last_presence_signal: dict[str, float] = {}
 
-# Track consecutive positive detections for each device (for confirmation requirement)
-consecutive_positive_detections: dict[str, int] = {}
+# Track per-device signal diagnostics and flapping metadata
+device_signal_stats: dict[str, dict[str, Any]] = {}
+status_transition_history: dict[str, deque[float]] = {}
+device_freeze_until: dict[str, float] = {}
 
-# Number of consecutive positive detections required before marking device as present
-# Reduced to 1 since l2ping passive detection is reliable and fast
-POSITIVE_DETECTION_CONFIRMATIONS = max(1, int(os.getenv("POSITIVE_DETECTION_CONFIRMATIONS", "1")))
+# Manual override cache
+_override_cache: dict[str, Any] = {
+    "expires": 0.0,
+    "data": {
+        "quarantine": set(),
+        "force_status": {},
+    },
+}
 
-# Track consecutive cycles where a device was missing from the presence set
-absence_miss_streaks: dict[str, int] = {}
-
-# Pending and recent absence recheck tracking
-pending_absence_rechecks: dict[str, float] = {}
-recent_recheck_results: dict[str, tuple[float, bool]] = {}
-device_confidence_scores: dict[str, float] = {}
-
-# Track consecutive polling cycles where no presence signals were observed
-silent_cycle_streak = 0
-
-# Track when the last full probe ran
-last_full_probe_time = 0.0
-
-# Threshold for consecutive failed connections before backing off
-FAILED_CONNECTION_THRESHOLD = 3
+# Track newly detected devices that still need to be published to Convex
+unpublished_devices: dict[str, dict[str, Any]] = {}
 
 # Timeout for Convex queries in seconds
 CONVEX_QUERY_TIMEOUT = 10
@@ -155,113 +128,216 @@ consecutive_timeouts = 0
 MAX_CONSECUTIVE_TIMEOUTS = 3
 
 
-def _prune_device_state(registered_macs: set[str], now: float) -> None:
-    """Remove state for devices that are no longer registered."""
-    global failed_connection_attempts, device_previous_status
-    global last_presence_signal, consecutive_positive_detections
-    global absence_miss_streaks, device_confidence_scores
-    
-    # Find MACs to remove (present in state but not in registered devices)
-    all_state_keys = (
-        set(failed_connection_attempts.keys()) |
-        set(device_previous_status.keys()) |
-        set(last_presence_signal.keys()) |
-        set(consecutive_positive_detections.keys()) |
-        set(absence_miss_streaks.keys()) |
-        set(device_confidence_scores.keys())
+def _prune_device_state(known_macs: set[str]) -> None:
+    """Remove cached state for devices that are no longer tracked."""
+
+    for mac in list(device_previous_status.keys()):
+        if mac not in known_macs:
+            device_previous_status.pop(mac, None)
+
+    for mac in list(last_presence_signal.keys()):
+        if mac not in known_macs:
+            last_presence_signal.pop(mac, None)
+
+    for mac in list(device_signal_stats.keys()):
+        if mac not in known_macs:
+            device_signal_stats.pop(mac, None)
+
+    for mac in list(status_transition_history.keys()):
+        if mac not in known_macs:
+            status_transition_history.pop(mac, None)
+
+    for mac in list(device_freeze_until.keys()):
+        if mac not in known_macs:
+            device_freeze_until.pop(mac, None)
+
+
+def _normalize_mac(mac: str | None) -> str:
+    return (mac or "").strip().upper()
+
+
+def _get_device_overrides(now: float | None = None) -> dict[str, Any]:
+    """Load quarantine/force-status overrides from disk with simple caching."""
+
+    global _override_cache
+    now = now or time.time()
+    if now < _override_cache.get("expires", 0.0):
+        return _override_cache["data"]
+
+    overrides = {
+        "quarantine": set(),
+        "force_status": {},
+    }
+
+    override_path = Path(DEVICE_OVERRIDE_FILE)
+    if override_path.is_file():
+        try:
+            with override_path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            quarantine = payload.get("quarantine", [])
+            overrides["quarantine"] = {
+                _normalize_mac(mac)
+                for mac in quarantine
+                if isinstance(mac, str)
+            }
+
+            force_status_raw = payload.get("forceStatus", {})
+            force_status: dict[str, str] = {}
+            if isinstance(force_status_raw, dict):
+                for mac, status in force_status_raw.items():
+                    if not isinstance(mac, str) or not isinstance(status, str):
+                        continue
+                    normalized = status.lower().strip()
+                    if normalized in {"present", "absent"}:
+                        force_status[_normalize_mac(mac)] = normalized
+            overrides["force_status"] = force_status
+        except Exception as exc:
+            logger.error(
+                "Failed to load device overrides from %s: %s",
+                DEVICE_OVERRIDE_FILE,
+                exc,
+            )
+
+    _override_cache = {
+        "expires": now + max(5, DEVICE_OVERRIDE_REFRESH_SECONDS),
+        "data": overrides,
+    }
+    return overrides
+
+
+def _update_signal_stats(mac: str, success: bool, source: str | None, timestamp: float) -> None:
+    stats = device_signal_stats.setdefault(
+        mac,
+        {
+            "consecutive_hits": 0,
+            "consecutive_misses": 0,
+            "last_signal_ts": 0.0,
+            "last_signal_source": None,
+        },
     )
-    
-    to_remove = all_state_keys - registered_macs
-    
-    for mac in to_remove:
-        failed_connection_attempts.pop(mac, None)
-        device_previous_status.pop(mac, None)
-        last_presence_signal.pop(mac, None)
-        consecutive_positive_detections.pop(mac, None)
-        absence_miss_streaks.pop(mac, None)
-        device_confidence_scores.pop(mac, None)
-    
-    if to_remove:
-        logger.debug(f"Pruned state for {len(to_remove)} removed device(s)")
 
-
-def _prune_recheck_state(now: float) -> None:
-    """Remove expired recheck state to avoid stale decisions."""
-
-    expired = [
-        mac
-        for mac, (ts, _) in recent_recheck_results.items()
-        if now - ts > RECHECK_RESULT_TTL_SECONDS
-    ]
-    for mac in expired:
-        recent_recheck_results.pop(mac, None)
-
-
-def _should_attempt_recheck(
-    mac_address: str, now: float, current_status: Optional[str]
-) -> bool:
-    """Determine whether a device should trigger an immediate bluetoothctl recheck."""
-
-    last_request = pending_absence_rechecks.get(mac_address)
-    if last_request and now - last_request < PRESENCE_RECHECK_INTERVAL_SECONDS:
-        return False
-
-    last_recheck = recent_recheck_results.get(mac_address)
-    if last_recheck and now - last_recheck[0] <= RECHECK_RESULT_TTL_SECONDS:
-        return False
-
-    # Only recheck devices that were recently seen or are still marked present
-    if current_status == "present":
-        return True
-
-    last_signal = last_presence_signal.get(mac_address)
-    if last_signal and now - last_signal <= PRESENCE_SIGNAL_DECAY_SECONDS:
-        return True
-
-    streak = absence_miss_streaks.get(mac_address, 0)
-    return streak < ABSENCE_HYSTERESIS_CYCLES
-
-
-def _perform_absence_rechecks(candidates: set[str]) -> dict[str, bool]:
-    """Run concurrent rechecks for candidate devices and record results."""
-
-    if not candidates:
-        return {}
-
-    results = bluetooth_scanner.verify_devices_connected(sorted(candidates))
-    timestamp = time.time()
-    for mac, success in results.items():
-        pending_absence_rechecks[mac] = timestamp
-        recent_recheck_results[mac] = (timestamp, success)
-    return results
-
-
-def _calculate_presence_confidence(
-    mac_address: str, now: float, signal_detected: bool
-) -> float:
-    """Compute a confidence score [0-1] for a device being present."""
-
-    if signal_detected:
-        score = 1.0
+    if success:
+        stats["consecutive_hits"] += 1
+        stats["consecutive_misses"] = 0
+        stats["last_signal_ts"] = timestamp
+        stats["last_signal_source"] = source
     else:
-        score = 0.0
-        last_signal = last_presence_signal.get(mac_address)
-        if last_signal:
-            age = now - last_signal
-            if age <= PRESENCE_SIGNAL_DECAY_SECONDS:
-                score = max(score, 1 - (age / PRESENCE_SIGNAL_DECAY_SECONDS))
+        stats["consecutive_misses"] += 1
+        stats["consecutive_hits"] = 0
 
-        recheck_entry = recent_recheck_results.get(mac_address)
-        if recheck_entry:
-            ts, success = recheck_entry
-            if now - ts <= RECHECK_RESULT_TTL_SECONDS:
-                if success:
-                    score = max(score, 0.9)
-                else:
-                    score = min(score, 0.1)
 
-    device_confidence_scores[mac_address] = score
-    return score
+def _record_status_transition(mac: str, previous_status: str | None, new_status: str, now: float) -> None:
+    if previous_status is None or previous_status == new_status:
+        return
+
+    history = status_transition_history.setdefault(mac, deque())
+    history.append(now)
+    window = max(10, FLAP_MONITOR_WINDOW_SECONDS)
+    while history and now - history[0] > window:
+        history.popleft()
+
+    transitions = len(history)
+    if transitions >= max(1, FLAP_ALERT_THRESHOLD):
+        logger.warning(
+            "Device %s flapped %s times in the last %ss (prev=%s -> new=%s)",
+            mac,
+            transitions,
+            window,
+            previous_status,
+            new_status,
+        )
+        if ENABLE_AUTO_FREEZE_ON_FLAP and AUTO_FREEZE_DURATION_SECONDS > 0:
+            freeze_until = now + AUTO_FREEZE_DURATION_SECONDS
+            prior_freeze = device_freeze_until.get(mac, 0.0)
+            if freeze_until > prior_freeze:
+                device_freeze_until[mac] = freeze_until
+                logger.warning(
+                    "Freezing device %s status updates until %s",
+                    mac,
+                    datetime.fromtimestamp(freeze_until).isoformat(),
+                )
+
+
+def _log_device_diagnostics(
+    mac: str,
+    device: dict[str, Any],
+    now: float,
+    desired_present: bool,
+    overrides: dict[str, Any],
+    decision_reason: Optional[str] = None,
+) -> None:
+    if not ENABLE_DEVICE_DIAGNOSTICS:
+        return
+
+    stats = device_signal_stats.get(mac, {})
+    override_note = None
+    norm_mac = _normalize_mac(mac)
+    if norm_mac in overrides.get("quarantine", set()):
+        override_note = "quarantine"
+    elif overrides.get("force_status", {}).get(norm_mac):
+        override_note = f"force={overrides['force_status'][norm_mac]}"
+
+    diag = {
+        "mac": mac,
+        "user": device.get("name") or mac,
+        "convex_status": device.get("status"),
+        "desired": "present" if desired_present else "absent",
+        "last_signal_age_s": round(now - last_presence_signal.get(mac, 0.0), 1)
+        if mac in last_presence_signal
+        else None,
+        "last_signal_source": stats.get("last_signal_source"),
+        "hits": stats.get("consecutive_hits"),
+        "misses": stats.get("consecutive_misses"),
+    }
+
+    freeze_until = device_freeze_until.get(mac)
+    if freeze_until and freeze_until > now:
+        diag["freeze_until"] = datetime.fromtimestamp(freeze_until).isoformat()
+    if override_note:
+        diag["override"] = override_note
+    if decision_reason:
+        diag["decision"] = decision_reason
+
+    logger.info("Device diagnostics: %s", diag)
+
+
+def _compute_presence_decision(
+    mac: str,
+    now: float,
+    previous_status: Optional[str],
+    overrides: dict[str, Any],
+) -> tuple[bool, str]:
+    norm_mac = _normalize_mac(mac)
+    if norm_mac in overrides.get("quarantine", set()):
+        return False, "quarantine"
+
+    forced_status = overrides.get("force_status", {}).get(norm_mac)
+    if forced_status:
+        return forced_status == "present", f"force:{forced_status}"
+
+    freeze_until = device_freeze_until.get(mac, 0.0)
+    if freeze_until and freeze_until > now and previous_status is not None:
+        return previous_status == "present", "frozen"
+
+    last_signal_ts = last_presence_signal.get(mac)
+    signal_age = float("inf") if last_signal_ts is None else now - last_signal_ts
+    within_ttl = signal_age <= PRESENT_TTL_SECONDS
+
+    if within_ttl:
+        return True, "ttl"
+
+    if not ENABLE_ADAPTIVE_HYSTERESIS:
+        return False, "ttl_expired"
+
+    stats = device_signal_stats.get(mac, {})
+    if previous_status == "present":
+        misses = stats.get("consecutive_misses", 0)
+        hold_elapsed = signal_age >= ABSENCE_HOLD_SECONDS
+        threshold_met = misses >= ABSENCE_CONSECUTIVE_MISS_THRESHOLD
+        if not (hold_elapsed and threshold_met):
+            return True, "absence_hold"
+
+    return False, "adaptive_absent"
 
 
 def get_known_devices() -> list[dict[str, Any]]:
@@ -326,7 +402,7 @@ def get_device_by_mac(mac_address: str) -> dict[str, Any] | None:
         return None
 
 
-def register_new_device(mac_address: str, name: str | None = None) -> bool:
+def register_new_device(mac_address: str, name: str | None = None) -> dict[str, Any] | None:
     """
     Register a new device in Convex with grace period.
 
@@ -338,7 +414,7 @@ def register_new_device(mac_address: str, name: str | None = None) -> bool:
         name: Optional device name from Bluetooth scan
 
     Returns:
-        True if registration was successful, False otherwise
+        Device dictionary if registration was successful, None otherwise
     """
     def _mutation():
         return get_convex_client().mutation(
@@ -355,17 +431,93 @@ def register_new_device(mac_address: str, name: str | None = None) -> bool:
             future = executor.submit(_mutation)
             result = future.result(timeout=CONVEX_QUERY_TIMEOUT)
             logger.info(
-                f"✓ Registered new device {mac_address} (name='{name or 'unknown'}') in pending state -> {result}"
+                f"✓ Registered new device {mac_address} (name='{name or 'unknown'}') in pending state"
             )
-            return True
+            return result
     except TimeoutError:
         logger.error(f"✗ Convex mutation timed out after {CONVEX_QUERY_TIMEOUT} seconds for {mac_address}")
         logger.info(f"  Device {mac_address} will be retried on next polling cycle")
-        return False
+        return None
     except Exception as e:
         logger.error(f"✗ Error registering new device {mac_address}: {e}")
         logger.info(f"  Device {mac_address} will be retried on next polling cycle")
-        return False
+        return None
+
+
+def _record_unpublished_device(
+    mac_address: str,
+    name: str | None,
+    now: float,
+    last_attempt_ts: float | None = None,
+) -> None:
+    """Track a newly seen device so we keep retrying registration even after it disconnects."""
+
+    entry = unpublished_devices.get(mac_address)
+    if entry is None:
+        unpublished_devices[mac_address] = {
+            "name": name,
+            "last_seen": now,
+            "last_attempt": last_attempt_ts or 0.0,
+        }
+        logger.info(
+            "Tracking unpublished device %s for Convex retry (name=%s)",
+            mac_address,
+            name or "unknown",
+        )
+        return
+
+    entry["last_seen"] = now
+    if name and not entry.get("name"):
+        entry["name"] = name
+    if last_attempt_ts is not None:
+        entry["last_attempt"] = last_attempt_ts
+
+
+def _expire_unpublished_devices(now: float) -> None:
+    """Drop unpublished devices that have not been seen recently."""
+
+    for mac, data in list(unpublished_devices.items()):
+        if now - data.get("last_seen", 0.0) > UNPUBLISHED_DEVICE_TTL_SECONDS:
+            logger.info(
+                "Giving up on unpublished device %s after %.0fs",
+                mac,
+                UNPUBLISHED_DEVICE_TTL_SECONDS,
+            )
+            unpublished_devices.pop(mac, None)
+
+
+def _retry_unpublished_devices(
+    now: float,
+    device_map: dict[str, dict[str, Any]],
+    registered_macs: set[str],
+    pending_macs: set[str],
+) -> None:
+    """Attempt to publish any devices we previously discovered but failed to register."""
+
+    for mac, data in list(unpublished_devices.items()):
+        if mac in device_map:
+            unpublished_devices.pop(mac, None)
+            continue
+
+        last_attempt = data.get("last_attempt", 0.0)
+        if now - last_attempt < REGISTRATION_RETRY_SECONDS:
+            continue
+
+        device_name = data.get("name")
+        logger.info(
+            "Retrying unpublished device %s (last attempt %.1fs ago)",
+            mac,
+            now - last_attempt,
+        )
+        result = register_new_device(mac, device_name)
+        data["last_attempt"] = now
+        if result:
+            unpublished_devices.pop(mac, None)
+            device_map[mac] = result
+            if result.get("pendingRegistration"):
+                pending_macs.add(mac)
+            else:
+                registered_macs.add(mac)
 
 
 def cleanup_expired_devices() -> bool:
@@ -542,6 +694,8 @@ def update_device_status(
             device_previous_status[mac_address] = new_status
             return True
 
+        _record_status_transition(mac_address, previous_status, new_status, time.time())
+
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(_mutation)
             result = future.result(timeout=CONVEX_QUERY_TIMEOUT)
@@ -570,282 +724,138 @@ def update_device_status(
 
 
 def check_and_update_devices() -> None:
-    """
-    Check the connection status of all devices and update Convex.
+    """Run one auto-tracking cycle using sequential l2ping detection."""
 
-    - Registers new devices that connect as pending (with grace period)
-    - Updates status for all known devices (named or pending)
-    - Marks devices as absent when they disconnect
-    - Cleans up expired pending devices at end of cycle
-    """
     global failed_registrations
-    global last_full_probe_time
 
-    # Get all connected Bluetooth devices
     connected_devices = scan_all_connected_devices()
     connected_set = set(connected_devices)
+    if connected_set:
+        logger.info(f"Found {len(connected_set)} actively connected device(s)")
 
-    # Get known devices from Convex
     devices = get_known_devices()
-
     if not devices:
         logger.warning("No devices found in Convex database")
     else:
-        logger.info(f"Found {len(devices)} known device(s) in Convex")
+        logger.info(f"Loaded {len(devices)} device(s) from Convex")
 
-    # PRE-SCAN RECONNECTION / FULL PROBE:
-    # Attempt to reconnect (or fully probe) known devices to detect presence.
-    registered_macs = {
-        d.get("macAddress")
-        for d in devices
-        if d.get("macAddress") and not d.get("pendingRegistration")
-    }
-
-    reconnect_results: dict[str, bool] = {}
-    reconnected_success: set[str] = set()
+    device_map: dict[str, dict[str, Any]] = {}
+    registered_macs: set[str] = set()
+    pending_macs: set[str] = set()
+    for device in devices:
+        mac = device.get("macAddress")
+        if not mac:
+            continue
+        device_map[mac] = device
+        if device.get("pendingRegistration"):
+            pending_macs.add(mac)
+        else:
+            registered_macs.add(mac)
 
     now = time.time()
-    _prune_recheck_state(now)
+    _expire_unpublished_devices(now)
+    _retry_unpublished_devices(now, device_map, registered_macs, pending_macs)
+    overrides = _get_device_overrides(now)
 
-    # Always use full probe mode (connect + disconnect) to check presence
-    if registered_macs and FULL_PROBE_ENABLED:
-        logger.info(
-            f"Running full probe for {len(registered_macs)} registered device(s)..."
-        )
-        reconnect_results = bluetooth_scanner.probe_devices(
-            sorted(registered_macs),
-            disconnect_after=FULL_PROBE_DISCONNECT_AFTER,
-        )
-        last_full_probe_time = now
-        reconnected_success = {mac for mac, success in reconnect_results.items() if success}
-
-    global silent_cycle_streak
-
-    presence_signals_this_cycle: set[str] = connected_set | reconnected_success
-
-    if presence_signals_this_cycle:
-        if silent_cycle_streak:
-            logger.debug(
-                "Resetting silent cycle streak after detecting %d presence signal(s)",
-                len(presence_signals_this_cycle),
-            )
-        silent_cycle_streak = 0
+    l2ping_results: dict[str, bool] = {}
+    union_macs = registered_macs | pending_macs
+    if union_macs:
+        l2ping_results = bluetooth_scanner.run_l2ping_cycle(sorted(union_macs))
     else:
-        silent_cycle_streak += 1
-        logger.debug(
-            "No presence signals detected this cycle (streak %d/%s)",
-            silent_cycle_streak,
-            "∞" if ALL_SILENT_ABSENCE_CYCLES == 0 else ALL_SILENT_ABSENCE_CYCLES,
-        )
+        logger.info("No devices available for l2ping detection")
 
-    # Track recently seen devices (connected or successfully pinged)
-    for mac in presence_signals_this_cycle:
-        recently_seen_devices[mac] = now
+    for mac in union_macs:
+        success = l2ping_results.get(mac, False)
+        _update_signal_stats(mac, success, "l2ping" if success else None, now)
+
+    presence_signals = {mac for mac, success in l2ping_results.items() if success}
+    logger.info(
+        "l2ping detected %s/%s device(s) in range (%s pending)",
+        len(presence_signals),
+        len(union_macs),
+        len(presence_signals & pending_macs),
+    )
+
+    for mac in connected_set:
+        _update_signal_stats(mac, True, "connected", now)
+
+    for mac in presence_signals | connected_set:
         last_presence_signal[mac] = now
 
-    # Add newly registered devices to present_set to ensure they enter polling cycle immediately
-    # This fixes the bug where first-time registered devices are not properly tracked
-    for device in devices:
-        mac_address = device.get("macAddress")
-        if not mac_address:
-            continue
-        connected_since = device.get("connectedSince")
-        status = device.get("status")
-
-        # If device was just registered (has recent connectedSince) and status is "present"
-        # Always include it in present_set to add it to the polling cycle
-        if (connected_since and
-            status == "present" and
-            now - (connected_since / 1000) <= NEWLY_REGISTERED_GRACE_PERIOD):
-            recently_seen_devices[mac_address] = now
-            last_presence_signal[mac_address] = now
-            logger.debug(
-                f"Added newly registered device to present_set: {mac_address} "
-                f"(connectedSince: {connected_since / 1000:.1f}s ago)"
-            )
-
-    present_set = {
-        mac
-        for mac, last_seen in recently_seen_devices.items()
-        if now - last_seen <= PRESENT_TTL_SECONDS
-    }
-    # Prune expired entries
-    for mac in list(recently_seen_devices):
-        if mac not in present_set:
-            del recently_seen_devices[mac]
-
-    logger.info(f"Present devices (connected/recently seen): {len(present_set)} device(s)")
-
-    # Identify devices that need a quick bluetoothctl recheck before declaring absence
-    recheck_candidates: set[str] = set()
-    for device in devices:
-        mac_address = device.get("macAddress")
-        if not mac_address or mac_address in present_set:
-            continue
-        current_status = device.get("status") or "unknown"
-        if _should_attempt_recheck(mac_address, now, current_status):
-            recheck_candidates.add(mac_address)
-
-    if recheck_candidates:
-        logger.debug(f"Scheduling {len(recheck_candidates)} absence recheck(s)")
-    recheck_results = _perform_absence_rechecks(recheck_candidates)
-    recheck_successes = {mac for mac, success in recheck_results.items() if success}
-
-    if recheck_successes:
-        logger.info(
-            "Rechecks recovered %d device(s) before absence flip", len(recheck_successes)
+    desired_presence: dict[str, bool] = {}
+    decision_reasons: dict[str, str] = {}
+    for mac in registered_macs:
+        device = device_map.get(mac, {})
+        previous_status = device_previous_status.get(mac) or device.get("status")
+        desired_present, reason = _compute_presence_decision(
+            mac,
+            now,
+            previous_status,
+            overrides,
         )
-        presence_signals_this_cycle.update(recheck_successes)
-        for mac in recheck_successes:
-            recently_seen_devices[mac] = now
-            last_presence_signal[mac] = now
-            present_set.add(mac)
+        desired_presence[mac] = desired_present
+        decision_reasons[mac] = reason
+        _log_device_diagnostics(mac, device, now, desired_present, overrides, reason)
+
+    present_set = {mac for mac, is_present in desired_presence.items() if is_present}
+    logger.info(
+        "Decision engine -> %s/%s registered device(s) marked present (adaptive=%s)",
+        len(present_set),
+        len(registered_macs),
+        ENABLE_ADAPTIVE_HYSTERESIS,
+    )
+
+    newly_registered_count = 0
+    for mac in connected_set:
+        if mac in device_map:
+            failed_registrations.discard(mac)
+            continue
+
+        if mac in failed_registrations:
+            logger.info(f"Retrying pending registration for {mac}")
+
+        device_name = bluetooth_scanner.get_device_name(mac)
+        logger.info(
+            f"New device detected via setup flow: {mac} ({device_name or 'unknown'})"
+        )
+        result = register_new_device(mac, device_name)
+        if result:
+            newly_registered_count += 1
+            failed_registrations.discard(mac)
+            device_map[mac] = result
+            if result.get("pendingRegistration"):
+                pending_macs.add(mac)
+            else:
+                registered_macs.add(mac)
+        else:
+            failed_registrations.add(mac)
+            _record_unpublished_device(mac, device_name, now)
 
     updated_count = 0
-    newly_registered_count = 0
-
-    # Register new devices based on current connections
-    for mac_address in connected_set:
-        device = get_device_by_mac(mac_address)
-        if device:
-            failed_registrations.discard(mac_address)
+    for mac, device in device_map.items():
+        if device.get("pendingRegistration"):
             continue
 
-        # New device - register as pending with device name from Bluetooth
-        if mac_address in failed_registrations:
-            logger.info(
-                f"Retrying registration for previously failed device: {mac_address}"
-            )
-
-        device_name = bluetooth_scanner.get_device_name(mac_address)
-        logger.info(
-            f"New device detected: {mac_address} ({device_name or 'unknown'}) - registering as pending"
-        )
-        if register_new_device(mac_address, device_name):
-            newly_registered_count += 1
-            failed_registrations.discard(mac_address)
-        else:
-            failed_registrations.add(mac_address)
-
-    # Update status for known devices based on presence set
-    for device in devices:
-        mac_address = device.get("macAddress")
-        if not mac_address:
-            continue
-
-        name = device.get("name")
         current_status = device.get("status", "unknown")
-
-        if name:
-            display_name = name
-        else:
-            display_name = f"[pending] {mac_address}"
-
-        signal_detected = mac_address in presence_signals_this_cycle
-        is_present_now = signal_detected
-        held_present_reasons: list[str] = []
-        streak = absence_miss_streaks.get(mac_address, 0)
-
-        if signal_detected:
-            # Reset absence streak
-            absence_miss_streaks.pop(mac_address, None)
-            pending_absence_rechecks.pop(mac_address, None)
-
-            # Increment positive detection counter
-            consecutive_positive_detections[mac_address] = consecutive_positive_detections.get(mac_address, 0) + 1
-
-            # Check if we have enough confirmations to consider device present
-            if consecutive_positive_detections[mac_address] < POSITIVE_DETECTION_CONFIRMATIONS:
-                is_present_now = False
-                held_present_reasons.append(
-                    f"building confirmations {consecutive_positive_detections[mac_address]}/{POSITIVE_DETECTION_CONFIRMATIONS}"
-                )
-        else:
-            # Reset positive detection counter
-            consecutive_positive_detections[mac_address] = 0
-
-            # Increment absence streak
-            streak += 1
-            absence_miss_streaks[mac_address] = streak
-
-            if streak < ABSENCE_HYSTERESIS_CYCLES:
-                held_present_reasons.append(
-                    f"absence streak {streak}/{ABSENCE_HYSTERESIS_CYCLES}"
-                )
-
-            silent_grace_active = (
-                REQUIRE_PRESENCE_SIGNAL_FOR_ABSENCE
-                and not presence_signals_this_cycle
-                and (ALL_SILENT_ABSENCE_CYCLES > 0 and silent_cycle_streak <= ALL_SILENT_ABSENCE_CYCLES)
-            )
-
-            if silent_grace_active:
-                held_present_reasons.append(
-                    "no presence signals detected this cycle (within silent timeout)"
-                )
-
-            if mac_address in recheck_candidates and mac_address not in recheck_successes:
-                held_present_reasons.append("recent recheck failure")
-
-        final_is_present = is_present_now
-        confidence = _calculate_presence_confidence(mac_address, now, signal_detected)
-        if (
-            not final_is_present
-            and current_status == "present"
-            and confidence >= PRESENCE_CONFIDENCE_MIN
-        ):
-            final_is_present = True
-            held_present_reasons.append(f"confidence {confidence:.2f}")
-
-        new_status = "present" if final_is_present else "absent"
-
-        if held_present_reasons and new_status == "present" and current_status == "present":
-            logger.debug(
-                "Holding %s (%s) as present due to %s",
-                display_name,
-                mac_address,
-                "; ".join(held_present_reasons),
-            )
-
-
-
-        if new_status != current_status:
-            logger.info(
-                f"Status changed for {display_name} ({mac_address}): "
-                f"{current_status} -> {new_status}"
-            )
-            if update_device_status(mac_address, final_is_present, current_status, device):
+        is_present_now = mac in present_set
+        if update_device_status(mac, is_present_now, current_status, device):
+            if current_status != ("present" if is_present_now else "absent"):
                 updated_count += 1
-        else:
-            logger.debug(
-                "No status change for %s (%s): %s (confidence %.2f)",
-                display_name,
-                mac_address,
-                current_status,
-                device_confidence_scores.get(mac_address, 0.0),
-            )
-            device_previous_status[mac_address] = new_status
 
-    # Clean up state for devices that are no longer registered
-    _prune_device_state(registered_macs, now)
+    _prune_device_state(set(device_map.keys()))
 
-    # Optionally disconnect devices to avoid hitting adapter connection limits
     if DISCONNECT_CONNECTED_AFTER_CYCLE and connected_set:
         logger.info(f"Disconnecting {len(connected_set)} device(s) to free slots")
         for mac_address in connected_set:
             bluetooth_scanner.disconnect_device(mac_address)
 
-    # Clean up expired grace periods
     cleanup_expired_devices()
-    
-    # Clean up stale Bluetooth pairings (every cycle)
     cleanup_stale_bluetooth_pairings()
 
-    # Log summary
-    if newly_registered_count > 0:
+    if newly_registered_count:
         logger.info(f"Registered {newly_registered_count} new device(s) as pending")
-    if updated_count > 0:
-        logger.info(f"Updated {updated_count} device(s) in this cycle")
+    if updated_count:
+        logger.info(f"Updated {updated_count} device status(es) this cycle")
     else:
         logger.info("No device status changes in this cycle")
 
@@ -861,12 +871,8 @@ def run_presence_tracker() -> None:
     logger.info("Starting Presence Tracker")
     logger.info(f"Polling interval: {POLLING_INTERVAL} seconds")
     logger.info(f"Grace period for new devices: {GRACE_PERIOD_SECONDS} seconds")
-    logger.info(f"Presence TTL: {PRESENT_TTL_SECONDS} seconds")
-    logger.info(f"Full probe enabled: {FULL_PROBE_ENABLED} (uses passive detection: l2ping + name request)")
-    logger.info(f"Full probe interval: {FULL_PROBE_INTERVAL_SECONDS} seconds")
-    logger.info(f"Full probe disconnect after: {FULL_PROBE_DISCONNECT_AFTER}")
-    logger.info(f"Positive detection confirmations: {POSITIVE_DETECTION_CONFIRMATIONS}")
-
+    logger.info(f"Presence TTL (l2ping smoothing): {PRESENT_TTL_SECONDS} seconds")
+    logger.info("Auto tracking mode: sequential l2ping across registered MAC addresses")
     logger.info(f"Disconnect after cycle: {DISCONNECT_CONNECTED_AFTER_CYCLE}")
     logger.info(f"Convex query timeout: {CONVEX_QUERY_TIMEOUT} seconds")
 

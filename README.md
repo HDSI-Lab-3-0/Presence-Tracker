@@ -352,6 +352,8 @@ Choose one of the deployment options:
 3. Enter your **first name** and **last name**
 4. Click **"Save"** to complete registration
 
+> **Heads up:** As soon as a new device connects to the Raspberry Pi it is published to Convex as a *pending* entry. It will show up on the website immediately, but it will remain pending (and excluded from attendance) until you finish this step in the UI.
+
 **You're all set!** 🎉
 
 Your device will now be tracked for presence. The tracker will automatically:
@@ -378,6 +380,8 @@ cp .env.example .env
 |----------|-------------|---------|
 | `CONVEX_DEPLOYMENT_URL` | Your Convex backend deployment URL (required) | `https://chatty-akita-508.convex.cloud` |
 | `ORGANIZATION_NAME` | Display name for your organization (e.g., "My Organization") | - |
+| `REGISTRATION_RETRY_SECONDS` | How frequently the tracker retries publishing a newly seen device | `5` |
+| `UNPUBLISHED_DEVICE_TTL_SECONDS` | How long to keep retrying to publish a device after it disconnects | `600` |
 
 Note: `CONVEX_DEPLOYMENT_URL` is for the tracker/`.env` file. For the web dashboard, configure `CONVEX_DEPLOYMENT_URL` in GitHub Secrets (if using GitHub Pages) or as a Docker environment variable.
 

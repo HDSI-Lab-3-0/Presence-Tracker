@@ -47,17 +47,25 @@ function renderIntegrations() {
             <label>Webhook URL</label>
             <input type="text" id="discord-webhook" placeholder="https://discord.com/api/webhooks/..." value="${discord?.config?.webhookUrl || ''}">
         </div>
-        <div class="form-group">
-            <label class="checkbox-label">
-                <input type="checkbox" id="discord-use-embeds" ${discord?.config?.useEmbeds ? 'checked' : ''}>
-                Use rich embeds (Discord only)
-            </label>
-        </div>
-        <div class="form-group">
-            <label class="checkbox-label">
-                <input type="checkbox" id="discord-show-absent" ${discord?.config?.showAbsentUsers ? 'checked' : ''}>
-                Show "Currently OUT" users
-            </label>
+        <div class="checkbox-grid">
+            <div class="form-group checkbox-group">
+                <label class="checkbox-control">
+                    <input type="checkbox" id="discord-use-embeds" ${discord?.config?.useEmbeds ? 'checked' : ''}>
+                    <div class="checkbox-text">
+                        <span class="checkbox-title">Use rich embeds</span>
+                        <span class="checkbox-description">Send only the embed version of the status update.</span>
+                    </div>
+                </label>
+            </div>
+            <div class="form-group checkbox-group">
+                <label class="checkbox-control">
+                    <input type="checkbox" id="discord-show-absent" ${discord?.config?.showAbsentUsers ? 'checked' : ''}>
+                    <div class="checkbox-text">
+                        <span class="checkbox-title">Show "Currently OUT" users</span>
+                        <span class="checkbox-description">Include people who are currently marked as out.</span>
+                    </div>
+                </label>
+            </div>
         </div>
         <div class="form-actions">
            <label class="switch">
@@ -86,10 +94,13 @@ function renderIntegrations() {
             <label>Channel ID</label>
             <input type="text" id="slack-channel" placeholder="C12345678" value="${slack?.config?.channelId || ''}">
         </div>
-        <div class="form-group">
-            <label class="checkbox-label">
+        <div class="form-group checkbox-group">
+            <label class="checkbox-control">
                 <input type="checkbox" id="slack-show-absent" ${slack?.config?.showAbsentUsers ? 'checked' : ''}>
-                Show "Currently OUT" users
+                <div class="checkbox-text">
+                    <span class="checkbox-title">Show "Currently OUT" users</span>
+                    <span class="checkbox-description">Adds an absent list beneath the present users.</span>
+                </div>
             </label>
         </div>
         <div class="form-actions">
