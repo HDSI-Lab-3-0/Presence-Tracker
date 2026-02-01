@@ -2,29 +2,25 @@ import json
 import os
 import time
 import logging
+import threading
 from collections import deque
 from pathlib import Path
-from logging.handlers import RotatingFileHandler
 from datetime import datetime
+from queue import Empty
 from typing import Any, Optional
 import convex
 from dotenv import load_dotenv
 import bluetooth_scanner
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
+from fast_path_queue import start_queue_server
+from logging_utils import configure_root_logger
+
 # Load environment variables
 load_dotenv()
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        # Rotate log after ~100KB (approx 500 lines), keep 1 backup
-        RotatingFileHandler("presence_tracker.log", maxBytes=100000, backupCount=1),
-        logging.StreamHandler(),
-    ],
-)
+configure_root_logger("presence_tracker.log", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Get Convex deployment URL from environment
@@ -78,6 +74,9 @@ AUTO_FREEZE_DURATION_SECONDS = int(os.getenv("AUTO_FREEZE_DURATION_SECONDS", "30
 DEVICE_OVERRIDE_FILE = os.getenv("DEVICE_OVERRIDE_FILE", "config/device_overrides.json")
 DEVICE_OVERRIDE_REFRESH_SECONDS = int(os.getenv("DEVICE_OVERRIDE_REFRESH_SECONDS", "30"))
 
+FAST_PATH_QUEUE_ENABLED = _env_flag("FAST_PATH_QUEUE_ENABLED", "true")
+FAST_PATH_EVENT_SUPPRESSION_SECONDS = int(os.getenv("FAST_PATH_EVENT_SUPPRESSION_SECONDS", "3"))
+
 # Retry cadence for publishing newly seen devices to Convex (seconds)
 REGISTRATION_RETRY_SECONDS = int(os.getenv("REGISTRATION_RETRY_SECONDS", "5"))
 
@@ -127,6 +126,11 @@ convex_responsive = True
 consecutive_timeouts = 0
 MAX_CONSECUTIVE_TIMEOUTS = 3
 
+_fast_path_queue = None
+_fast_path_thread: threading.Thread | None = None
+_fast_path_stop_event = threading.Event()
+_fast_path_recent_events: dict[str, float] = {}
+
 
 def _prune_device_state(known_macs: set[str]) -> None:
     """Remove cached state for devices that are no longer tracked."""
@@ -150,6 +154,106 @@ def _prune_device_state(known_macs: set[str]) -> None:
     for mac in list(device_freeze_until.keys()):
         if mac not in known_macs:
             device_freeze_until.pop(mac, None)
+
+
+def _start_fast_path_consumer() -> None:
+    global _fast_path_queue, _fast_path_thread
+    if not FAST_PATH_QUEUE_ENABLED:
+        return
+    if _fast_path_thread and _fast_path_thread.is_alive():
+        return
+    try:
+        queue = start_queue_server()
+    except Exception as exc:
+        logger.error("Failed to start fast-path queue server: %s", exc)
+        return
+
+    _fast_path_queue = queue
+    _fast_path_stop_event.clear()
+
+    thread = threading.Thread(
+        target=_fast_path_consumer_loop,
+        name="FastPathConsumer",
+        daemon=True,
+    )
+    thread.start()
+    _fast_path_thread = thread
+    logger.info("Fast-path queue consumer started")
+
+
+def _stop_fast_path_consumer() -> None:
+    if not FAST_PATH_QUEUE_ENABLED:
+        return
+    _fast_path_stop_event.set()
+    thread = _fast_path_thread
+    if thread and thread.is_alive():
+        thread.join(timeout=2)
+
+
+def _fast_path_consumer_loop() -> None:
+    while not _fast_path_stop_event.is_set():
+        if _fast_path_queue is None:
+            time.sleep(1)
+            continue
+        try:
+            payload = _fast_path_queue.get(timeout=1)
+        except Empty:
+            continue
+        except Exception as exc:
+            logger.warning("Fast-path queue read failed: %s", exc)
+            time.sleep(1)
+            continue
+
+        try:
+            _handle_fast_path_payload(payload)
+        except Exception as exc:
+            logger.error("Error handling fast-path payload %s: %s", payload, exc)
+
+
+def _handle_fast_path_payload(payload: Any) -> None:
+    if not FAST_PATH_QUEUE_ENABLED:
+        return
+    if not isinstance(payload, dict):
+        logger.debug("Ignoring malformed fast-path payload: %s", payload)
+        return
+
+    mac = payload.get("mac")
+    if not isinstance(mac, str) or not mac:
+        logger.debug("Fast-path payload missing MAC: %s", payload)
+        return
+    mac = _normalize_mac(mac)
+
+    now = time.time()
+    suppression_window = max(0, FAST_PATH_EVENT_SUPPRESSION_SECONDS)
+    if suppression_window > 0:
+        last_ts = _fast_path_recent_events.get(mac)
+        if last_ts and now - last_ts < suppression_window:
+            logger.debug("Suppressing duplicate fast-path event for %s", mac)
+            return
+        _fast_path_recent_events[mac] = now
+
+    last_presence_signal[mac] = now
+    _update_signal_stats(mac, True, "fast_path", now)
+
+    name = payload.get("name")
+    device = get_device_by_mac(mac)
+
+    if not device:
+        logger.info("Fast-path detected new device %s (name=%s)", mac, name or "unknown")
+        result = register_new_device(mac, name)
+        if result:
+            failed_registrations.discard(mac)
+        else:
+            failed_registrations.add(mac)
+            _record_unpublished_device(mac, name, now)
+        return
+
+    if device.get("pendingRegistration"):
+        logger.debug("Fast-path event for pending device %s (awaiting approval)", mac)
+        return
+
+    current_status = device.get("status")
+    update_device_status(mac, True, current_status, device)
 
 
 def _normalize_mac(mac: str | None) -> str:
@@ -879,6 +983,8 @@ def run_presence_tracker() -> None:
     # Skip startup cleanup to avoid hanging on Convex connection
     # Stale Bluetooth pairings will be cleaned during polling cycles
 
+    _start_fast_path_consumer()
+
     try:
         while True:
             logger.info("=" * 50)
@@ -899,6 +1005,8 @@ def run_presence_tracker() -> None:
     except Exception as e:
         logger.error(f"Fatal error in presence tracker: {e}")
         raise
+    finally:
+        _stop_fast_path_consumer()
 
 
 def main() -> None:

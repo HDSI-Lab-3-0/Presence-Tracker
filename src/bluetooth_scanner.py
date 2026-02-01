@@ -1,31 +1,21 @@
 import subprocess
 import logging
-from logging.handlers import RotatingFileHandler
 from typing import Optional
 import bluetooth
 import time
 from threading import Lock
 import os
 
-# Ensure logs directory exists
-os.makedirs("logs", exist_ok=True)
+from logging_utils import configure_logger
 
-# Configure logger for bluetooth_scanner
-logger = logging.getLogger(__name__)
-if not logger.handlers:
-    logger.setLevel(logging.DEBUG)
-    handler = RotatingFileHandler(
-        "logs/bluetooth_scanner.log",
-        maxBytes=100000,
-        backupCount=1,
-    )
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-    )
-    logger.addHandler(handler)
+logger = configure_logger(
+    logging.getLogger(__name__),
+    log_filename="bluetooth_scanner.log",
+    level=logging.DEBUG,
+)
 
 # L2PING configuration for passive detection
-L2PING_TIMEOUT_SECONDS = int(os.getenv("L2PING_TIMEOUT_SECONDS", "2"))
+L2PING_TIMEOUT_SECONDS = int(os.getenv("L2PING_TIMEOUT_SECONDS", "1"))
 L2PING_COUNT = int(os.getenv("L2PING_COUNT", "1"))
 
 # How long to wait for bluetoothctl connect attempts (seconds)

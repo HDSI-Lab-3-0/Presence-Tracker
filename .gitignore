@@ -15,7 +15,7 @@ __pycache__/
 # Log files
 deploy/
 */logs/*
-
+*.log
 presence_tracker.log*
 setup.config
 

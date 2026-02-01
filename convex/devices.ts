@@ -1,9 +1,61 @@
 import { v } from "convex/values";
 import { action, mutation, query, internalMutation } from "./_generated/server";
-import { Doc } from "./_generated/dataModel";
-import { api } from "./_generated/api";
+import { Doc, Id } from "./_generated/dataModel";
 
 const GRACE_PERIOD_SECONDS = 300;
+const DEVICE_EXPIRATION_MS = 5 * 60 * 1000;
+
+type CleanupResult = { deletedCount: number; deletedMacs: string[] };
+
+type DeleteResult = { success: boolean; macAddress?: string | null };
+
+const deleteDeviceAndLogs = async (
+  ctx: any,
+  deviceId: Id<"devices">
+): Promise<DeleteResult> => {
+  const device = await ctx.db.get(deviceId);
+  if (!device) {
+    return { success: false };
+  }
+
+  const relatedLogs = await ctx.db
+    .query("deviceLogs")
+    .withIndex("by_deviceId", (q: any) => q.eq("deviceId", deviceId))
+    .collect();
+
+  for (const log of relatedLogs) {
+    await ctx.db.delete(log._id);
+  }
+
+  await ctx.db.delete(deviceId);
+
+  return { success: true, macAddress: device.macAddress };
+};
+
+const cleanupExpiredDevicesCore = async (ctx: any): Promise<CleanupResult> => {
+  const cutoff = Date.now() - DEVICE_EXPIRATION_MS;
+
+  const devices = await ctx.db.query("devices").collect();
+  const expiredDevices = devices.filter((device: Doc<"devices">) => device.lastSeen < cutoff);
+
+  const deletedMacs: string[] = [];
+
+  for (const device of expiredDevices) {
+    try {
+      const result = await deleteDeviceAndLogs(ctx, device._id);
+      if (result.success && result.macAddress) {
+        deletedMacs.push(result.macAddress);
+      }
+    } catch (error) {
+      console.error("Failed to delete expired device", {
+        deviceId: device._id,
+        error,
+      });
+    }
+  }
+
+  return { deletedCount: deletedMacs.length, deletedMacs };
+};
 
 export const getOrganizationName = query({
   args: {},
@@ -330,21 +382,10 @@ export const deleteDevice = mutation({
     id: v.id("devices"),
   },
   handler: async (ctx, args) => {
-    const device = await ctx.db.get(args.id);
-    if (!device) {
+    const result = await deleteDeviceAndLogs(ctx, args.id);
+    if (!result.success) {
       return { success: false, message: "Device not found" };
     }
-
-    const relatedLogs = await ctx.db
-      .query("deviceLogs")
-      .withIndex("by_deviceId", (q) => q.eq("deviceId", args.id))
-      .collect();
-
-    for (const log of relatedLogs) {
-      await ctx.db.delete(log._id);
-    }
-
-    await ctx.db.delete(args.id);
 
     return { success: true };
   },
@@ -353,9 +394,14 @@ export const deleteDevice = mutation({
 export const cleanupExpiredGracePeriods = action({
   args: {},
   handler: async (ctx) => {
-    // Cleanup disabled - devices should never be automatically deleted
-    // Pending devices will remain for manual review/registration
-    return { deletedCount: 0, deletedMacs: [] };
+    return cleanupExpiredDevicesCore(ctx);
+  },
+});
+
+export const cleanupExpiredGracePeriodsInternal = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    return cleanupExpiredDevicesCore(ctx);
   },
 });
 
