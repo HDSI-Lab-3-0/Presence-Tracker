@@ -13,9 +13,11 @@ __pycache__/
 *.so
 
 # Log files
-logs/
-.log
+deploy/
+*/logs/*
+*.log
 presence_tracker.log*
+setup.config
 
 # Convex local state
 .convex/
@@ -40,4 +42,3 @@ Thumbs.db
 
 .env.local
 
-.log

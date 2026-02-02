@@ -10,6 +10,13 @@ crons.interval(
   {},
 );
 
+crons.interval(
+  "cleanupExpiredDevices",
+  { minutes: 1 },
+  internal.devices.cleanupExpiredGracePeriodsInternal,
+  {},
+);
+
 crons.cron(
   "cleanupOldLogs",
   "0 0 * * *",

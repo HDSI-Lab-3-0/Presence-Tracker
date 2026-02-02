@@ -12,6 +12,11 @@ This agent rejects Bluetooth audio profile connections (A2DP, HSP, HFP)
 to prevent audio output from being routed to the Raspberry Pi.
 """
 
+import os
+import shlex
+import subprocess
+import threading
+import time
 import dbus
 import dbus.service
 import dbus.mainloop.glib
@@ -20,16 +25,19 @@ import logging
 import signal
 import sys
 
-# Configure logging
-logging.basicConfig(
+from fast_path_queue import connect_to_queue
+from logging_utils import configure_logger
+
+logger = configure_logger(
+    logging.getLogger(__name__),
+    log_filename="bluetooth_agent.log",
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("bluetooth_agent.log"),
-        logging.StreamHandler(),
-    ],
 )
-logger = logging.getLogger(__name__)
+
+_fast_path_queue = None
+_fast_path_lock = threading.Lock()
+_fast_path_connect_next = 0.0
+_agent_singleton = None
 
 # D-Bus object paths and interfaces
 AGENT_INTERFACE = "org.bluez.Agent1"
@@ -37,6 +45,15 @@ AGENT_PATH = "/ieee/presence/tracker/agent"
 BLUEZ_SERVICE = "org.bluez"
 ADAPTER_INTERFACE = "org.bluez.Adapter1"
 DEVICE_INTERFACE = "org.bluez.Device1"
+
+# Adapter watchdog tuning (all values in seconds)
+ADAPTER_WATCHDOG_INTERVAL_SECONDS = int(os.getenv("ADAPTER_WATCHDOG_INTERVAL_SECONDS", "60"))
+ADAPTER_RECOVERY_BACKOFF_SECONDS = int(os.getenv("ADAPTER_RECOVERY_BACKOFF_SECONDS", "5"))
+ADVERTISE_NUDGE_COMMAND = os.getenv("ADVERTISE_NUDGE_COMMAND", "bluetoothctl advertise on")
+ADVERTISE_SCAN_DURATION_SECONDS = int(os.getenv("ADVERTISE_SCAN_DURATION_SECONDS", "3"))
+
+FAST_PATH_QUEUE_ENABLED = os.getenv("FAST_PATH_QUEUE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+FAST_PATH_QUEUE_RETRY_SECONDS = int(os.getenv("FAST_PATH_QUEUE_RETRY_SECONDS", "5"))
 
 
 class Rejected(dbus.DBusException):
@@ -278,7 +295,7 @@ def get_adapter_path(bus):
     return None
 
 
-def configure_adapter(bus, adapter_path):
+def configure_adapter(bus, adapter_path) -> bool:
     """Configure the Bluetooth adapter for pairing."""
     try:
         adapter = dbus.Interface(
@@ -294,8 +311,10 @@ def configure_adapter(bus, adapter_path):
         adapter.Set(ADAPTER_INTERFACE, "PairableTimeout", dbus.UInt32(0))  # Never timeout
         
         logger.info(f"Adapter {adapter_path} configured for discoverable/pairable mode")
+        return True
     except Exception as e:
         logger.error(f"Error configuring adapter: {e}")
+        return False
 
 
 def register_agent(bus, agent_path, capability="NoInputNoOutput"):
@@ -308,6 +327,7 @@ def register_agent(bus, agent_path, capability="NoInputNoOutput"):
     manager.RegisterAgent(agent_path, capability)
     manager.RequestDefaultAgent(agent_path)
     logger.info(f"Agent registered with capability: {capability}")
+    return manager
 
 
 def unregister_agent(bus, agent_path):
@@ -323,10 +343,237 @@ def unregister_agent(bus, agent_path):
         logger.error(f"Error unregistering agent: {e}")
 
 
+def _maybe_connect_fast_path_queue(force: bool = False):
+    global _fast_path_queue, _fast_path_connect_next
+    if not FAST_PATH_QUEUE_ENABLED:
+        return None
+    now = time.time()
+    if not force and now < _fast_path_connect_next and _fast_path_queue is None:
+        return None
+    with _fast_path_lock:
+        if _fast_path_queue is not None:
+            return _fast_path_queue
+        try:
+            queue = connect_to_queue()
+            _fast_path_queue = queue
+            logger.info("Fast-path queue connected")
+            return queue
+        except Exception as exc:
+            _fast_path_queue = None
+            _fast_path_connect_next = now + max(1, FAST_PATH_QUEUE_RETRY_SECONDS)
+            logger.warning("Fast-path queue unavailable: %s", exc)
+            return None
+
+
+def _publish_fast_path_event(mac: str, name: str | None = None, source: str = "bluetooth_agent"):
+    if not FAST_PATH_QUEUE_ENABLED:
+        return
+    payload = {
+        "mac": mac,
+        "name": name or "",
+        "ts": time.time(),
+        "source": source,
+    }
+    queue = _maybe_connect_fast_path_queue()
+    if queue is None:
+        return
+    try:
+        queue.put(payload, block=False)
+        logger.info("Enqueued fast-path presence event for %s", mac)
+    except Exception as exc:
+        logger.warning("Failed to enqueue fast-path event for %s: %s", mac, exc)
+        with _fast_path_lock:
+            _fast_path_queue = None
+
+
+def _emit_connected_event(device_path: str, props: dict | None = None):
+    if not FAST_PATH_QUEUE_ENABLED:
+        return
+    if _agent_singleton is None:
+        return
+    try:
+        device_props = props or _agent_singleton._get_device_props(device_path)
+    except Exception as exc:
+        logger.debug("Unable to fetch device props for %s: %s", device_path, exc)
+        return
+    if not device_props or not bool(device_props.get("Connected")):
+        return
+    mac = device_props.get("Address")
+    if not isinstance(mac, str) or not mac:
+        logger.debug("Fast-path event missing MAC for %s", device_path)
+        return
+    name = device_props.get("Name")
+    _publish_fast_path_event(mac.upper(), name)
+
+
+def _interfaces_added_handler(object_path: str, interfaces: dict):
+    device_props = interfaces.get(DEVICE_INTERFACE)
+    if not device_props:
+        return
+    if bool(device_props.get("Connected")):
+        _emit_connected_event(object_path, device_props)
+
+
+def _properties_changed_handler(interface: str, changed: dict, invalidated, path=None):
+    if interface != DEVICE_INTERFACE or not changed:
+        return
+    if "Connected" not in changed:
+        return
+    if bool(changed.get("Connected")):
+        _emit_connected_event(path)
+
+
 def signal_handler(signum, frame):
     """Handle termination signals."""
     logger.info(f"Received signal {signum}, shutting down...")
     mainloop.quit()
+
+
+def _get_adapter_properties(bus, adapter_path):
+    adapter = dbus.Interface(
+        bus.get_object(BLUEZ_SERVICE, adapter_path),
+        "org.freedesktop.DBus.Properties"
+    )
+    return adapter.GetAll(ADAPTER_INTERFACE)
+
+
+def _nudge_le_advertising():
+    command = ADVERTISE_NUDGE_COMMAND.strip()
+    if not command:
+        return
+    try:
+        args = shlex.split(command)
+    except ValueError as exc:
+        logger.error(f"Invalid ADVERTISE_NUDGE_COMMAND '{command}': {exc}")
+        return
+
+    try:
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+        logger.info(
+            "Reissued advertising command (%s). stdout='%s' stderr='%s'",
+            command,
+            result.stdout.strip(),
+            result.stderr.strip(),
+        )
+    except subprocess.CalledProcessError as exc:
+        logger.warning(
+            "Advertising command failed (%s): %s",
+            command,
+            exc,
+        )
+    except FileNotFoundError:
+        logger.error("Advertising command not found: %s", args[0])
+    except Exception as exc:
+        logger.error("Unexpected error running advertising command (%s): %s", command, exc)
+
+
+def _pulse_discovery_scan(duration_seconds: int) -> None:
+    duration = max(0, duration_seconds)
+    if duration == 0:
+        return
+    try:
+        subprocess.run(
+            ["bluetoothctl", "--timeout", str(duration), "scan", "on"],
+            capture_output=True,
+            text=True,
+            timeout=duration + 2,
+            check=True,
+        )
+        logger.debug("Triggered bluetoothctl scan pulse for %ss", duration)
+    except subprocess.CalledProcessError as exc:
+        logger.warning("bluetoothctl scan pulse failed: %s", exc)
+    except FileNotFoundError:
+        logger.error("bluetoothctl command not found while pulsing scan")
+    except Exception as exc:
+        logger.error("Unexpected error during scan pulse: %s", exc)
+
+
+def _adapter_watchdog_callback(context):
+    bus, adapter_path = context
+    try:
+        props = _get_adapter_properties(bus, adapter_path)
+    except Exception as exc:
+        logger.error(f"Adapter watchdog failed to read properties: {exc}")
+        return True
+
+    powered = bool(props.get("Powered"))
+    discoverable = bool(props.get("Discoverable"))
+    pairable = bool(props.get("Pairable"))
+    discoverable_timeout = int(props.get("DiscoverableTimeout", 0))
+    pairable_timeout = int(props.get("PairableTimeout", 0))
+
+    healthy = (
+        powered
+        and discoverable
+        and pairable
+        and discoverable_timeout == 0
+        and pairable_timeout == 0
+    )
+
+    logger.debug(
+        "Adapter watchdog state -> powered=%s discoverable=%s pairable=%s disc_to=%s pair_to=%s",
+        powered,
+        discoverable,
+        pairable,
+        discoverable_timeout,
+        pairable_timeout,
+    )
+
+    if healthy:
+        return True
+
+    logger.warning(
+        "Adapter watchdog detected drift (powered=%s discoverable=%s pairable=%s disc_to=%s pair_to=%s)",
+        powered,
+        discoverable,
+        pairable,
+        discoverable_timeout,
+        pairable_timeout,
+    )
+
+    configure_adapter(bus, adapter_path)
+
+    try:
+        props = _get_adapter_properties(bus, adapter_path)
+    except Exception as exc:
+        logger.error(f"Adapter watchdog recheck failed: {exc}")
+        return True
+
+    powered = bool(props.get("Powered"))
+    discoverable = bool(props.get("Discoverable"))
+    pairable = bool(props.get("Pairable"))
+    discoverable_timeout = int(props.get("DiscoverableTimeout", 0))
+    pairable_timeout = int(props.get("PairableTimeout", 0))
+
+    healthy_after_reconfigure = (
+        powered
+        and discoverable
+        and pairable
+        and discoverable_timeout == 0
+        and pairable_timeout == 0
+    )
+
+    if healthy_after_reconfigure:
+        logger.info("Adapter watchdog restored discoverable mode")
+        return True
+
+    logger.warning(
+        "Adapter watchdog still sees degraded state after reconfigure (powered=%s discoverable=%s pairable=%s)",
+        powered,
+        discoverable,
+        pairable,
+    )
+
+    _nudge_le_advertising()
+    _pulse_discovery_scan(ADVERTISE_SCAN_DURATION_SECONDS)
+
+    return True
 
 
 def main():
@@ -354,7 +601,36 @@ def main():
     
     # Create and register the agent
     agent = BluetoothAgent(bus, AGENT_PATH)
+    global _agent_singleton
+    _agent_singleton = agent
     register_agent(bus, AGENT_PATH)
+
+    if FAST_PATH_QUEUE_ENABLED:
+        manager = dbus.Interface(
+            bus.get_object(BLUEZ_SERVICE, "/"),
+            "org.freedesktop.DBus.ObjectManager",
+        )
+        manager.connect_to_signal("InterfacesAdded", _interfaces_added_handler)
+        bus.add_signal_receiver(
+            _properties_changed_handler,
+            signal_name="PropertiesChanged",
+            dbus_interface="org.freedesktop.DBus.Properties",
+            path_keyword="path",
+        )
+        logger.info("Fast-path listeners armed for BlueZ connection events")
+
+    if ADAPTER_WATCHDOG_INTERVAL_SECONDS > 0:
+        GLib.timeout_add_seconds(
+            max(1, ADAPTER_WATCHDOG_INTERVAL_SECONDS),
+            _adapter_watchdog_callback,
+            (bus, adapter_path),
+        )
+        logger.info(
+            "Adapter watchdog armed (interval=%ss)",
+            ADAPTER_WATCHDOG_INTERVAL_SECONDS,
+        )
+    else:
+        logger.info("Adapter watchdog disabled (interval=%s)", ADAPTER_WATCHDOG_INTERVAL_SECONDS)
     
     # Set up signal handlers
     signal.signal(signal.SIGINT, signal_handler)

@@ -40,8 +40,32 @@ function renderIntegrations() {
     discordDiv.innerHTML = `
         <h4>Discord</h4>
         <div class="form-group">
+            <label>Display Name (Space Name)</label>
+            <input type="text" id="discord-display-name" placeholder="Project Space" value="${discord?.config?.displayName || ''}">
+        </div>
+        <div class="form-group">
             <label>Webhook URL</label>
             <input type="text" id="discord-webhook" placeholder="https://discord.com/api/webhooks/..." value="${discord?.config?.webhookUrl || ''}">
+        </div>
+        <div class="checkbox-grid">
+            <div class="form-group checkbox-group">
+                <label class="checkbox-control">
+                    <input type="checkbox" id="discord-use-embeds" ${discord?.config?.useEmbeds ? 'checked' : ''}>
+                    <div class="checkbox-text">
+                        <span class="checkbox-title">Use rich embeds</span>
+                        <span class="checkbox-description">Send only the embed version of the status update.</span>
+                    </div>
+                </label>
+            </div>
+            <div class="form-group checkbox-group">
+                <label class="checkbox-control">
+                    <input type="checkbox" id="discord-show-absent" ${discord?.config?.showAbsentUsers ? 'checked' : ''}>
+                    <div class="checkbox-text">
+                        <span class="checkbox-title">Show "Currently OUT" users</span>
+                        <span class="checkbox-description">Include people who are currently marked as out.</span>
+                    </div>
+                </label>
+            </div>
         </div>
         <div class="form-actions">
            <label class="switch">
@@ -59,12 +83,25 @@ function renderIntegrations() {
     slackDiv.innerHTML = `
         <h4>Slack</h4>
         <div class="form-group">
+            <label>Display Name (Space Name)</label>
+            <input type="text" id="slack-display-name" placeholder="Project Space" value="${slack?.config?.displayName || ''}">
+        </div>
+        <div class="form-group">
             <label>Bot User OAuth Token (xoxb-...)</label>
             <input type="text" id="slack-token" placeholder="xoxb-..." value="${slack?.config?.botToken || ''}">
         </div>
         <div class="form-group">
             <label>Channel ID</label>
             <input type="text" id="slack-channel" placeholder="C12345678" value="${slack?.config?.channelId || ''}">
+        </div>
+        <div class="form-group checkbox-group">
+            <label class="checkbox-control">
+                <input type="checkbox" id="slack-show-absent" ${slack?.config?.showAbsentUsers ? 'checked' : ''}>
+                <div class="checkbox-text">
+                    <span class="checkbox-title">Show "Currently OUT" users</span>
+                    <span class="checkbox-description">Adds an absent list beneath the present users.</span>
+                </div>
+            </label>
         </div>
         <div class="form-actions">
            <label class="switch">
@@ -80,11 +117,19 @@ function renderIntegrations() {
 window.saveDiscord = async function () {
     const webhookUrl = document.getElementById('discord-webhook').value.trim();
     const isEnabled = document.getElementById('discord-enabled').checked;
+    const displayName = document.getElementById('discord-display-name').value.trim();
+    const useEmbeds = document.getElementById('discord-use-embeds').checked;
+    const showAbsentUsers = document.getElementById('discord-show-absent').checked;
 
     try {
         await window.convexClient.mutation("integrations:saveIntegration", {
             type: "discord",
-            config: { webhookUrl },
+            config: { 
+                webhookUrl, 
+                displayName: displayName || undefined,
+                useEmbeds,
+                showAbsentUsers
+            },
             isEnabled
         });
         showToast('Discord settings saved');
@@ -97,11 +142,18 @@ window.saveSlack = async function () {
     const botToken = document.getElementById('slack-token').value.trim();
     const channelId = document.getElementById('slack-channel').value.trim();
     const isEnabled = document.getElementById('slack-enabled').checked;
+    const displayName = document.getElementById('slack-display-name').value.trim();
+    const showAbsentUsers = document.getElementById('slack-show-absent').checked;
 
     try {
         await window.convexClient.mutation("integrations:saveIntegration", {
             type: "slack",
-            config: { botToken, channelId },
+            config: { 
+                botToken, 
+                channelId,
+                displayName: displayName || undefined,
+                showAbsentUsers
+            },
             isEnabled
         });
         showToast('Slack settings saved');
