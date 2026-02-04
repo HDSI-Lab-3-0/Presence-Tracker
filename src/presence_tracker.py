@@ -672,7 +672,8 @@ def cleanup_expired_devices() -> bool:
 
 def cleanup_stale_bluetooth_pairings() -> None:
     """
-    Remove Bluetooth pairings for devices that are no longer in the Convex database.
+    Remove Bluetooth pairings for devices that are pending registration AND
+    have past their grace period. Never removes registered devices.
     Only runs during normal polling cycles, not at startup to avoid hangs.
     """
     try:
@@ -681,7 +682,7 @@ def cleanup_stale_bluetooth_pairings() -> None:
         paired_set = set(paired_devices)
         logger.debug(f"Found {len(paired_set)} paired device(s) in Bluetooth")
 
-        # Do not remove devices that are currently connected.
+        # Do not remove devices that are currently connected
         connected_devices = bluetooth_scanner.get_all_connected_devices()
         connected_set = set(connected_devices)
         if connected_set:
@@ -692,23 +693,65 @@ def cleanup_stale_bluetooth_pairings() -> None:
         if not convex_devices:
             logger.debug("Skipping stale cleanup - no devices retrieved from Convex")
             return
-            
-        convex_macs = {device.get("macAddress") for device in convex_devices if device.get("macAddress")}
-        logger.debug(f"Found {len(convex_macs)} device(s) in Convex database")
 
-        # Find devices that are paired but not in Convex
-        stale_devices = paired_set - convex_macs - connected_set
+        logger.debug(f"Found {len(convex_devices)} device(s) in Convex database")
 
-        if stale_devices:
-            logger.info(f"Found {len(stale_devices)} stale Bluetooth pairing(s) to clean up")
-            for mac_address in stale_devices:
+        # Build a map of MAC addresses to device info for quick lookup
+        device_map = {device.get("macAddress"): device for device in convex_devices if device.get("macAddress")}
+
+        # Current time in milliseconds for grace period comparison
+        now_ms = time.time() * 1000
+        devices_to_remove = []
+
+        # Check each paired device to see if it should be removed
+        for mac_address in paired_set:
+            if mac_address in connected_set:
+                logger.debug(f" keeping {mac_address}: currently connected")
+                continue
+
+            # Device not in Convex - keep it (could be a new device pending registration)
+            device = device_map.get(mac_address)
+            if device is None:
+                logger.debug(f" keeping {mac_address}: not in Convex database (may be pending registration)")
+                continue
+
+            # Device is registered (not pending) - never remove
+            if not device.get("pendingRegistration", False):
+                logger.debug(f" keeping {mac_address}: registered device (not pending)")
+                continue
+
+            # Device is pending - check if grace period has expired
+            grace_period_end = device.get("gracePeriodEnd")
+            if grace_period_end is None:
+                logger.debug(f" keeping {mac_address}: pending but no grace period set")
+                continue
+
+            # Check if grace period has expired
+            if grace_period_end <= now_ms:
+                grace_period_expired_seconds = (now_ms - grace_period_end) / 1000
+                logger.info(
+                    f" marking for removal: {mac_address} - pending registration with expired grace period "
+                    f"({grace_period_expired_seconds:.1f}s ago)"
+                )
+                devices_to_remove.append(mac_address)
+            else:
+                grace_period_remaining_seconds = (grace_period_end - now_ms) / 1000
+                logger.debug(
+                    f" keeping {mac_address}: pending registration, grace period expires in "
+                    f"{grace_period_remaining_seconds:.1f}s"
+                )
+
+        # Remove the identified devices
+        if devices_to_remove:
+            logger.info(f"Removing {len(devices_to_remove)} expired pending device(s) from Bluetooth")
+            for mac_address in devices_to_remove:
                 try:
                     bluetooth_scanner.remove_device(mac_address)
-                    logger.info(f"Removed stale Bluetooth pairing: {mac_address}")
+                    logger.info(f"Removed expired pending device Bluetooth pairing: {mac_address}")
                 except Exception as e:
-                    logger.error(f"Failed to remove stale pairing {mac_address}: {e}")
+                    logger.error(f"Failed to remove expired pending device {mac_address}: {e}")
         else:
-            logger.debug("No stale Bluetooth pairings found")
+            logger.debug("No expired pending devices found to remove")
     except Exception as e:
         logger.error(f"Error during stale Bluetooth pairing cleanup: {e}")
 
