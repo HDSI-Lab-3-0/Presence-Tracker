@@ -195,13 +195,33 @@ export const updateDeviceStatus = mutation({
     // When showing "Connected at", we use connectedSince.
 
     // Log status change if meaningful (e.g. absent <-> present)
+    // Check for duplicate status change logs within the last 10 seconds to prevent race conditions
     if (existingDevice.status !== args.status) {
-      await ctx.db.insert("deviceLogs", {
-        deviceId: existingDevice._id,
-        changeType: "status_change",
-        timestamp: now,
-        details: `Status changed from ${existingDevice.status} to ${args.status}`
-      });
+      const tenSecondsAgo = now - 10000;
+      const recentLogs = await ctx.db
+        .query("deviceLogs")
+        .withIndex("by_deviceId", (q) => q.eq("deviceId", existingDevice._id))
+        .filter((q) => 
+          q.and(
+            q.eq(q.field("changeType"), "status_change"),
+            q.gte(q.field("timestamp"), tenSecondsAgo)
+          )
+        )
+        .collect();
+
+      const isDuplicate = recentLogs.some((log: any) => 
+        log.details.includes(`from ${existingDevice.status} to ${args.status}`) ||
+        log.details.includes(`from ${args.status} to ${existingDevice.status}`)
+      );
+
+      if (!isDuplicate) {
+        await ctx.db.insert("deviceLogs", {
+          deviceId: existingDevice._id,
+          changeType: "status_change",
+          timestamp: now,
+          details: `Status changed from ${existingDevice.status} to ${args.status}`
+        });
+      }
     }
 
     await ctx.db.patch(existingDevice._id, {
