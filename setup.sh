@@ -1103,6 +1103,13 @@ restart_services() {
     log_info "Restarting systemd services..."
     sudo systemctl restart presence-tracker.service
     sudo systemctl restart bluetooth-agent.service
+
+    # Ensure Bluetooth adapter is unblocked and freshly restarted before discoverable service
+    log_info "Ensuring Bluetooth adapter is unblocked..."
+    sudo rfkill unblock bluetooth
+    log_info "Restarting bluetooth.service..."
+    sudo systemctl restart bluetooth
+
     sudo systemctl restart bluetooth-discoverable.service
 
     log_info "All services enabled and restarted successfully"
