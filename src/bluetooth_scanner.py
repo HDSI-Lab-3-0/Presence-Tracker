@@ -21,6 +21,12 @@ L2PING_COUNT = int(os.getenv("L2PING_COUNT", "1"))
 # How long to wait for bluetoothctl connect attempts (seconds)
 CONNECT_TIMEOUT_SECONDS = int(os.getenv("CONNECT_TIMEOUT_SECONDS", "10"))
 
+# Connect-probe fallback: quick connect attempt for devices that ignore l2ping
+# Many devices (especially some Android phones) don't respond to L2CAP echo
+# but briefly show Connected: yes on a connect attempt, confirming presence.
+CONNECT_PROBE_FALLBACK = os.getenv("CONNECT_PROBE_FALLBACK", "true").lower() in ("1", "true", "yes", "on")
+CONNECT_PROBE_TIMEOUT_SECONDS = int(os.getenv("CONNECT_PROBE_TIMEOUT_SECONDS", "4"))
+
 # Cache TTL for bluetoothctl info calls (seconds)
 DEVICE_INFO_CACHE_SECONDS = int(os.getenv("DEVICE_INFO_CACHE_SECONDS", "5"))
 
@@ -142,6 +148,46 @@ def l2ping_device(mac_address: str, count: int = None, timeout: int = None) -> b
         return False
 
 
+def connect_probe(mac_address: str) -> bool:
+    """Quick connect attempt to detect presence for devices that ignore l2ping.
+
+    Some devices (especially certain Android phones) don't respond to L2CAP
+    echo requests but will briefly show ``Connected: yes`` during a
+    ``bluetoothctl connect`` attempt — even if the connection ultimately
+    fails.  We look for that brief ``Connected: yes`` in the output to
+    confirm the device is in range.
+
+    Args:
+        mac_address: MAC address to probe.
+
+    Returns:
+        True if the device showed any sign of being reachable.
+    """
+    if not _is_valid_mac(mac_address):
+        return False
+
+    try:
+        result = subprocess.run(
+            ["bluetoothctl", "connect", mac_address],
+            capture_output=True,
+            text=True,
+            timeout=CONNECT_PROBE_TIMEOUT_SECONDS,
+        )
+        output = result.stdout
+        # "Connected: yes" appears even on connections that are later canceled
+        if "Connected: yes" in output or "Connection successful" in output:
+            logger.debug("connect_probe success for %s (saw Connected: yes)", mac_address)
+            return True
+        logger.debug("connect_probe failed for %s: %s", mac_address, output.strip()[:120])
+        return False
+    except subprocess.TimeoutExpired:
+        logger.debug("connect_probe timeout for %s", mac_address)
+        return False
+    except Exception as exc:
+        logger.debug("connect_probe error for %s: %s", mac_address, exc)
+        return False
+
+
 def run_l2ping_cycle(mac_addresses: list[str]) -> dict[str, bool]:
     """Sequentially l2ping each MAC address and report presence."""
     results: dict[str, bool] = {}
@@ -193,8 +239,16 @@ def l2ping_batch(
 
     results: dict[str, bool] = {}
     successes = 0
+    fallback_tried = 0
+    fallback_hits = 0
     for mac in mac_addresses:
         success = l2ping_device(mac)
+        if not success and CONNECT_PROBE_FALLBACK:
+            fallback_tried += 1
+            with _disconnect_lock:
+                success = connect_probe(mac)
+            if success:
+                fallback_hits += 1
         results[mac] = success
         if success:
             successes += 1
@@ -202,11 +256,15 @@ def l2ping_batch(
                 disconnect_device(mac)
 
     duration = time.perf_counter() - start
+    fallback_msg = ""
+    if fallback_tried:
+        fallback_msg = " (connect-probe fallback: %d/%d)" % (fallback_hits, fallback_tried)
     logger.info(
-        "l2ping_batch complete: %d/%d responded in %.2fs",
+        "l2ping_batch complete: %d/%d responded in %.2fs%s",
         successes,
         len(results),
         duration,
+        fallback_msg,
     )
     return results
 
