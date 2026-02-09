@@ -571,7 +571,7 @@ def _compute_presence_decision(
         misses = stats.get("consecutive_misses", 0)
         hold_elapsed = signal_age >= ABSENCE_HOLD_SECONDS
         threshold_met = misses >= ABSENCE_CONSECUTIVE_MISS_THRESHOLD
-        if not (hold_elapsed and threshold_met):
+        if not (hold_elapsed or threshold_met):
             return True, "absence_hold"
 
     return False, "adaptive_absent"
@@ -1060,6 +1060,16 @@ def check_and_update_devices() -> None:
         len(presence_signals),
         len(all_l2ping_targets),
     )
+
+    # Record implicit misses for registered devices that were not probed
+    # and whose TTL has already expired. Without this, unprobed devices
+    # never accumulate consecutive_misses and can stay "present" forever.
+    probed_set = set(all_l2ping_targets)
+    for mac in registered_macs:
+        if mac not in connected_set and mac not in probed_set:
+            last_ts = last_presence_signal.get(mac)
+            if last_ts is None or (now - last_ts) > PRESENT_TTL_SECONDS:
+                _update_signal_stats(mac, False, None, now)
 
     # -- 6. Compute presence decisions and push updates ----------------------
     desired_presence: dict[str, bool] = {}
