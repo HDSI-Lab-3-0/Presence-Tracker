@@ -1,7 +1,7 @@
 import subprocess
 import logging
 from typing import Optional
-import bluetooth
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 from threading import Lock
 import os
@@ -15,7 +15,7 @@ logger = configure_logger(
 )
 
 # L2PING configuration for passive detection
-L2PING_TIMEOUT_SECONDS = int(os.getenv("L2PING_TIMEOUT_SECONDS", "1"))
+L2PING_TIMEOUT_SECONDS = int(os.getenv("L2PING_TIMEOUT_SECONDS", "2"))
 L2PING_COUNT = int(os.getenv("L2PING_COUNT", "1"))
 
 # How long to wait for bluetoothctl connect attempts (seconds)
@@ -72,6 +72,10 @@ class DeviceInfoCache:
 
 _device_info_cache = DeviceInfoCache(DEVICE_INFO_CACHE_SECONDS)
 
+# Serialises bluetoothctl disconnect calls so parallel l2ping threads
+# don't issue overlapping commands to the BlueZ daemon.
+_disconnect_lock = Lock()
+
 logger.info(
     "Bluetooth scanner config -> connect_timeout=%ss, l2ping_timeout=%ss, "
     "l2ping_count=%s, info_cache_ttl=%ss",
@@ -111,7 +115,7 @@ def l2ping_device(mac_address: str, count: int = None, timeout: int = None) -> b
             ["l2ping", "-c", str(count), "-t", str(timeout), mac_address],
             capture_output=True,
             text=True,
-            timeout=timeout + 2,  # Allow extra time for process overhead
+            timeout=timeout + 1,  # Allow extra time for process overhead
         )
         # l2ping returns 0 if device responds
         success = result.returncode == 0 and "bytes from" in result.stdout.lower()
@@ -162,10 +166,131 @@ def run_l2ping_cycle(mac_addresses: list[str]) -> dict[str, bool]:
     return results
 
 
-def detect_devices_passive(mac_addresses: list[str]) -> dict[str, tuple[bool, str]]:
-    """Deprecated: retained for backward compatibility."""
-    ping_results = run_l2ping_cycle(mac_addresses)
-    return {mac: (success, "l2ping" if success else "none") for mac, success in ping_results.items()}
+def l2ping_batch(
+    mac_addresses: list[str],
+    max_count: int | None = None,
+    disconnect_after: bool = True,
+) -> dict[str, bool]:
+    """l2ping a subset of MACs sequentially, optionally disconnecting after each success.
+
+    Args:
+        mac_addresses: Full list of MACs to probe.
+        max_count: If set, only probe the first *max_count* MACs.
+        disconnect_after: If True, disconnect each device immediately after a
+            successful l2ping to free the ACL slot for the next device.
+
+    Returns:
+        Dict mapping each probed MAC to its result (True = responded).
+    """
+    if max_count is not None and max_count > 0:
+        mac_addresses = mac_addresses[:max_count]
+
+    if not mac_addresses:
+        return {}
+
+    start = time.perf_counter()
+    logger.info("l2ping_batch: probing %d device(s)...", len(mac_addresses))
+
+    results: dict[str, bool] = {}
+    successes = 0
+    for mac in mac_addresses:
+        success = l2ping_device(mac)
+        results[mac] = success
+        if success:
+            successes += 1
+            if disconnect_after:
+                disconnect_device(mac)
+
+    duration = time.perf_counter() - start
+    logger.info(
+        "l2ping_batch complete: %d/%d responded in %.2fs",
+        successes,
+        len(results),
+        duration,
+    )
+    return results
+
+
+def l2ping_parallel(
+    tier_lists: list[list[str]],
+    disconnect_after: bool = True,
+    max_workers: int = 3,
+) -> dict[str, bool]:
+    """Run l2ping_batch on multiple disjoint MAC lists in parallel threads.
+
+    Each list is processed sequentially within its own thread, but the
+    threads run concurrently.  This keeps total simultaneous ACL
+    connections equal to ``max_workers`` (default 3), well within the
+    RPi5 adapter limit of ~7.
+
+    Args:
+        tier_lists: Up to *max_workers* disjoint lists of MAC addresses.
+            Empty lists are silently skipped.
+        disconnect_after: Passed through to ``l2ping_batch``.
+        max_workers: Number of parallel threads.  Clamped to [1, 5] to
+            stay within the Bluetooth ACL connection limit.
+
+    Returns:
+        Merged dict mapping every probed MAC to its result.
+    """
+    # Clamp workers to safe range (leave 2 ACL slots for fast-path events)
+    max_workers = max(1, min(max_workers, 5))
+
+    # Filter out empty lists
+    non_empty = [lst for lst in tier_lists if lst]
+    if not non_empty:
+        return {}
+
+    # If only 1 list or 1 worker, fall back to sequential
+    if max_workers == 1 or len(non_empty) == 1:
+        merged: dict[str, bool] = {}
+        for lst in non_empty:
+            merged.update(l2ping_batch(lst, disconnect_after=disconnect_after))
+        return merged
+
+    start = time.perf_counter()
+    total_macs = sum(len(lst) for lst in non_empty)
+    logger.info(
+        "l2ping_parallel: %d tier(s), %d device(s), %d thread(s)",
+        len(non_empty),
+        total_macs,
+        min(max_workers, len(non_empty)),
+    )
+
+    merged = {}
+    with ThreadPoolExecutor(
+        max_workers=min(max_workers, len(non_empty)),
+        thread_name_prefix="l2ping",
+    ) as pool:
+        futures = {
+            pool.submit(l2ping_batch, lst, disconnect_after=disconnect_after): idx
+            for idx, lst in enumerate(non_empty)
+        }
+        for future in as_completed(futures):
+            tier_idx = futures[future]
+            try:
+                result = future.result()
+                merged.update(result)
+            except Exception as exc:
+                logger.error(
+                    "l2ping_parallel: tier %d raised %s — treating as all-absent",
+                    tier_idx,
+                    exc,
+                )
+                # Mark all MACs in this tier as absent
+                for mac in non_empty[tier_idx]:
+                    merged.setdefault(mac, False)
+
+    duration = time.perf_counter() - start
+    successes = sum(1 for v in merged.values() if v)
+    logger.info(
+        "l2ping_parallel complete: %d/%d responded in %.2fs (%d thread(s))",
+        successes,
+        len(merged),
+        duration,
+        min(max_workers, len(non_empty)),
+    )
+    return merged
 
 
 def _bluetoothctl_info(mac_address: str) -> Optional[str]:
@@ -285,11 +410,6 @@ def check_device_connected(mac_address: str) -> bool:
 
     logger.debug(f"Device {mac_address} is not connected (cache-backed)")
     return False
-
-
-def scan_for_devices() -> dict[str, str]:
-    """Deprecated mDNS style scouting; retained for compatibility."""
-    return {}
 
 
 def get_device_name(mac_address: str) -> Optional[str]:
@@ -427,6 +547,30 @@ def get_all_connected_devices() -> list[str]:
         return []
 
 
+def disconnect_all_connected(connected_macs: list[str] | None = None) -> int:
+    """Disconnect all currently connected devices to free ACL slots.
+
+    Args:
+        connected_macs: Optional pre-fetched list of connected MACs.
+            If *None*, queries bluetoothctl for the current list.
+
+    Returns:
+        Number of devices successfully disconnected.
+    """
+    if connected_macs is None:
+        connected_macs = get_all_connected_devices()
+    if not connected_macs:
+        return 0
+
+    count = 0
+    for mac in connected_macs:
+        if disconnect_device(mac):
+            count += 1
+    if count:
+        logger.info("Disconnected %d/%d connected device(s) to free ACL slots", count, len(connected_macs))
+    return count
+
+
 def trust_device(mac_address: str) -> bool:
     """
     Trust a Bluetooth device to allow auto-connect.
@@ -548,6 +692,9 @@ def disconnect_device(mac_address: str) -> bool:
     """
     Disconnect from a Bluetooth device.
 
+    Thread-safe: uses ``_disconnect_lock`` so parallel l2ping threads
+    don't issue overlapping ``bluetoothctl disconnect`` commands.
+
     Args:
         mac_address: The MAC address of the device to disconnect
 
@@ -558,34 +705,35 @@ def disconnect_device(mac_address: str) -> bool:
         logger.error(f"Invalid MAC address format: {mac_address}")
         return False
     
-    try:
-        logger.info(f"Disconnecting from {mac_address}...")
-        result = subprocess.run(
-            ["bluetoothctl", "disconnect", mac_address],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
+    with _disconnect_lock:
+        try:
+            logger.info(f"Disconnecting from {mac_address}...")
+            result = subprocess.run(
+                ["bluetoothctl", "disconnect", mac_address],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
 
-        if "Successful disconnected" in result.stdout:
-            logger.info(f"Successfully disconnected from {mac_address}")
-            return True
-        else:
-            # Don't trust cache - verify directly with fresh check
-            is_connected = _bluetoothctl_info(mac_address)
-            if is_connected and "Connected: yes" in is_connected:
-                logger.debug(f"Could not disconnect from {mac_address}: {result.stdout.strip()}")
-                return False
-            else:
-                logger.info(f"Device {mac_address} already disconnected")
+            if "Successful disconnected" in result.stdout:
+                logger.info(f"Successfully disconnected from {mac_address}")
                 return True
+            else:
+                # Don't trust cache - verify directly with fresh check
+                is_connected = _bluetoothctl_info(mac_address)
+                if is_connected and "Connected: yes" in is_connected:
+                    logger.debug(f"Could not disconnect from {mac_address}: {result.stdout.strip()}")
+                    return False
+                else:
+                    logger.info(f"Device {mac_address} already disconnected")
+                    return True
 
-    except subprocess.TimeoutExpired:
-        logger.warning(f"Timeout disconnecting from {mac_address}")
-        return False
-    except Exception as e:
-        logger.error(f"Error disconnecting from device {mac_address}: {e}")
-        return False
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Timeout disconnecting from {mac_address}")
+            return False
+        except Exception as e:
+            logger.error(f"Error disconnecting from device {mac_address}: {e}")
+            return False
 
 
 def remove_device(mac_address: str) -> bool:

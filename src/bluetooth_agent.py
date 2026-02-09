@@ -503,6 +503,28 @@ def _emit_connected_event(device_path: str, props: dict | None = None):
     name = device_props.get("Name")
     _publish_fast_path_event(mac.upper(), name)
 
+    # Immediately disconnect the device to free the ACL slot.
+    # The presence TTL in the tracker keeps the device marked "present"
+    # even after the BT connection is torn down.
+    _schedule_disconnect(mac.upper())
+
+
+def _schedule_disconnect(mac: str) -> None:
+    """Disconnect a device in a background thread so the D-Bus handler returns quickly."""
+    def _do_disconnect():
+        try:
+            subprocess.run(
+                ["bluetoothctl", "disconnect", mac],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            logger.info("Fast-path: disconnected %s to free ACL slot", mac)
+        except Exception as exc:
+            logger.debug("Fast-path: disconnect of %s failed (non-critical): %s", mac, exc)
+
+    threading.Thread(target=_do_disconnect, name=f"disconnect-{mac}", daemon=True).start()
+
 
 def _interfaces_added_handler(object_path: str, interfaces: dict):
     device_props = interfaces.get(DEVICE_INTERFACE)
