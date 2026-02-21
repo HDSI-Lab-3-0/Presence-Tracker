@@ -1,5 +1,5 @@
 [convex]
-deployment_url = ""
+deployment_url = "https://backend-presence.ieeeatucsd.org"
 admin_key = ""
 
 [presence]

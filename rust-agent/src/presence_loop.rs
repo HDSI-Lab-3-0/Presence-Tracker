@@ -1,5 +1,6 @@
 use crate::bluetooth_probe::{
-    disconnect_device, get_connected_devices, get_device_name, normalize_mac, probe_device, CommandRunner,
+    disconnect_device, get_connected_devices, get_device_name, is_device_paired, normalize_mac,
+    probe_device, CommandRunner,
 };
 use crate::config::Config;
 use crate::convex_client::{ConvexClient, DeviceRecord};
@@ -23,13 +24,13 @@ pub struct AgentState {
 
 pub struct PresenceLoop {
     config: Config,
-    convex: ConvexClient,
+    convex: Arc<ConvexClient>,
     runner: Arc<dyn CommandRunner>,
     state: AgentState,
 }
 
 impl PresenceLoop {
-    pub fn new(config: Config, convex: ConvexClient, runner: Arc<dyn CommandRunner>) -> Self {
+    pub fn new(config: Config, convex: Arc<ConvexClient>, runner: Arc<dyn CommandRunner>) -> Self {
         let state = load_state(&config.paths.state_file).unwrap_or_default();
         Self { config, convex, runner, state }
     }
@@ -72,7 +73,25 @@ impl PresenceLoop {
 
         for mac in &connected {
             self.handle_connected(mac, now, &mut by_mac).await?;
-            let _ = disconnect_device(self.runner.as_ref(), mac, self.config.bluetooth.command_timeout_seconds);
+            if is_device_paired(
+                self.runner.as_ref(),
+                mac,
+                self.config.bluetooth.command_timeout_seconds,
+            ) {
+                let _ = disconnect_device(
+                    self.runner.as_ref(),
+                    mac,
+                    self.config.bluetooth.command_timeout_seconds,
+                );
+            } else {
+                logging::info(
+                    "presence_loop",
+                    "skip_disconnect_unpaired",
+                    Some(mac),
+                    Some("ok"),
+                    "Skipping disconnect for unpaired connected device",
+                );
+            }
         }
 
         let mut targets: Vec<String> = by_mac

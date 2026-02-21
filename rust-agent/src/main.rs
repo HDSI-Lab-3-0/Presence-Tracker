@@ -24,12 +24,12 @@ async fn main() -> Result<()> {
 
     let runner: Arc<dyn bluetooth_probe::CommandRunner> = Arc::new(ProcessRunner::default());
 
-    let _agent = bluetooth_agent::start_agent(&config, runner.clone()).await?;
-
-    let convex = ConvexClient::new(
+    let convex = Arc::new(ConvexClient::new(
         config.convex.deployment_url.clone(),
         config.convex.admin_key.clone(),
-    )?;
+    )?);
+
+    let _agent = bluetooth_agent::start_agent(&config, runner.clone(), convex.clone()).await?;
 
     let mut loop_runtime = PresenceLoop::new(config, convex, runner);
     loop_runtime.run_forever().await?;

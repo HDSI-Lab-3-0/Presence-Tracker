@@ -1,5 +1,6 @@
-use crate::bluetooth_probe::{configure_adapter, trust_device, CommandRunner};
+use crate::bluetooth_probe::{configure_adapter, get_device_name, trust_device, CommandRunner};
 use crate::config::Config;
+use crate::convex_client::ConvexClient;
 use crate::logging;
 use anyhow::Result;
 use bluer::agent::{Agent, AgentHandle, ReqError};
@@ -14,7 +15,7 @@ pub struct AgentRuntime {
     _handle: AgentHandle,
 }
 
-pub async fn start_agent(config: &Config, runner: Arc<dyn CommandRunner>) -> Result<AgentRuntime> {
+pub async fn start_agent(config: &Config, runner: Arc<dyn CommandRunner>, convex: Arc<ConvexClient>) -> Result<AgentRuntime> {
     configure_adapter(runner.as_ref());
     let session = bluer::Session::new().await?;
     let _adapter = session.default_adapter().await?;
@@ -53,8 +54,10 @@ pub async fn start_agent(config: &Config, runner: Arc<dyn CommandRunner>) -> Res
     });
 
     let runner_for_confirmation = runner.clone();
+    let convex_for_confirmation = convex.clone();
     let request_confirmation = Box::new(move |req: bluer::agent::RequestConfirmation| -> UnitFuture {
         let runner = runner_for_confirmation.clone();
+        let convex = convex_for_confirmation.clone();
         Box::pin(async move {
             let mac = req.device.to_string().to_ascii_uppercase();
             let _ = trust_device(runner.as_ref(), &mac, command_timeout_seconds);
@@ -65,13 +68,20 @@ pub async fn start_agent(config: &Config, runner: Arc<dyn CommandRunner>) -> Res
                 Some("accepted"),
                 "Accepted pair confirmation",
             );
+            let name = get_device_name(runner.as_ref(), &mac, command_timeout_seconds);
+            match convex.register_pending_device(&mac, name.as_deref()).await {
+                Ok(_) => logging::info("bluetooth_agent", "register_pending", Some(&mac), Some("ok"), "Registered pending device on pair"),
+                Err(e) => logging::warn("bluetooth_agent", "register_pending", Some(&mac), Some("error"), &e.to_string()),
+            }
             Ok(())
         })
     });
 
     let runner_for_authorization = runner.clone();
+    let convex_for_authorization = convex.clone();
     let request_authorization = Box::new(move |req: bluer::agent::RequestAuthorization| -> UnitFuture {
         let runner = runner_for_authorization.clone();
+        let convex = convex_for_authorization.clone();
         Box::pin(async move {
             let mac = req.device.to_string().to_ascii_uppercase();
             let _ = trust_device(runner.as_ref(), &mac, command_timeout_seconds);
@@ -82,6 +92,11 @@ pub async fn start_agent(config: &Config, runner: Arc<dyn CommandRunner>) -> Res
                 Some("accepted"),
                 "Accepted pairing authorization",
             );
+            let name = get_device_name(runner.as_ref(), &mac, command_timeout_seconds);
+            match convex.register_pending_device(&mac, name.as_deref()).await {
+                Ok(_) => logging::info("bluetooth_agent", "register_pending", Some(&mac), Some("ok"), "Registered pending device on authorize"),
+                Err(e) => logging::warn("bluetooth_agent", "register_pending", Some(&mac), Some("error"), &e.to_string()),
+            }
             Ok(())
         })
     });
@@ -101,7 +116,7 @@ pub async fn start_agent(config: &Config, runner: Arc<dyn CommandRunner>) -> Res
         "agent_started",
         None,
         Some("ok"),
-        "BlueZ Agent1 registered with NoInputNoOutput behavior",
+        "BlueZ Agent1 registered (DisplayYesNo capability)",
     );
 
     // Keep adapter mode refreshed periodically in case BlueZ drifts.

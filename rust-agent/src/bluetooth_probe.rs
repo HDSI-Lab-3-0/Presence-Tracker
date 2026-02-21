@@ -94,6 +94,28 @@ pub fn get_device_name(runner: &dyn CommandRunner, mac: &str, timeout_seconds: u
         .find_map(|line| line.trim().strip_prefix("Name:").map(|s| s.trim().to_string()))
 }
 
+pub fn is_device_paired(runner: &dyn CommandRunner, mac: &str, timeout_seconds: u64) -> bool {
+    if !is_valid_mac(mac) {
+        return false;
+    }
+    let mac = normalize_mac(mac);
+    let out = match runner.run(
+        "bluetoothctl",
+        &["info", mac.as_str()],
+        Duration::from_secs(timeout_seconds.max(1)),
+    ) {
+        Ok(out) => out,
+        Err(_) => return false,
+    };
+    if out.code != 0 {
+        return false;
+    }
+
+    out.stdout
+        .lines()
+        .any(|line| line.trim().eq_ignore_ascii_case("Paired: yes"))
+}
+
 pub fn disconnect_device(runner: &dyn CommandRunner, mac: &str, timeout_seconds: u64) -> bool {
     if !is_valid_mac(mac) {
         return false;
@@ -131,8 +153,6 @@ pub fn configure_adapter(runner: &dyn CommandRunner) {
         ("bluetoothctl", &["--timeout", "5", "pairable", "on"]),
         ("bluetoothctl", &["--timeout", "5", "discoverable-timeout", "0"]),
         ("bluetoothctl", &["--timeout", "5", "pairable-timeout", "0"]),
-        ("bluetoothctl", &["--timeout", "5", "agent", "NoInputNoOutput"]),
-        ("bluetoothctl", &["--timeout", "5", "default-agent"]),
     ];
     for (program, args) in commands {
         let _ = runner.run(program, args, Duration::from_secs(7));
