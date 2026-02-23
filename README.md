@@ -27,6 +27,7 @@ This system monitors Bluetooth device presence and updates a Convex backend data
 - **Discord Integration** - Send presence updates to Discord channels
 - **Slack Integration** - Send presence updates to Slack channels
 - **Device Registration Workflow** - Easy onboarding of new devices
+- **UCSD Email Enforcement** - New registrations require a valid `@ucsd.edu` email
 - **Attendance Logging** - Track device presence over time
 - **Grace Period Handling** - Automatic cleanup of unregistered devices
 - **Comprehensive Logging** - File and console logging with error handling
@@ -359,7 +360,7 @@ Choose one of the deployment options:
 
 1. Once logged in, click **"Scan for Devices"** to discover your Bluetooth device
 2. Find your device in the scan results and click **"Register"**
-3. Enter your **first name** and **last name**
+3. Enter your **first name**, **last name**, and **UCSD email**
 4. Click **"Save"** to complete registration
 
 > **Heads up:** As soon as a new device connects to the Raspberry Pi it is published to Convex as a *pending* entry. It will show up on the website immediately, but it will remain pending (and excluded from attendance) until you finish this step in the UI.
@@ -410,6 +411,31 @@ These variables must be set in your `.env` file for the tracker to run:
 **Access Levels:**
 - **User** (AUTH_PASSWORD): View device status, attendance logs, and run Bluetooth scans
 - **Admin** (ADMIN_PASSWORD): All user permissions plus device registration, editing, deletion, and integration management
+
+### Mobile App Status API
+
+The web server exposes a single app route for external mobile clients:
+
+- `POST /api/change_status`
+
+This endpoint flips the app check-in state for the submitted UCSD email (`present` ↔ `absent`).
+
+Request requirements:
+
+- `Authorization: Bearer <apiKey>` header
+- JSON body with email:
+
+```json
+{
+  "email": "student@ucsd.edu"
+}
+```
+
+Notes:
+
+- API key can be rotated from **Settings → Mobile App Linking** by admins.
+- Linking JSON exports `apiUrl` and `apiKey` only (no email).
+- If app check-out is missed, Bluetooth absence will still clear app status.
 
 ### Optional Variables
 

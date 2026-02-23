@@ -14,6 +14,26 @@ if (window.CONVEX_URL) {
         alert('Failed to connect to backend. Please check your configuration.');
     }
 }
+
+function getPresenceSourceMessage(device) {
+    const bluetoothPresent = device.status === 'present';
+    const appPresent = device.appStatus === 'present';
+
+    if (appPresent && bluetoothPresent) {
+        return 'Checked in with app, verified with bluetooth';
+    }
+    if (appPresent) {
+        return 'Checked in with app';
+    }
+    if (bluetoothPresent) {
+        return 'Checked in with bluetooth';
+    }
+    return '';
+}
+
+function escapeSingleQuote(value) {
+    return String(value).replace(/'/g, "\\'");
+}
 const convexClient = window.convexClient;
 
 // State
@@ -173,6 +193,7 @@ function renderDevices(devices) {
 function createResidentCard(device) {
     const isPresent = device.status === 'present';
     const statusClass = isPresent ? 'present' : 'away';
+    const sourceMessage = getPresenceSourceMessage(device);
 
     const fullName = device.firstName && device.lastName
         ? `${device.firstName} ${device.lastName}`
@@ -207,10 +228,11 @@ function createResidentCard(device) {
         <div class="last-seen">
             ${timeMessage}
         </div>
+        ${sourceMessage ? `<div class="last-seen presence-source" style="margin-top: 0.35rem; border-top: none; padding-top: 0;">${sourceMessage}</div>` : ''}
         ${window.isAdmin && window.isAdmin() ? `
         <div class="admin-actions" style="margin-top: 10px; display: flex; justify-content: flex-end; gap: 8px;">
              <button class="btn btn-secondary" style="font-size: 0.7rem; padding: 2px 6px;"
-                onclick="openEditModal('${device._id}', '${device.firstName || ''}', '${device.lastName || ''}')">
+                onclick="openEditModal('${device._id}', '${escapeSingleQuote(device.firstName || '')}', '${escapeSingleQuote(device.lastName || '')}', '${escapeSingleQuote(device.ucsdEmail || '')}')">
                 Edit
              </button>
              <button class="btn" style="font-size: 0.7rem; padding: 2px 6px; background: #e74c3c; border-color: #c0392b; color: white;"
@@ -227,6 +249,7 @@ function createResidentCard(device) {
 function updateResidentCard(card, device) {
     const isPresent = device.status === 'present';
     const statusClass = isPresent ? 'present' : 'away';
+    const sourceMessage = getPresenceSourceMessage(device);
 
     const fullName = device.firstName && device.lastName
         ? `${device.firstName} ${device.lastName}`
@@ -252,6 +275,7 @@ function updateResidentCard(card, device) {
     const userName = card.querySelector('.user-name');
     const statusBadge = card.querySelector('.status-badge');
     const lastSeen = card.querySelector('.last-seen');
+    const sourceBadge = card.querySelector('.presence-source');
 
     if (userName) userName.textContent = fullName;
     if (statusBadge) {
@@ -259,6 +283,21 @@ function updateResidentCard(card, device) {
         statusBadge.textContent = isPresent ? 'Present' : 'Away';
     }
     if (lastSeen) lastSeen.textContent = timeMessage;
+    if (sourceBadge) {
+        if (sourceMessage) {
+            sourceBadge.textContent = sourceMessage;
+        } else {
+            sourceBadge.remove();
+        }
+    } else if (sourceMessage && lastSeen) {
+        const newSource = document.createElement('div');
+        newSource.className = 'last-seen presence-source';
+        newSource.style.marginTop = '0.35rem';
+        newSource.style.borderTop = 'none';
+        newSource.style.paddingTop = '0';
+        newSource.textContent = sourceMessage;
+        lastSeen.insertAdjacentElement('afterend', newSource);
+    }
 
     // Update button onclick handlers (in case _id changed) - only if admin
     const adminActions = card.querySelector('.admin-actions');
@@ -266,7 +305,7 @@ function updateResidentCard(card, device) {
         const editBtn = adminActions.querySelector('.btn-secondary');
         const forgetBtn = adminActions.querySelector('.btn:last-child');
         if (editBtn) {
-            editBtn.onclick = () => openEditModal(device._id, device.firstName || '', device.lastName || '');
+            editBtn.onclick = () => openEditModal(device._id, device.firstName || '', device.lastName || '', device.ucsdEmail || '');
         }
         if (forgetBtn) {
             forgetBtn.onclick = () => forgetDevice(device._id, device.macAddress);
@@ -410,6 +449,7 @@ window.openModal = function (macAddress) {
     document.getElementById('modal-mac').textContent = macAddress;
     document.getElementById('device-firstname').value = '';
     document.getElementById('device-lastname').value = '';
+    document.getElementById('device-ucsd-email').value = '';
     document.getElementById('registration-modal').classList.add('active');
     document.getElementById('device-firstname').focus();
 }
@@ -423,9 +463,15 @@ window.closeModal = function () {
 window.submitRegistration = async function () {
     const firstName = document.getElementById('device-firstname').value.trim();
     const lastName = document.getElementById('device-lastname').value.trim();
+    const ucsdEmail = document.getElementById('device-ucsd-email').value.trim().toLowerCase();
 
-    if (!firstName || !lastName) {
-        showToast('Please enter first and last name', 'error');
+    if (!firstName || !lastName || !ucsdEmail) {
+        showToast('Please enter first name, last name, and UCSD email', 'error');
+        return;
+    }
+
+    if (!ucsdEmail.endsWith('@ucsd.edu')) {
+        showToast('UCSD email must end with @ucsd.edu', 'error');
         return;
     }
 
@@ -447,7 +493,8 @@ window.submitRegistration = async function () {
         await convexClient.mutation("devices:completeDeviceRegistration", {
             macAddress: selectedMacForRegistration,
             firstName: firstName,
-            lastName: lastName
+            lastName: lastName,
+            ucsdEmail: ucsdEmail
         });
 
         showToast('Device registered successfully!', 'success');
@@ -462,10 +509,11 @@ window.submitRegistration = async function () {
 }
 
 // Edit Modal Functions
-window.openEditModal = function (id, firstName, lastName) {
+window.openEditModal = function (id, firstName, lastName, ucsdEmail) {
     document.getElementById('edit-device-id').value = id;
     document.getElementById('edit-firstname').value = firstName === 'undefined' ? '' : firstName;
     document.getElementById('edit-lastname').value = lastName === 'undefined' ? '' : lastName;
+    document.getElementById('edit-ucsd-email').value = ucsdEmail === 'undefined' ? '' : ucsdEmail;
     document.getElementById('edit-modal').classList.add('active');
 
     // Fetch Logs
@@ -502,12 +550,29 @@ window.closeEditModal = function () {
 }
 
 window.submitEdit = async function () {
+    if (!window.isAdmin || !window.isAdmin()) {
+        showToast('Admin access required', 'error');
+        return;
+    }
+
+    const adminPassword = sessionStorage.getItem('ieee_presence_password');
+    if (!adminPassword) {
+        showToast('Please log in again as admin', 'error');
+        return;
+    }
+
     const id = document.getElementById('edit-device-id').value;
     const firstName = document.getElementById('edit-firstname').value.trim();
     const lastName = document.getElementById('edit-lastname').value.trim();
+    const ucsdEmail = document.getElementById('edit-ucsd-email').value.trim().toLowerCase();
 
-    if (!firstName || !lastName) {
-        showToast('First and Last name are required', 'error');
+    if (!firstName || !lastName || !ucsdEmail) {
+        showToast('First name, last name, and UCSD email are required', 'error');
+        return;
+    }
+
+    if (!ucsdEmail.endsWith('@ucsd.edu')) {
+        showToast('UCSD email must end with @ucsd.edu', 'error');
         return;
     }
 
@@ -520,7 +585,9 @@ window.submitEdit = async function () {
         await convexClient.mutation("devices:updateDeviceDetails", {
             id: id,
             firstName: firstName,
-            lastName: lastName
+            lastName: lastName,
+            ucsdEmail: ucsdEmail,
+            adminPassword: adminPassword,
         });
         showToast('Device updated', 'success');
         closeEditModal();
@@ -540,8 +607,14 @@ window.forgetDevice = async function (deviceId, macAddress) {
         return;
     }
 
+    const adminPassword = sessionStorage.getItem('ieee_presence_password');
+    if (!adminPassword) {
+        showToast('Please log in again as admin', 'error');
+        return;
+    }
+
     try {
-        await convexClient.mutation("devices:deleteDevice", { id: deviceId });
+        await convexClient.mutation("devices:deleteDevice", { id: deviceId, adminPassword });
 
         const response = await fetch('/api/forget-device', {
             method: 'POST',

@@ -20,6 +20,80 @@ const convexUrl = resolveConvexUrl();
 const deploymentMode = process.env.DEPLOYMENT_MODE || process.env.CONVEX_URL_MODE || "convex";
 const organizationName = process.env.ORGANIZATION_NAME || "Presence Tracker";
 
+async function readJsonBody(req) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 1024 * 1024) {
+        reject(new Error("Request body too large"));
+      }
+    });
+    req.on("end", () => {
+      if (!body) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(body));
+      } catch (_error) {
+        reject(new Error("Invalid JSON body"));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+function getApiKey(req) {
+  const authHeader = req.headers.authorization || "";
+  if (authHeader.startsWith("Bearer ")) {
+    return authHeader.slice("Bearer ".length).trim();
+  }
+  return "";
+}
+
+function writeJson(res, statusCode, payload) {
+  res.writeHead(statusCode, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+  });
+  res.end(JSON.stringify(payload));
+}
+
+async function runConvexMutation(functionPath, args) {
+  if (!convexUrl) {
+    throw new Error("Convex URL is not configured");
+  }
+
+  const response = await fetch(`${convexUrl}/api/mutation`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      path: functionPath,
+      args,
+    }),
+  });
+
+  let result;
+  try {
+    result = await response.json();
+  } catch (_error) {
+    throw new Error(`Convex returned non-JSON response (${response.status})`);
+  }
+
+  if (!response.ok || result?.status === "error") {
+    const message = result?.errorMessage || result?.errorData || `Convex request failed (${response.status})`;
+    throw new Error(typeof message === "string" ? message : JSON.stringify(message));
+  }
+
+  return result?.value;
+}
+
 const configScript = [
   `window.CONVEX_URL = ${JSON.stringify(convexUrl)};`,
   `window.DEPLOYMENT_MODE = ${JSON.stringify(deploymentMode)};`,
@@ -82,6 +156,50 @@ const server = http.createServer(async (req, res) => {
     const method = req.method || "GET";
     const parsedUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
     const pathname = parsedUrl.pathname;
+
+    if (pathname === "/api/change_status") {
+      if (method === "OPTIONS") {
+        writeJson(res, 200, { ok: true });
+        return;
+      }
+
+      if (method !== "POST") {
+        writeJson(res, 405, { error: "Method not allowed" });
+        return;
+      }
+
+      try {
+        const apiKey = getApiKey(req);
+        if (!apiKey) {
+          writeJson(res, 401, { error: "Missing Bearer API key" });
+          return;
+        }
+
+        const body = await readJsonBody(req);
+        const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+        if (!email) {
+          writeJson(res, 400, { error: "Email is required" });
+          return;
+        }
+
+        const result = await runConvexMutation("devices:flipAppStatusByEmail", {
+          apiKey,
+          email,
+        });
+
+        writeJson(res, 200, {
+          success: true,
+          appStatus: result?.appStatus,
+          email: result?.email || email,
+          keyVersion: result?.keyVersion,
+        });
+        return;
+      } catch (error) {
+        console.error("[frontend] /api/change_status error", error);
+        writeJson(res, 400, { error: error.message || "Unable to change status" });
+        return;
+      }
+    }
 
     if (method === "GET" && pathname === "/config.js") {
       res.writeHead(200, {

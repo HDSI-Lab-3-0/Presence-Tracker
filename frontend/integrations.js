@@ -1,6 +1,7 @@
 // Button injection removed -- handled in index.html
 
 let integrations = [];
+let appLinkingConfig = null;
 
 window.openIntegrationsModal = function () {
     const modal = document.getElementById('integrations-modal');
@@ -19,7 +20,11 @@ async function fetchIntegrations() {
     list.innerHTML = 'Loading...';
 
     try {
+        const adminPassword = sessionStorage.getItem('ieee_presence_password');
         integrations = await window.convexClient.query("integrations:getIntegrations");
+        if (adminPassword) {
+            appLinkingConfig = await window.convexClient.query("devices:getAppLinkingConfig", { adminPassword });
+        }
         renderIntegrations();
     } catch (e) {
         list.textContent = 'Error loading integrations.';
@@ -112,6 +117,29 @@ function renderIntegrations() {
         </div>
     `;
     list.appendChild(slackDiv);
+
+    const mobileApiDiv = document.createElement('div');
+    mobileApiDiv.className = 'integration-card';
+    mobileApiDiv.innerHTML = `
+        <h4>Mobile App Linking</h4>
+        <div class="form-group">
+            <label>API Route</label>
+            <input type="text" id="app-route" value="${window.location.origin}/api/change_status" readonly>
+        </div>
+        <div class="form-group">
+            <label>API Key</label>
+            <input type="text" id="app-api-key" value="${appLinkingConfig?.apiKey || ''}" readonly>
+        </div>
+        <div class="form-group">
+            <label>Key Version</label>
+            <input type="text" id="app-key-version" value="${appLinkingConfig?.keyVersion || 1}" readonly>
+        </div>
+        <div class="form-actions" style="justify-content: flex-end; gap: 0.5rem;">
+            <button class="btn btn-secondary" onclick="downloadAppLinkingJson()">Download JSON</button>
+            <button class="btn btn-primary" onclick="rotateAppApiKey()">Rotate Key</button>
+        </div>
+    `;
+    list.appendChild(mobileApiDiv);
 }
 
 window.saveDiscord = async function () {
@@ -120,9 +148,16 @@ window.saveDiscord = async function () {
     const displayName = document.getElementById('discord-display-name').value.trim();
     const useEmbeds = document.getElementById('discord-use-embeds').checked;
     const showAbsentUsers = document.getElementById('discord-show-absent').checked;
+    const adminPassword = sessionStorage.getItem('ieee_presence_password');
+
+    if (!adminPassword) {
+        showToast('Please log in again as admin', 'error');
+        return;
+    }
 
     try {
         await window.convexClient.mutation("integrations:saveIntegration", {
+            adminPassword,
             type: "discord",
             config: { 
                 webhookUrl, 
@@ -144,9 +179,16 @@ window.saveSlack = async function () {
     const isEnabled = document.getElementById('slack-enabled').checked;
     const displayName = document.getElementById('slack-display-name').value.trim();
     const showAbsentUsers = document.getElementById('slack-show-absent').checked;
+    const adminPassword = sessionStorage.getItem('ieee_presence_password');
+
+    if (!adminPassword) {
+        showToast('Please log in again as admin', 'error');
+        return;
+    }
 
     try {
         await window.convexClient.mutation("integrations:saveIntegration", {
+            adminPassword,
             type: "slack",
             config: { 
                 botToken, 
@@ -160,4 +202,44 @@ window.saveSlack = async function () {
     } catch (e) {
         showToast('Error saving Slack: ' + e.message, 'error');
     }
+}
+
+window.rotateAppApiKey = async function () {
+    const adminPassword = sessionStorage.getItem('ieee_presence_password');
+    if (!adminPassword) {
+        showToast('Please log in again as admin', 'error');
+        return;
+    }
+
+    try {
+        appLinkingConfig = await window.convexClient.mutation("devices:rotateAppApiKey", { adminPassword });
+        renderIntegrations();
+        showToast('App API key rotated');
+    } catch (e) {
+        showToast('Error rotating app key: ' + e.message, 'error');
+    }
+}
+
+window.downloadAppLinkingJson = function () {
+    if (!appLinkingConfig?.apiKey) {
+        showToast('No API key available yet. Rotate key first.', 'error');
+        return;
+    }
+
+    const payload = {
+        apiUrl: `${window.location.origin}/api/change_status`,
+        apiKey: appLinkingConfig.apiKey,
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `presence-app-linking-v${appLinkingConfig.keyVersion || 1}.json`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showToast('Linking JSON downloaded', 'success');
 }

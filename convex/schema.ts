@@ -6,8 +6,11 @@ export default defineSchema({
     macAddress: v.string(),
     firstName: v.optional(v.string()),
     lastName: v.optional(v.string()),
+    ucsdEmail: v.optional(v.string()),
     // specific fields
     status: v.string(),
+    appStatus: v.optional(v.union(v.literal("present"), v.literal("absent"))),
+    appLastSeen: v.optional(v.number()),
     lastSeen: v.number(),
     connectedSince: v.optional(v.number()), // Time when status became "present"
     firstSeen: v.number(),
@@ -17,7 +20,14 @@ export default defineSchema({
     name: v.optional(v.string()),
   })
     .index("by_macAddress", ["macAddress"])
+    .index("by_ucsdEmail", ["ucsdEmail"])
     .index("by_status", ["status"]),
+
+  appConfig: defineTable({
+    apiKey: v.string(),
+    keyVersion: v.number(),
+    rotatedAt: v.number(),
+  }),
 
   deviceLogs: defineTable({
     deviceId: v.id("devices"),

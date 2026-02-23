@@ -5,10 +5,54 @@ import { internal } from "./_generated/api";
 
 const GRACE_PERIOD_SECONDS = 300;
 const DEVICE_EXPIRATION_MS = GRACE_PERIOD_SECONDS * 1000;
+const UCSD_EMAIL_DOMAIN = "@ucsd.edu";
+const APP_API_KEY_LENGTH = 48;
 
 type CleanupResult = { deletedCount: number; deletedMacs: string[] };
 
 type DeleteResult = { success: boolean; macAddress?: string | null };
+
+const isValidUcsdEmail = (email: string) => {
+  const normalized = email.trim().toLowerCase();
+  return normalized.endsWith(UCSD_EMAIL_DOMAIN) && normalized.length > UCSD_EMAIL_DOMAIN.length;
+};
+
+const requireAdmin = (adminPassword: string) => {
+  // @ts-ignore - process.env is available in Convex functions
+  const expected = process.env.ADMIN_PASSWORD;
+  if (!expected || adminPassword !== expected) {
+    throw new Error("Admin access required");
+  }
+};
+
+const randomKey = (length: number) => {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (value) => alphabet[value % alphabet.length]).join("");
+};
+
+const getOrCreateAppConfig = async (ctx: any) => {
+  const existing = await ctx.db.query("appConfig").first();
+  if (existing) {
+    return existing;
+  }
+
+  const now = Date.now();
+  const apiKey = randomKey(APP_API_KEY_LENGTH);
+  const id = await ctx.db.insert("appConfig", {
+    apiKey,
+    keyVersion: 1,
+    rotatedAt: now,
+  });
+
+  return {
+    _id: id,
+    apiKey,
+    keyVersion: 1,
+    rotatedAt: now,
+  };
+};
 
 const deleteDeviceAndLogs = async (
   ctx: any,
@@ -75,10 +119,10 @@ export const getOrganizationName = query({
 
 export const getDeviceLogs = query({
   args: { deviceId: v.id("devices") },
-  handler: async (ctx, args) => {
+  handler: async (ctx: any, args: any) => {
     return await ctx.db
       .query("deviceLogs")
-      .withIndex("by_deviceId", (q) => q.eq("deviceId", args.deviceId))
+      .withIndex("by_deviceId", (q: any) => q.eq("deviceId", args.deviceId))
       .order("desc")
       .take(20);
   },
@@ -94,8 +138,11 @@ export const getDevices = query({
         macAddress: device.macAddress,
         firstName: device.firstName,
         lastName: device.lastName,
+        ucsdEmail: device.ucsdEmail,
         name: device.firstName && device.lastName ? `${device.firstName} ${device.lastName}` : device.name,
         status: device.status,
+        appStatus: device.appStatus,
+        appLastSeen: device.appLastSeen,
         lastSeen: device.lastSeen,
         connectedSince: device.connectedSince,
         pendingRegistration: device.pendingRegistration,
@@ -111,10 +158,10 @@ export const upsertDevice = mutation({
     name: v.string(),
     status: v.string(),
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx: any, args: any) => {
     const existingDevice = await ctx.db
       .query("devices")
-      .withIndex("by_macAddress", (q) => q.eq("macAddress", args.macAddress))
+      .withIndex("by_macAddress", (q: any) => q.eq("macAddress", args.macAddress))
       .first();
 
     const now = Date.now();
@@ -169,7 +216,7 @@ export const updateDeviceStatus = mutation({
     macAddress: v.string(),
     status: v.string(),
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx: any, args: any) => {
     const existingDevice = await ctx.db
       .query("devices")
       .withIndex("by_macAddress", (q) => q.eq("macAddress", args.macAddress))
@@ -200,8 +247,8 @@ export const updateDeviceStatus = mutation({
       const tenSecondsAgo = now - 10000;
       const recentLogs = await ctx.db
         .query("deviceLogs")
-        .withIndex("by_deviceId", (q) => q.eq("deviceId", existingDevice._id))
-        .filter((q) => 
+        .withIndex("by_deviceId", (q: any) => q.eq("deviceId", existingDevice._id))
+        .filter((q: any) => 
           q.and(
             q.eq(q.field("changeType"), "status_change"),
             q.gte(q.field("timestamp"), tenSecondsAgo)
@@ -228,6 +275,7 @@ export const updateDeviceStatus = mutation({
       status: args.status,
       lastSeen: now,
       connectedSince: connectedSince,
+      appStatus: args.status === "absent" ? "absent" : existingDevice.appStatus,
     });
 
     return {
@@ -244,7 +292,7 @@ export const registerDevice = mutation({
     macAddress: v.string(),
     name: v.string(),
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx: any, args: any) => {
     const existingDevice = await ctx.db
       .query("devices")
       .withIndex("by_macAddress", (q) => q.eq("macAddress", args.macAddress))
@@ -338,8 +386,23 @@ export const completeDeviceRegistration = mutation({
     macAddress: v.string(),
     firstName: v.string(),
     lastName: v.string(),
+    ucsdEmail: v.string(),
   },
   handler: async (ctx, args) => {
+    if (!isValidUcsdEmail(args.ucsdEmail)) {
+      throw new Error("A valid @ucsd.edu email is required");
+    }
+
+    const normalizedEmail = args.ucsdEmail.trim().toLowerCase();
+    const existingEmailOwner = await ctx.db
+      .query("devices")
+      .withIndex("by_ucsdEmail", (q: any) => q.eq("ucsdEmail", normalizedEmail))
+      .first();
+
+    if (existingEmailOwner && existingEmailOwner.macAddress !== args.macAddress) {
+      throw new Error("That UCSD email is already linked to another device");
+    }
+
     const existingDevice = await ctx.db
       .query("devices")
       .withIndex("by_macAddress", (q) => q.eq("macAddress", args.macAddress))
@@ -353,6 +416,7 @@ export const completeDeviceRegistration = mutation({
     await ctx.db.patch(existingDevice._id, {
       firstName: args.firstName,
       lastName: args.lastName,
+      ucsdEmail: normalizedEmail,
       pendingRegistration: false,
       lastSeen: now,
       connectedSince: now,
@@ -363,13 +427,14 @@ export const completeDeviceRegistration = mutation({
       deviceId: existingDevice._id,
       changeType: "create",
       timestamp: now,
-      details: `Device registered: ${args.firstName} ${args.lastName}`
+      details: `Device registered: ${args.firstName} ${args.lastName} (${normalizedEmail})`
     });
 
     return {
       ...existingDevice,
       firstName: args.firstName,
       lastName: args.lastName,
+      ucsdEmail: normalizedEmail,
       pendingRegistration: false,
       lastSeen: now,
     };
@@ -381,16 +446,35 @@ export const updateDeviceDetails = mutation({
     id: v.id("devices"),
     firstName: v.string(),
     lastName: v.string(),
+    ucsdEmail: v.string(),
+    adminPassword: v.string(),
   },
   handler: async (ctx, args) => {
+    requireAdmin(args.adminPassword);
+
+    if (!isValidUcsdEmail(args.ucsdEmail)) {
+      throw new Error("A valid @ucsd.edu email is required");
+    }
+
     const device = await ctx.db.get(args.id);
     if (!device) throw new Error("Device not found");
+
+    const normalizedEmail = args.ucsdEmail.trim().toLowerCase();
+    const existingEmailOwner = await ctx.db
+      .query("devices")
+      .withIndex("by_ucsdEmail", (q: any) => q.eq("ucsdEmail", normalizedEmail))
+      .first();
+
+    if (existingEmailOwner && existingEmailOwner._id !== args.id) {
+      throw new Error("That UCSD email is already linked to another device");
+    }
 
     const now = Date.now();
 
     await ctx.db.patch(args.id, {
       firstName: args.firstName,
       lastName: args.lastName,
+      ucsdEmail: normalizedEmail,
     });
 
     // Log update
@@ -398,7 +482,7 @@ export const updateDeviceDetails = mutation({
       deviceId: args.id,
       changeType: "update",
       timestamp: now,
-      details: `Updated details -> Name: ${args.firstName} ${args.lastName}`
+      details: `Updated details -> Name: ${args.firstName} ${args.lastName}, Email: ${normalizedEmail}`
     });
 
     return { success: true };
@@ -408,8 +492,11 @@ export const updateDeviceDetails = mutation({
 export const deleteDevice = mutation({
   args: {
     id: v.id("devices"),
+    adminPassword: v.string(),
   },
   handler: async (ctx, args) => {
+    requireAdmin(args.adminPassword);
+
     const result = await deleteDeviceAndLogs(ctx, args.id);
     if (!result.success) {
       return { success: false, message: "Device not found" };
@@ -504,7 +591,7 @@ export const getAttendanceLogs = query({
     const fourteenDaysAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
     const logs = await ctx.db
       .query("attendanceLogs")
-      .withIndex("by_timestamp", (q) => q.gte("timestamp", fourteenDaysAgo))
+      .withIndex("by_timestamp", (q: any) => q.gte("timestamp", fourteenDaysAgo))
       .order("desc")
       .collect();
 
@@ -514,11 +601,11 @@ export const getAttendanceLogs = query({
 
 export const cleanupOldLogs = internalMutation({
   args: {},
-  handler: async (ctx) => {
+  handler: async (ctx: any) => {
     const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
     const oldLogs = await ctx.db
       .query("attendanceLogs")
-      .withIndex("by_timestamp", (q) => q.lt("timestamp", thirtyDaysAgo))
+      .withIndex("by_timestamp", (q: any) => q.lt("timestamp", thirtyDaysAgo))
       .collect();
 
     for (const log of oldLogs) {
@@ -526,5 +613,95 @@ export const cleanupOldLogs = internalMutation({
     }
 
     return { deletedCount: oldLogs.length };
+  },
+});
+
+export const getAppLinkingConfig = query({
+  args: {
+    adminPassword: v.string(),
+  },
+  handler: async (ctx: any, args: any) => {
+    requireAdmin(args.adminPassword);
+    const appConfig = await getOrCreateAppConfig(ctx);
+
+    return {
+      apiKey: appConfig.apiKey,
+      keyVersion: appConfig.keyVersion,
+      routePath: "/api/change_status",
+    };
+  },
+});
+
+export const rotateAppApiKey = mutation({
+  args: {
+    adminPassword: v.string(),
+  },
+  handler: async (ctx: any, args: any) => {
+    requireAdmin(args.adminPassword);
+    const appConfig = await getOrCreateAppConfig(ctx);
+    const apiKey = randomKey(APP_API_KEY_LENGTH);
+    const keyVersion = (appConfig.keyVersion ?? 0) + 1;
+    const rotatedAt = Date.now();
+
+    await ctx.db.patch(appConfig._id, {
+      apiKey,
+      keyVersion,
+      rotatedAt,
+    });
+
+    return {
+      apiKey,
+      keyVersion,
+      routePath: "/api/change_status",
+    };
+  },
+});
+
+export const flipAppStatusByEmail = mutation({
+  args: {
+    apiKey: v.string(),
+    email: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const appConfig = await getOrCreateAppConfig(ctx);
+    if (args.apiKey !== appConfig.apiKey) {
+      throw new Error("Invalid API key");
+    }
+
+    const normalizedEmail = args.email.trim().toLowerCase();
+    if (!isValidUcsdEmail(normalizedEmail)) {
+      throw new Error("A valid @ucsd.edu email is required");
+    }
+
+    const device = await ctx.db
+      .query("devices")
+      .withIndex("by_ucsdEmail", (q: any) => q.eq("ucsdEmail", normalizedEmail))
+      .first();
+
+    if (!device || device.pendingRegistration) {
+      throw new Error("No registered device found for this UCSD email");
+    }
+
+    const now = Date.now();
+    const nextAppStatus = device.appStatus === "present" ? "absent" : "present";
+
+    await ctx.db.patch(device._id, {
+      appStatus: nextAppStatus,
+      appLastSeen: now,
+    });
+
+    await ctx.db.insert("deviceLogs", {
+      deviceId: device._id,
+      changeType: "update",
+      timestamp: now,
+      details: `App status toggled to ${nextAppStatus} for ${normalizedEmail}`,
+    });
+
+    return {
+      success: true,
+      appStatus: nextAppStatus,
+      email: normalizedEmail,
+      keyVersion: appConfig.keyVersion,
+    };
   },
 });

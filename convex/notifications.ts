@@ -4,7 +4,7 @@ import { api, internal } from "./_generated/api";
 
 export const updatePresenceNotifications = internalAction({
     args: {},
-    handler: async (ctx) => {
+    handler: async (ctx: any) => {
         // 1. Get present users
         const presentUsers = await ctx.runQuery(api.devices.getPresentUsers);
 
@@ -15,15 +15,11 @@ export const updatePresenceNotifications = internalAction({
         for (const integration of integrations) {
             if (!integration.isEnabled) continue;
 
-            let message = "";
-            if (userList.length === 0) {
-                message = "No one is is currently in the Lab";
-            } else {
-                const header = integration.type === "discord"
-                    ? "**Currently in the Lab:**"
-                    : "Currently in the Lab:";
+            const config = integration.config || {};
+            const displayName = config.displayName || "Presence Tracker";
+            const useEmbeds = config.useEmbeds ?? true;
+            const showAbsentUsers = config.showAbsentUsers ?? false;
 
-            // Get absent users if needed
             let absentUsers: any[] = [];
             if (showAbsentUsers) {
                 absentUsers = await ctx.runQuery(api.devices.getAbsentUsers);
@@ -35,8 +31,12 @@ export const updatePresenceNotifications = internalAction({
                 } else if (integration.type === "slack" && config.botToken && config.channelId) {
                     await handleSlack(ctx, integration, presentUsers, absentUsers, displayName, showAbsentUsers);
                 }
-            } catch (e) {
-                // Error handling for integration failures
+            } catch (error) {
+                console.error("Presence notification error", {
+                    integrationId: integration._id,
+                    type: integration.type,
+                    error,
+                });
             }
         }
     },
@@ -174,7 +174,7 @@ async function handleDiscord(
             console.error("Discord post error:", res.status, errorText);
             return;
         }
-        const data = await res.json();
+        const data: any = await res.json();
         if (data?.id) {
             await ctx.runMutation(internal.integrations.updateIntegrationMessageId, {
                 id: integration._id,
@@ -231,7 +231,7 @@ async function handleSlack(
                 text: text
             })
         });
-        const data = await res.json();
+        const data: any = await res.json();
         if (data.ok) {
             messageSent = true;
         }
@@ -250,7 +250,7 @@ async function handleSlack(
                 text: text
             })
         });
-        const data = await res.json();
+        const data: any = await res.json();
         if (data.ok && data.ts) {
             await ctx.runMutation(internal.integrations.updateIntegrationMessageId, {
                 id: integration._id,
