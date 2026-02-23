@@ -3,6 +3,19 @@
 let integrations = [];
 let appLinkingConfig = null;
 
+function getAppRouteUrl() {
+    return `${window.location.origin}/api/change_status`;
+}
+
+function encodeBase64Utf8(value) {
+    const bytes = new TextEncoder().encode(value);
+    let binary = '';
+    for (const byte of bytes) {
+        binary += String.fromCharCode(byte);
+    }
+    return btoa(binary);
+}
+
 window.openIntegrationsModal = function () {
     const modal = document.getElementById('integrations-modal');
     if (modal) {
@@ -124,7 +137,7 @@ function renderIntegrations() {
         <h4>Mobile App Linking</h4>
         <div class="form-group">
             <label>API Route</label>
-            <input type="text" id="app-route" value="${window.location.origin}/api/change_status" readonly>
+            <input type="text" id="app-route" value="${getAppRouteUrl()}" readonly>
         </div>
         <div class="form-group">
             <label>API Key</label>
@@ -227,19 +240,27 @@ window.downloadAppLinkingJson = function () {
     }
 
     const payload = {
-        apiUrl: `${window.location.origin}/api/change_status`,
+        apiUrl: getAppRouteUrl(),
         apiKey: appLinkingConfig.apiKey,
     };
 
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const encodedPayload = encodeBase64Utf8(JSON.stringify(payload));
+    const encodedEnvelope = {
+        encoding: 'base64-json',
+        version: 1,
+        encodedPayload,
+        decodeHint: 'Base64 decode encodedPayload, then JSON.parse(decodedString)',
+    };
+
+    const blob = new Blob([JSON.stringify(encodedEnvelope, null, 2)], { type: 'application/json' });
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
     link.setAttribute('href', url);
-    link.setAttribute('download', `presence-app-linking-v${appLinkingConfig.keyVersion || 1}.json`);
+    link.setAttribute('download', `presence-app-linking-encoded-v${appLinkingConfig.keyVersion || 1}.json`);
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-    showToast('Linking JSON downloaded', 'success');
+    showToast('Encoded linking JSON downloaded', 'success');
 }
