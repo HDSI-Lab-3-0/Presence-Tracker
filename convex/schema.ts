@@ -27,6 +27,11 @@ export default defineSchema({
     apiKey: v.string(),
     keyVersion: v.number(),
     rotatedAt: v.number(),
+    boundaryEnabled: v.optional(v.boolean()),
+    boundaryLatitude: v.optional(v.number()),
+    boundaryLongitude: v.optional(v.number()),
+    boundaryRadius: v.optional(v.number()),
+    boundaryRadiusUnit: v.optional(v.union(v.literal("meters"), v.literal("miles"))),
   }),
 
   deviceLogs: defineTable({

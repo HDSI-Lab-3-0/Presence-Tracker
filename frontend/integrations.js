@@ -2,9 +2,253 @@
 
 let integrations = [];
 let appLinkingConfig = null;
+let boundaryPreviewMap = null;
+let boundaryPreviewMarker = null;
+let boundaryPreviewCircle = null;
+
+const DEFAULT_BOUNDARY_CENTER = { latitude: 32.8807, longitude: -117.2338 };
+
+function toFiniteNumber(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value;
+    }
+    if (typeof value === 'string' && value.trim()) {
+        const parsed = Number(value.trim());
+        if (Number.isFinite(parsed)) {
+            return parsed;
+        }
+    }
+    return null;
+}
+
+function parseCoordinatePair(value) {
+    if (typeof value !== 'string') {
+        return { latitude: null, longitude: null, error: 'Enter coordinates as latitude, longitude.' };
+    }
+
+    const parts = value.split(',').map(part => part.trim()).filter(Boolean);
+    if (parts.length !== 2) {
+        return { latitude: null, longitude: null, error: 'Use the format: latitude, longitude.' };
+    }
+
+    const latitude = toFiniteNumber(parts[0]);
+    const longitude = toFiniteNumber(parts[1]);
+
+    if (latitude === null || longitude === null) {
+        return { latitude: null, longitude: null, error: 'Latitude and longitude must be valid numbers.' };
+    }
+
+    if (latitude < -90 || latitude > 90) {
+        return { latitude: null, longitude: null, error: 'Latitude must be between -90 and 90.' };
+    }
+
+    if (longitude < -180 || longitude > 180) {
+        return { latitude: null, longitude: null, error: 'Longitude must be between -180 and 180.' };
+    }
+
+    return { latitude, longitude, error: '' };
+}
+
+function radiusToMeters(radiusValue, radiusUnit) {
+    const radius = toFiniteNumber(radiusValue);
+    if (radius === null || radius <= 0) {
+        return null;
+    }
+    if (radiusUnit === 'miles') {
+        return radius * 1609.344;
+    }
+    return radius;
+}
+
+function updateBoundaryStatus(message, type = 'info') {
+    const statusNode = document.getElementById('boundary-status');
+    if (!statusNode) return;
+    statusNode.className = `boundary-status ${type}`;
+    statusNode.textContent = message;
+}
+
+function ensureBoundaryPreviewMap() {
+    const mapContainer = document.getElementById('boundary-map-preview');
+    if (!mapContainer) return null;
+
+    if (typeof L === 'undefined') {
+        updateBoundaryStatus('Leaflet map failed to load. Refresh and try again.', 'error');
+        return null;
+    }
+
+    if (boundaryPreviewMap) {
+        const currentContainer = boundaryPreviewMap.getContainer();
+        if (!currentContainer || !document.body.contains(currentContainer)) {
+            boundaryPreviewMap.remove();
+            boundaryPreviewMap = null;
+            boundaryPreviewMarker = null;
+            boundaryPreviewCircle = null;
+        }
+    }
+
+    if (boundaryPreviewMap) {
+        return boundaryPreviewMap;
+    }
+
+    boundaryPreviewMap = L.map(mapContainer, {
+        zoomControl: true,
+    }).setView([DEFAULT_BOUNDARY_CENTER.latitude, DEFAULT_BOUNDARY_CENTER.longitude], 15);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors',
+    }).addTo(boundaryPreviewMap);
+
+    return boundaryPreviewMap;
+}
+
+function refreshBoundaryPreview() {
+    const map = ensureBoundaryPreviewMap();
+    if (!map) return;
+
+    const coordinateInput = document.getElementById('app-boundary-coordinates');
+    const radiusInput = document.getElementById('app-boundary-radius');
+    const radiusUnitInput = document.getElementById('app-boundary-radius-unit');
+
+    if (!coordinateInput || !radiusInput || !radiusUnitInput) {
+        return;
+    }
+
+    const parsedCoordinates = parseCoordinatePair(coordinateInput.value);
+    if (parsedCoordinates.error) {
+        if (boundaryPreviewMarker) {
+            boundaryPreviewMarker.remove();
+            boundaryPreviewMarker = null;
+        }
+        if (boundaryPreviewCircle) {
+            boundaryPreviewCircle.remove();
+            boundaryPreviewCircle = null;
+        }
+        updateBoundaryStatus(parsedCoordinates.error, 'error');
+        return;
+    }
+
+    const radiusMeters = radiusToMeters(radiusInput.value, radiusUnitInput.value);
+    if (radiusMeters === null) {
+        if (boundaryPreviewCircle) {
+            boundaryPreviewCircle.remove();
+            boundaryPreviewCircle = null;
+        }
+        updateBoundaryStatus('Radius must be greater than 0.', 'error');
+        return;
+    }
+
+    const { latitude, longitude } = parsedCoordinates;
+    const center = [latitude, longitude];
+
+    if (!boundaryPreviewMarker) {
+        boundaryPreviewMarker = L.marker(center).addTo(map);
+    } else {
+        boundaryPreviewMarker.setLatLng(center);
+    }
+
+    if (!boundaryPreviewCircle) {
+        boundaryPreviewCircle = L.circle(center, {
+            radius: radiusMeters,
+            color: '#0284C7',
+            fillColor: '#0EA5E9',
+            fillOpacity: 0.18,
+        }).addTo(map);
+    } else {
+        boundaryPreviewCircle.setLatLng(center);
+        boundaryPreviewCircle.setRadius(radiusMeters);
+    }
+
+    map.setView(center, 16);
+    const bounds = boundaryPreviewCircle.getBounds();
+    map.fitBounds(bounds.pad(0.2));
+    updateBoundaryStatus('Map preview updated.', 'success');
+}
+
+function initializeBoundaryPreview() {
+    const coordinateInput = document.getElementById('app-boundary-coordinates');
+    const radiusInput = document.getElementById('app-boundary-radius');
+    const radiusUnitInput = document.getElementById('app-boundary-radius-unit');
+
+    if (!coordinateInput || !radiusInput || !radiusUnitInput) {
+        return;
+    }
+
+    const listeners = ['input', 'change'];
+    listeners.forEach(eventName => {
+        coordinateInput.addEventListener(eventName, refreshBoundaryPreview);
+        radiusInput.addEventListener(eventName, refreshBoundaryPreview);
+        radiusUnitInput.addEventListener(eventName, refreshBoundaryPreview);
+    });
+
+    setTimeout(() => {
+        if (boundaryPreviewMap) {
+            boundaryPreviewMap.invalidateSize();
+        }
+        refreshBoundaryPreview();
+    }, 0);
+}
 
 function getAppRouteUrl() {
     return `${window.location.origin}/api/change_status`;
+}
+
+function getAppFetchRouteUrl() {
+    const routePath = appLinkingConfig?.fetchRoutePath || '/api/fetch';
+    return `${window.location.origin}${routePath}`;
+}
+
+window.saveBoundaryConfig = async function () {
+    const adminPassword = sessionStorage.getItem('ieee_presence_password');
+    if (!adminPassword) {
+        showToast('Please log in again as admin', 'error');
+        return;
+    }
+
+    const enabledInput = document.getElementById('app-boundary-enabled');
+    const coordinatesInput = document.getElementById('app-boundary-coordinates');
+    const radiusInput = document.getElementById('app-boundary-radius');
+    const radiusUnitInput = document.getElementById('app-boundary-radius-unit');
+
+    if (!enabledInput || !coordinatesInput || !radiusInput || !radiusUnitInput) {
+        showToast('Boundary settings controls are unavailable', 'error');
+        return;
+    }
+
+    const parsedCoordinates = parseCoordinatePair(coordinatesInput.value);
+    if (parsedCoordinates.error) {
+        updateBoundaryStatus(parsedCoordinates.error, 'error');
+        showToast(parsedCoordinates.error, 'error');
+        return;
+    }
+
+    const radius = toFiniteNumber(radiusInput.value);
+    if (radius === null || radius <= 0) {
+        updateBoundaryStatus('Radius must be greater than 0.', 'error');
+        showToast('Radius must be greater than 0', 'error');
+        return;
+    }
+
+    const boundaryRadiusUnit = radiusUnitInput.value === 'miles' ? 'miles' : 'meters';
+
+    try {
+        appLinkingConfig = await window.convexClient.mutation('devices:saveAppBoundaryConfig', {
+            adminPassword,
+            boundaryEnabled: enabledInput.checked,
+            boundaryLatitude: parsedCoordinates.latitude,
+            boundaryLongitude: parsedCoordinates.longitude,
+            boundaryRadius: radius,
+            boundaryRadiusUnit,
+        });
+        coordinatesInput.value = `${parsedCoordinates.latitude}, ${parsedCoordinates.longitude}`;
+        radiusInput.value = String(radius);
+        radiusUnitInput.value = boundaryRadiusUnit;
+        refreshBoundaryPreview();
+        showToast('Boundary settings saved', 'success');
+    } catch (e) {
+        updateBoundaryStatus(e.message || 'Failed to save boundary settings.', 'error');
+        showToast('Error saving boundary: ' + e.message, 'error');
+    }
 }
 
 function encodeBase64Utf8(value) {
@@ -85,6 +329,12 @@ window.openIntegrationsModal = function () {
 }
 
 window.closeIntegrationsModal = function () {
+    if (boundaryPreviewMap) {
+        boundaryPreviewMap.remove();
+        boundaryPreviewMap = null;
+        boundaryPreviewMarker = null;
+        boundaryPreviewCircle = null;
+    }
     document.getElementById('integrations-modal').classList.remove('active');
 }
 
@@ -224,11 +474,25 @@ function renderIntegrations() {
 
     const mobileApiDiv = document.createElement('div');
     mobileApiDiv.className = 'integration-card';
+    const boundaryLatitude = typeof appLinkingConfig?.boundaryLatitude === 'number'
+        ? appLinkingConfig.boundaryLatitude
+        : DEFAULT_BOUNDARY_CENTER.latitude;
+    const boundaryLongitude = typeof appLinkingConfig?.boundaryLongitude === 'number'
+        ? appLinkingConfig.boundaryLongitude
+        : DEFAULT_BOUNDARY_CENTER.longitude;
+    const boundaryRadius = typeof appLinkingConfig?.boundaryRadius === 'number'
+        ? appLinkingConfig.boundaryRadius
+        : 100;
+    const boundaryRadiusUnit = appLinkingConfig?.boundaryRadiusUnit === 'miles' ? 'miles' : 'meters';
     mobileApiDiv.innerHTML = `
         <h4>Mobile App Linking</h4>
         <div class="form-group">
             <label>API Route</label>
             <input type="text" id="app-route" value="${getAppRouteUrl()}" readonly>
+        </div>
+        <div class="form-group">
+            <label>Fetch Route</label>
+            <input type="text" id="app-fetch-route" value="${getAppFetchRouteUrl()}" readonly>
         </div>
         <div class="form-group">
             <label>API Key</label>
@@ -246,10 +510,42 @@ function renderIntegrations() {
             <label>QR Code</label>
             <div id="app-linking-qr-container" style="display: flex; flex-direction: column; align-items: flex-start;"></div>
         </div>
+        <div class="form-group boundary-section">
+            <label style="margin-bottom: 0.5rem;">Location Boundary</label>
+            <div class="form-group" style="margin-bottom: 0.75rem;">
+                <label class="switch">
+                    <input type="checkbox" id="app-boundary-enabled" ${appLinkingConfig?.boundaryEnabled ? 'checked' : ''}>
+                    <span class="slider"></span> Boundary Check Enabled
+                </label>
+            </div>
+            <div class="form-group" style="margin-bottom: 0.75rem;">
+                <label for="app-boundary-coordinates">Center (Latitude, Longitude)</label>
+                <input type="text" id="app-boundary-coordinates" value="${boundaryLatitude}, ${boundaryLongitude}" placeholder="32.88071867959147, -117.23379676539253">
+            </div>
+            <div class="boundary-radius-grid">
+                <div class="form-group" style="margin-bottom: 0.75rem;">
+                    <label for="app-boundary-radius">Radius</label>
+                    <input type="number" id="app-boundary-radius" min="0.0001" step="any" value="${boundaryRadius}">
+                </div>
+                <div class="form-group" style="margin-bottom: 0.75rem;">
+                    <label for="app-boundary-radius-unit">Unit</label>
+                    <select id="app-boundary-radius-unit">
+                        <option value="meters" ${boundaryRadiusUnit === 'meters' ? 'selected' : ''}>Meters</option>
+                        <option value="miles" ${boundaryRadiusUnit === 'miles' ? 'selected' : ''}>Miles</option>
+                    </select>
+                </div>
+            </div>
+            <div id="boundary-map-preview" class="boundary-map-preview"></div>
+            <p id="boundary-status" class="boundary-status info">Enter coordinates and radius to preview the boundary.</p>
+            <div class="form-actions" style="justify-content: flex-end; margin-top: 0.75rem;">
+                <button class="btn btn-primary" onclick="saveBoundaryConfig()">Save Boundary</button>
+            </div>
+        </div>
     `;
     list.appendChild(mobileApiDiv);
 
     renderAppLinkingQr('app-linking-qr-container');
+    initializeBoundaryPreview();
 }
 
 window.saveDiscord = async function () {

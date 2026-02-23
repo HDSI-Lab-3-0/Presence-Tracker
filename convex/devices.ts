@@ -7,6 +7,9 @@ const GRACE_PERIOD_SECONDS = 300;
 const DEVICE_EXPIRATION_MS = GRACE_PERIOD_SECONDS * 1000;
 const UCSD_EMAIL_DOMAIN = "@ucsd.edu";
 const APP_API_KEY_LENGTH = 48;
+const METERS_PER_MILE = 1609.344;
+const DEFAULT_BOUNDARY_RADIUS_METERS = 100;
+const DEFAULT_BOUNDARY_RADIUS_UNIT = "meters" as const;
 
 type CleanupResult = { deletedCount: number; deletedMacs: string[] };
 
@@ -32,6 +35,47 @@ const randomKey = (length: number) => {
   return Array.from(bytes, (value) => alphabet[value % alphabet.length]).join("");
 };
 
+const normalizeBoundaryRadiusUnit = (unit?: string) =>
+  unit === "miles" ? "miles" : DEFAULT_BOUNDARY_RADIUS_UNIT;
+
+const boundaryRadiusToMeters = (radius: number, unit?: string) => {
+  const normalizedUnit = normalizeBoundaryRadiusUnit(unit);
+  return normalizedUnit === "miles" ? radius * METERS_PER_MILE : radius;
+};
+
+const toRadians = (value: number) => (value * Math.PI) / 180;
+
+const getDistanceMeters = (
+  latitudeA: number,
+  longitudeA: number,
+  latitudeB: number,
+  longitudeB: number,
+) => {
+  const earthRadiusMeters = 6371000;
+  const latitudeDelta = toRadians(latitudeB - latitudeA);
+  const longitudeDelta = toRadians(longitudeB - longitudeA);
+  const a =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos(toRadians(latitudeA)) * Math.cos(toRadians(latitudeB)) * Math.sin(longitudeDelta / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return earthRadiusMeters * c;
+};
+
+const buildAppConfigResponse = (appConfig: any) => ({
+  apiKey: appConfig?.apiKey || "",
+  keyVersion: appConfig?.keyVersion || 0,
+  routePath: "/api/change_status",
+  fetchRoutePath: "/api/fetch",
+  boundaryEnabled: appConfig?.boundaryEnabled === true,
+  boundaryLatitude: typeof appConfig?.boundaryLatitude === "number" ? appConfig.boundaryLatitude : null,
+  boundaryLongitude: typeof appConfig?.boundaryLongitude === "number" ? appConfig.boundaryLongitude : null,
+  boundaryRadius:
+    typeof appConfig?.boundaryRadius === "number" && appConfig.boundaryRadius > 0
+      ? appConfig.boundaryRadius
+      : DEFAULT_BOUNDARY_RADIUS_METERS,
+  boundaryRadiusUnit: normalizeBoundaryRadiusUnit(appConfig?.boundaryRadiusUnit),
+});
+
 const getOrCreateAppConfig = async (ctx: any) => {
   const existing = await ctx.db.query("appConfig").first();
   if (existing) {
@@ -44,6 +88,9 @@ const getOrCreateAppConfig = async (ctx: any) => {
     apiKey,
     keyVersion: 1,
     rotatedAt: now,
+    boundaryEnabled: false,
+    boundaryRadius: DEFAULT_BOUNDARY_RADIUS_METERS,
+    boundaryRadiusUnit: DEFAULT_BOUNDARY_RADIUS_UNIT,
   });
 
   return {
@@ -51,6 +98,9 @@ const getOrCreateAppConfig = async (ctx: any) => {
     apiKey,
     keyVersion: 1,
     rotatedAt: now,
+    boundaryEnabled: false,
+    boundaryRadius: DEFAULT_BOUNDARY_RADIUS_METERS,
+    boundaryRadiusUnit: DEFAULT_BOUNDARY_RADIUS_UNIT,
   };
 };
 
@@ -617,44 +667,61 @@ export const cleanupOldLogs = internalMutation({
 });
 
 export const getAppLinkingConfig = query({
-  args: {},
+  args: {
+    adminPassword: v.optional(v.string()),
+  },
   handler: async (ctx: any, args: any) => {
-    const appConfig = await ctx.db.query("appConfig").first();
-
-    return {
-      apiKey: appConfig?.apiKey || "",
-      keyVersion: appConfig?.keyVersion || 0,
-      routePath: "/api/change_status",
-    };
+    const appConfig = await getOrCreateAppConfig(ctx);
+    return buildAppConfigResponse(appConfig);
   },
 });
 
-export const rotateAppApiKey = mutation({
+export const saveAppBoundaryConfig = mutation({
   args: {
     adminPassword: v.string(),
+    boundaryEnabled: v.boolean(),
+    boundaryLatitude: v.optional(v.number()),
+    boundaryLongitude: v.optional(v.number()),
+    boundaryRadius: v.number(),
+    boundaryRadiusUnit: v.union(v.literal("meters"), v.literal("miles")),
   },
   handler: async (ctx: any, args: any) => {
     requireAdmin(args.adminPassword);
     const appConfig = await getOrCreateAppConfig(ctx);
-    const apiKey = randomKey(APP_API_KEY_LENGTH);
-    const keyVersion = (appConfig.keyVersion ?? 0) + 1;
-    const rotatedAt = Date.now();
+
+    if (!Number.isFinite(args.boundaryRadius) || args.boundaryRadius <= 0) {
+      throw new Error("Boundary radius must be greater than 0");
+    }
+
+    const hasLatitude = typeof args.boundaryLatitude === "number";
+    const hasLongitude = typeof args.boundaryLongitude === "number";
+
+    if (args.boundaryEnabled && (!hasLatitude || !hasLongitude)) {
+      throw new Error("Boundary latitude and longitude are required when boundary is enabled");
+    }
+
+    if (hasLatitude && (args.boundaryLatitude < -90 || args.boundaryLatitude > 90)) {
+      throw new Error("Boundary latitude must be between -90 and 90");
+    }
+
+    if (hasLongitude && (args.boundaryLongitude < -180 || args.boundaryLongitude > 180)) {
+      throw new Error("Boundary longitude must be between -180 and 180");
+    }
 
     await ctx.db.patch(appConfig._id, {
-      apiKey,
-      keyVersion,
-      rotatedAt,
+      boundaryEnabled: args.boundaryEnabled,
+      boundaryLatitude: hasLatitude ? args.boundaryLatitude : undefined,
+      boundaryLongitude: hasLongitude ? args.boundaryLongitude : undefined,
+      boundaryRadius: args.boundaryRadius,
+      boundaryRadiusUnit: args.boundaryRadiusUnit,
     });
 
-    return {
-      apiKey,
-      keyVersion,
-      routePath: "/api/change_status",
-    };
+    const updated = await ctx.db.get(appConfig._id);
+    return buildAppConfigResponse(updated);
   },
 });
 
-export const flipAppStatusByEmail = mutation({
+export const fetchAppStatusByEmail = query({
   args: {
     apiKey: v.string(),
     email: v.string(),
@@ -679,6 +746,115 @@ export const flipAppStatusByEmail = mutation({
       throw new Error("No registered device found for this UCSD email");
     }
 
+    const configResponse = buildAppConfigResponse(appConfig);
+
+    return {
+      success: true,
+      email: normalizedEmail,
+      appStatus: device.appStatus === "present" ? "present" : "absent",
+      keyVersion: configResponse.keyVersion,
+      boundaryEnabled: configResponse.boundaryEnabled,
+      boundaryLatitude: configResponse.boundaryLatitude,
+      boundaryLongitude: configResponse.boundaryLongitude,
+      boundaryRadius: configResponse.boundaryRadius,
+      boundaryRadiusUnit: configResponse.boundaryRadiusUnit,
+    };
+  },
+});
+
+export const rotateAppApiKey = mutation({
+  args: {
+    adminPassword: v.string(),
+  },
+  handler: async (ctx: any, args: any) => {
+    requireAdmin(args.adminPassword);
+    const appConfig = await getOrCreateAppConfig(ctx);
+    const apiKey = randomKey(APP_API_KEY_LENGTH);
+    const keyVersion = (appConfig.keyVersion ?? 0) + 1;
+    const rotatedAt = Date.now();
+
+    await ctx.db.patch(appConfig._id, {
+      apiKey,
+      keyVersion,
+      rotatedAt,
+    });
+
+    const updated = await ctx.db.get(appConfig._id);
+    return buildAppConfigResponse(updated);
+  },
+});
+
+export const flipAppStatusByEmail = mutation({
+  args: {
+    apiKey: v.string(),
+    email: v.string(),
+    latitude: v.optional(v.number()),
+    longitude: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const appConfig = await getOrCreateAppConfig(ctx);
+    if (args.apiKey !== appConfig.apiKey) {
+      throw new Error("Invalid API key");
+    }
+
+    if (typeof args.latitude === "number" && (args.latitude < -90 || args.latitude > 90)) {
+      throw new Error("Latitude must be between -90 and 90");
+    }
+
+    if (typeof args.longitude === "number" && (args.longitude < -180 || args.longitude > 180)) {
+      throw new Error("Longitude must be between -180 and 180");
+    }
+
+    const normalizedEmail = args.email.trim().toLowerCase();
+    if (!isValidUcsdEmail(normalizedEmail)) {
+      throw new Error("A valid @ucsd.edu email is required");
+    }
+
+    const device = await ctx.db
+      .query("devices")
+      .withIndex("by_ucsdEmail", (q: any) => q.eq("ucsdEmail", normalizedEmail))
+      .first();
+
+    if (!device || device.pendingRegistration) {
+      throw new Error("No registered device found for this UCSD email");
+    }
+
+    const boundaryEnabled = appConfig.boundaryEnabled === true;
+    if (boundaryEnabled) {
+      const hasLatitude = typeof args.latitude === "number";
+      const hasLongitude = typeof args.longitude === "number";
+
+      if (!hasLatitude || !hasLongitude) {
+        throw new Error("missing_location: latitude and longitude are required when boundary checking is enabled");
+      }
+
+      const boundaryLatitude = appConfig.boundaryLatitude;
+      const boundaryLongitude = appConfig.boundaryLongitude;
+      if (typeof boundaryLatitude !== "number" || typeof boundaryLongitude !== "number") {
+        throw new Error("boundary_not_configured: boundary center location is not configured");
+      }
+
+      const configuredRadius =
+        typeof appConfig.boundaryRadius === "number" && appConfig.boundaryRadius > 0
+          ? appConfig.boundaryRadius
+          : DEFAULT_BOUNDARY_RADIUS_METERS;
+      const maxDistanceMeters = boundaryRadiusToMeters(configuredRadius, appConfig.boundaryRadiusUnit);
+      const requestLatitude = args.latitude as number;
+      const requestLongitude = args.longitude as number;
+      const distanceMeters = getDistanceMeters(
+        requestLatitude,
+        requestLongitude,
+        boundaryLatitude,
+        boundaryLongitude,
+      );
+
+      if (distanceMeters > maxDistanceMeters) {
+        throw new Error(
+          `outside_boundary: distance ${distanceMeters.toFixed(2)}m exceeds max ${maxDistanceMeters.toFixed(2)}m`,
+        );
+      }
+    }
+
     const now = Date.now();
     const nextAppStatus = device.appStatus === "present" ? "absent" : "present";
 
@@ -699,6 +875,7 @@ export const flipAppStatusByEmail = mutation({
       appStatus: nextAppStatus,
       email: normalizedEmail,
       keyVersion: appConfig.keyVersion,
+      boundaryEnforced: boundaryEnabled,
     };
   },
 });

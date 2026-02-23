@@ -22,9 +22,13 @@ Flip a user app status between `present` and `absent` by UCSD email.
 
 ```json
 {
-  "email": "student@ucsd.edu"
+  "email": "student@ucsd.edu",
+  "latitude": 32.88071867959147,
+  "longitude": -117.23379676539253
 }
 ```
+
+`latitude` / `longitude` are optional when boundary checks are disabled, and required when boundary checks are enabled.
 
 #### Success Response (200)
 
@@ -42,6 +46,7 @@ Flip a user app status between `present` and `absent` by UCSD email.
 - `400` invalid JSON or missing email
 - `401` missing Bearer API key
 - `405` method not allowed
+- `403` outside boundary when boundary checks are enabled
 - `400` invalid API key / backend validation errors
 
 #### cURL Example
@@ -50,12 +55,52 @@ Flip a user app status between `present` and `absent` by UCSD email.
 curl -X POST "http://localhost:3132/api/change_status" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
+  -d '{"email":"student@ucsd.edu","latitude":32.88071867959147,"longitude":-117.23379676539253}'
+```
+
+---
+
+### 2) `POST /api/fetch`
+Fetch startup check-in context for a user (used by app startup auto-fetch flow).
+
+- Auth: **Required** (`Authorization: Bearer <apiKey>`)
+- Content-Type: `application/json`
+- Body:
+
+```json
+{
+  "email": "student@ucsd.edu"
+}
+```
+
+#### Success Response (200)
+
+```json
+{
+  "success": true,
+  "email": "student@ucsd.edu",
+  "appStatus": "absent",
+  "keyVersion": 3,
+  "boundaryEnabled": true,
+  "boundaryLatitude": 32.88071867959147,
+  "boundaryLongitude": -117.23379676539253,
+  "boundaryRadius": 0.6,
+  "boundaryRadiusUnit": "miles"
+}
+```
+
+#### cURL Example
+
+```bash
+curl -X POST "http://localhost:3132/api/fetch" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
   -d '{"email":"student@ucsd.edu"}'
 ```
 
 ---
 
-### 2) `OPTIONS /api/change_status`
+### 3) `OPTIONS /api/change_status` and `OPTIONS /api/fetch`
 CORS preflight endpoint for mobile/web clients.
 
 #### Success Response (200)

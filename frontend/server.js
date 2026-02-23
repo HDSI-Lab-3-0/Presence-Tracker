@@ -63,12 +63,56 @@ function writeJson(res, statusCode, payload) {
   res.end(JSON.stringify(payload));
 }
 
+function parseOptionalNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
 async function runConvexMutation(functionPath, args) {
   if (!convexUrl) {
     throw new Error("Convex URL is not configured");
   }
 
   const response = await fetch(`${convexUrl}/api/mutation`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      path: functionPath,
+      args,
+    }),
+  });
+
+  let result;
+  try {
+    result = await response.json();
+  } catch (_error) {
+    throw new Error(`Convex returned non-JSON response (${response.status})`);
+  }
+
+  if (!response.ok || result?.status === "error") {
+    const message = result?.errorMessage || result?.errorData || `Convex request failed (${response.status})`;
+    throw new Error(typeof message === "string" ? message : JSON.stringify(message));
+  }
+
+  return result?.value;
+}
+
+async function runConvexQuery(functionPath, args) {
+  if (!convexUrl) {
+    throw new Error("Convex URL is not configured");
+  }
+
+  const response = await fetch(`${convexUrl}/api/query`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -182,9 +226,24 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
+        const latitude = parseOptionalNumber(body.latitude);
+        const longitude = parseOptionalNumber(body.longitude);
+
+        if (typeof latitude === "number" && (latitude < -90 || latitude > 90)) {
+          writeJson(res, 400, { error: "Latitude must be between -90 and 90" });
+          return;
+        }
+
+        if (typeof longitude === "number" && (longitude < -180 || longitude > 180)) {
+          writeJson(res, 400, { error: "Longitude must be between -180 and 180" });
+          return;
+        }
+
         const result = await runConvexMutation("devices:flipAppStatusByEmail", {
           apiKey,
           email,
+          latitude,
+          longitude,
         });
 
         writeJson(res, 200, {
@@ -196,7 +255,58 @@ const server = http.createServer(async (req, res) => {
         return;
       } catch (error) {
         console.error("[frontend] /api/change_status error", error);
-        writeJson(res, 400, { error: error.message || "Unable to change status" });
+        const message = error.message || "Unable to change status";
+        const statusCode = message.includes("outside_boundary") ? 403 : 400;
+        writeJson(res, statusCode, { error: message });
+        return;
+      }
+    }
+
+    if (pathname === "/api/fetch") {
+      if (method === "OPTIONS") {
+        writeJson(res, 200, { ok: true });
+        return;
+      }
+
+      if (method !== "POST") {
+        writeJson(res, 405, { error: "Method not allowed" });
+        return;
+      }
+
+      try {
+        const apiKey = getApiKey(req);
+        if (!apiKey) {
+          writeJson(res, 401, { error: "Missing Bearer API key" });
+          return;
+        }
+
+        const body = await readJsonBody(req);
+        const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+        if (!email) {
+          writeJson(res, 400, { error: "Email is required" });
+          return;
+        }
+
+        const result = await runConvexQuery("devices:fetchAppStatusByEmail", {
+          apiKey,
+          email,
+        });
+
+        writeJson(res, 200, {
+          success: true,
+          email: result?.email || email,
+          appStatus: result?.appStatus || "absent",
+          keyVersion: result?.keyVersion,
+          boundaryEnabled: result?.boundaryEnabled === true,
+          boundaryLatitude: result?.boundaryLatitude ?? null,
+          boundaryLongitude: result?.boundaryLongitude ?? null,
+          boundaryRadius: result?.boundaryRadius,
+          boundaryRadiusUnit: result?.boundaryRadiusUnit || "meters",
+        });
+        return;
+      } catch (error) {
+        console.error("[frontend] /api/fetch error", error);
+        writeJson(res, 400, { error: error.message || "Unable to fetch app status" });
         return;
       }
     }

@@ -613,6 +613,60 @@ body {
     margin-bottom: 1rem;
 }
 
+.integration-card select {
+    width: 100%;
+    padding: 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-family: inherit;
+    font-size: 0.9rem;
+    background: white;
+}
+
+.integration-card select:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.1);
+}
+
+.boundary-section {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border-light);
+}
+
+.boundary-radius-grid {
+    display: grid;
+    grid-template-columns: 1fr 140px;
+    gap: 0.75rem;
+}
+
+.boundary-map-preview {
+    width: 100%;
+    height: 240px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-app);
+    margin-bottom: 0.5rem;
+}
+
+.boundary-status {
+    margin: 0;
+    font-size: 0.8rem;
+}
+
+.boundary-status.info {
+    color: var(--text-secondary);
+}
+
+.boundary-status.success {
+    color: var(--success);
+}
+
+.boundary-status.error {
+    color: var(--danger);
+}
+
 .integration-card .form-group:last-of-type {
     margin-bottom: 0;
 }
@@ -682,6 +736,10 @@ body {
     }
 
     .checkbox-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .boundary-radius-grid {
         grid-template-columns: 1fr;
     }
 }
