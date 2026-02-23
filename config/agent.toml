@@ -1,5 +1,5 @@
 [convex]
-deployment_url = "https://backend-presence.ieeeatucsd.org"
+deployment_url = "https://greedy-moose-508.convex.cloud"
 admin_key = ""
 
 [presence]
