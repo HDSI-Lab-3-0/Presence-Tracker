@@ -18,12 +18,16 @@ deploy/
 *.log
 presence_tracker.log*
 setup.config
+config/agent_state.json
 
 # Convex local state
 .convex/
 
 # Node modules
 node_modules/
+
+# Rust build artifacts
+rust-agent/target/
 
 # UV cache
 .uv/
@@ -41,4 +45,3 @@ uv.lock
 Thumbs.db
 
 .env.local
-
