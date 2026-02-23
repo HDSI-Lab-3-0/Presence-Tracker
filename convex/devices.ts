@@ -617,11 +617,8 @@ export const cleanupOldLogs = internalMutation({
 });
 
 export const getAppLinkingConfig = query({
-  args: {
-    adminPassword: v.string(),
-  },
+  args: {},
   handler: async (ctx: any, args: any) => {
-    requireAdmin(args.adminPassword);
     const appConfig = await ctx.db.query("appConfig").first();
 
     return {

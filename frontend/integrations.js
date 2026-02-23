@@ -34,8 +34,8 @@ function buildEncodedLinkingEnvelope() {
     };
 }
 
-function renderAppLinkingQr() {
-    const container = document.getElementById('app-linking-qr-container');
+function renderAppLinkingQr(containerId = 'app-linking-qr-container') {
+    const container = document.getElementById(containerId);
     if (!container) return;
 
     const encodedEnvelope = buildEncodedLinkingEnvelope();
@@ -88,16 +88,47 @@ window.closeIntegrationsModal = function () {
     document.getElementById('integrations-modal').classList.remove('active');
 }
 
+async function fetchAppLinkingConfig() {
+    appLinkingConfig = await window.convexClient.query("devices:getAppLinkingConfig", {});
+    return appLinkingConfig;
+}
+
+window.openAppQrModal = async function () {
+    const modal = document.getElementById('app-qr-modal');
+    if (!modal) return;
+
+    modal.classList.add('active');
+
+    const container = document.getElementById('app-linking-qr-standalone');
+    if (container) {
+        container.innerHTML = '<p style="margin: 0; color: #666;">Loading QR code...</p>';
+    }
+
+    try {
+        await fetchAppLinkingConfig();
+        renderAppLinkingQr('app-linking-qr-standalone');
+    } catch (error) {
+        if (container) {
+            container.innerHTML = '<p style="margin: 0; color: #a94442;">Unable to load QR config right now.</p>';
+        }
+        console.error('Failed to load app linking config', error);
+    }
+}
+
+window.closeAppQrModal = function () {
+    const modal = document.getElementById('app-qr-modal');
+    if (modal) {
+        modal.classList.remove('active');
+    }
+}
+
 async function fetchIntegrations() {
     const list = document.getElementById('integrations-list');
     list.innerHTML = 'Loading...';
 
     try {
-        const adminPassword = sessionStorage.getItem('ieee_presence_password');
         integrations = await window.convexClient.query("integrations:getIntegrations");
-        if (adminPassword) {
-            appLinkingConfig = await window.convexClient.query("devices:getAppLinkingConfig", { adminPassword });
-        }
+        await fetchAppLinkingConfig();
         renderIntegrations();
     } catch (e) {
         list.textContent = 'Error loading integrations.';
@@ -218,7 +249,7 @@ function renderIntegrations() {
     `;
     list.appendChild(mobileApiDiv);
 
-    renderAppLinkingQr();
+    renderAppLinkingQr('app-linking-qr-container');
 }
 
 window.saveDiscord = async function () {
@@ -323,3 +354,29 @@ window.downloadAppLinkingJson = function () {
     URL.revokeObjectURL(url);
     showToast('Encoded linking JSON downloaded', 'success');
 }
+
+window.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+
+    const integrationsModal = document.getElementById('integrations-modal');
+    if (integrationsModal?.classList.contains('active')) {
+        closeIntegrationsModal();
+    }
+
+    const appQrModal = document.getElementById('app-qr-modal');
+    if (appQrModal?.classList.contains('active')) {
+        closeAppQrModal();
+    }
+});
+
+window.addEventListener('click', (event) => {
+    const integrationsModal = document.getElementById('integrations-modal');
+    if (event.target === integrationsModal) {
+        closeIntegrationsModal();
+    }
+
+    const appQrModal = document.getElementById('app-qr-modal');
+    if (event.target === appQrModal) {
+        closeAppQrModal();
+    }
+});

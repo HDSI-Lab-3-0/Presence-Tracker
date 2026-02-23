@@ -75,6 +75,11 @@ body {
     box-shadow: var(--shadow-sm);
 }
 
+.header-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
 .logo {
     display: flex;
     align-items: center;
@@ -372,6 +377,7 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: 1.25rem;
     opacity: 0;
     pointer-events: none;
     transition: opacity 0.2s;
@@ -388,11 +394,14 @@ body {
     width: 100%;
     max-width: 380px;
     border-radius: var(--radius);
-    padding: 1.5rem;
+    padding: 1.25rem;
     border: 1px solid var(--border);
     box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
     transform: scale(0.98);
     transition: transform 0.2s;
+    max-height: calc(100vh - 2.5rem);
+    display: flex;
+    flex-direction: column;
 }
 
 .modal.active .modal-content {
@@ -406,6 +415,13 @@ body {
     margin-bottom: 1.25rem;
     border-bottom: 1px solid var(--border-light);
     padding-bottom: 0.75rem;
+    flex-shrink: 0;
+}
+
+.modal-body {
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 0.25rem;
 }
 
 .modal-header h3 {
@@ -527,20 +543,43 @@ body {
     #integrations-list {
         grid-template-columns: 1fr;
     }
+
+    .header-actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .main-header {
+        align-items: flex-start;
+        gap: 0.75rem;
+        flex-direction: column;
+    }
 }
 
 #integrations-modal .modal-content {
-    max-width: 720px;
-    width: 90%;
+    max-width: min(960px, 96vw);
+    width: 100%;
+    max-height: min(92vh, 860px);
+    border-radius: 10px;
+}
+
+#integrations-modal .modal-header {
+    margin-bottom: 1rem;
+}
+
+#integrations-modal .modal-body {
+    overflow-y: auto;
+    padding-right: 0.5rem;
 }
 
 .integration-card {
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: 8px;
     padding: 1.25rem;
     background: var(--bg-card);
     display: flex;
     flex-direction: column;
+    min-height: 100%;
 }
 
 .integration-card h4 {
@@ -551,6 +590,23 @@ body {
     letter-spacing: 0.05em;
     padding-bottom: 0.5rem;
     border-bottom: 1px solid var(--border-light);
+}
+
+#app-linking-qr-container,
+#app-linking-qr-standalone {
+    align-items: center !important;
+}
+
+#app-qr-modal .modal-content {
+    max-width: 460px;
+    width: 100%;
+    border-radius: 10px;
+}
+
+#app-qr-modal .modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
 }
 
 .integration-card .form-group {

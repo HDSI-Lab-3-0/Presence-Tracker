@@ -49,6 +49,9 @@
                 <button id="view-logs-btn" class="btn btn-secondary admin-only" onclick="showLogsView()">
                     View Logs
                 </button>
+                <button id="app-qr-btn" class="btn btn-secondary" onclick="openAppQrModal()">
+                    Scan App QR
+                </button>
                 <button class="btn btn-secondary" onclick="logout()">
                     Log Out
                 </button>
@@ -207,6 +210,19 @@
             </div>
             <div class="modal-body">
                 <div id="integrations-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="app-qr-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Scan App QR</h3>
+                <button class="close-btn" onclick="closeAppQrModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <p class="helper-text">Scan this code in the mobile app to import your encoded linking configuration.</p>
+                <div id="app-linking-qr-standalone" style="display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 280px;"></div>
             </div>
         </div>
     </div>
