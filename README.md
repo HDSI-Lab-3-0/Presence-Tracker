@@ -2,7 +2,7 @@
 
 Bluetooth-based presence detection system using Convex backend, designed for Raspberry Pi.
 
-![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg)
+![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![Convex](https://img.shields.io/badge/Convex-1.31.5-purple.svg)
 ![License](https://img.shields.io/badge/License-MIT-green.svg)
 
@@ -35,11 +35,9 @@ This system monitors Bluetooth device presence and updates a Convex backend data
 
 This system is designed primarily for **Raspberry Pi deployment** with Bluetooth hardware access. The web dashboard container can run on any host (Pi or local machine) and connects to the Convex backend.
 
-- **Presence Tracker** (`rust-agent` daemon) - Must run on Raspberry Pi with Bluetooth hardware
+- **Presence Tracker** (`presence_tracker.py`) - Must run on Raspberry Pi with Bluetooth hardware
 - **Web Dashboard** (`docker-compose.yml`) - Can run on Raspberry Pi or any machine with Docker
 - **Convex Backend** - Cloud-hosted serverless database and functions
-
-Legacy Python runtime files were archived under `legacy/python/` for rollback reference.
 
 ## Prerequisites
 
@@ -48,13 +46,14 @@ Legacy Python runtime files were archived under `legacy/python/` for rollback re
 - Stable internet connection (required for Convex API)
 
 ### Software (Raspberry Pi)
-- **Rust toolchain (cargo)** - Required for the tracker daemon (`curl https://sh.rustup.rs -sSf | sh`)
+- **Python 3.10+** - Required for the tracker scripts
+- **UV Package Manager** - Fast Python package installer (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
 - **Bun Runtime** - JavaScript runtime for Convex CLI (`curl -fsSL https://bun.sh/install | bash`)
 - **BlueZ & Bluetooth Tools** - Bluetooth stack (`sudo apt install bluez bluez-tools bluetooth`)
 - **Docker** (optional, for web dashboard): `curl -fsSL https://get.docker.com | sh`
 
 ### Software (Local Development)
-- Rust toolchain with cargo
+- Python 3.10+ with UV
 - Bun runtime
 - Docker for web dashboard
 
@@ -91,37 +90,30 @@ The script will display an interactive menu with options:
 4. **Restart Services** - Restart systemd services
 5. **Make Bluetooth Discoverable** - Configure Bluetooth for discoverable mode
 
-Non-interactive mode is also supported:
-
-```bash
-./setup.sh --full-install --deployment-mode convex --bluetooth-name "Presence Tracker" --non-interactive
-```
-
 The script handles:
 - Installing Node.js/npm (latest LTS)
-- Installing Rust and Bun toolchains
+- Installing UV and Bun package managers
 - Installing BlueZ and Bluetooth tools
-- Installing Rust and JavaScript dependencies
+- Installing Python and JavaScript dependencies
 - Configuring Bluetooth permissions and discoverability
 - Installing and configuring systemd services
-- Deploying to Convex backend (cloud or self-hosted)
+- Deploying to Convex backend
 - Persisting configuration to `setup.config` and `.env`
-- Persisting runtime configuration to `config/agent.toml`
 
 **Configuration Persistence:**
 The setup script automatically saves your settings to:
-- `setup.config` - Stores Bluetooth name, deployment mode, and self-hosted defaults for future runs
+- `setup.config` - Stores BLUETOOTH_NAME and DEPLOYMENT_MODE for future runs
 - `.env` - Updates with BLUETOOTH_NAME and DEPLOYMENT_MODE variables
 
-Subsequent runs will recall saved configuration and use it as the prompt defaults.
+Subsequent runs will recall saved configuration.
 
 ### Manual Setup
 
 #### Step 1: Install Package Managers
 
 ```bash
-# Install Rust (cargo)
-curl https://sh.rustup.rs -sSf | sh
+# Install UV (Python package manager)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Install Bun (JavaScript runtime)
 curl -fsSL https://bun.sh/install | bash
@@ -137,8 +129,8 @@ sudo apt install bluez bluez-tools bluetooth -y
 #### Step 3: Install Dependencies
 
 ```bash
-# Rust runtime
-cargo build --release --manifest-path rust-agent/Cargo.toml
+# Python dependencies
+uv sync
 
 # JavaScript dependencies
 bun install
@@ -205,9 +197,11 @@ bunx convex run upsertDevice --json '{"macAddress":"AA:BB:CC:DD:EE:FF","name":"J
 
 ```bash
 # Run manually to test
-./rust-agent/target/release/presence-tracker-rs --config config/agent.toml
+uv run src/presence_tracker.py
 
 # Run as systemd service for automatic startup
+sudo cp presence-tracker.service /etc/systemd/system/
+sudo systemctl daemon-reload
 sudo systemctl enable presence-tracker.service
 sudo systemctl start presence-tracker.service
 ```
@@ -549,7 +543,7 @@ LOG_DIR=logs
 
 ```bash
 # Run manually (for testing)
-./rust-agent/target/release/presence-tracker-rs --config config/agent.toml
+uv run src/presence_tracker.py
 
 # View live logs
 tail -f logs/presence_tracker.log
@@ -624,10 +618,12 @@ npm run dev      # Start Convex development server
 npm run deploy   # Deploy to Convex cloud
 ```
 
-### Rust Runtime
+### Python Scripts
 
 ```bash
-./rust-agent/target/release/presence-tracker-rs --config config/agent.toml  # Single daemon
+uv run src/presence_tracker.py     # Main tracker (runs every 60 seconds)
+uv run src/bluetooth_scanner.py    # Test Bluetooth scanning
+uv run src/bluetooth_agent.py      # Bluetooth pairing agent
 ```
 
 ### Systemd Services
@@ -640,6 +636,7 @@ sudo systemctl status presence-tracker.service       # Check service status
 sudo systemctl enable presence-tracker.service       # Enable on boot
 sudo journalctl -u presence-tracker.service -f       # View service logs
 
+sudo systemctl start bluetooth-agent.service         # Start pairing agent
 sudo systemctl start bluetooth-discoverable.service  # Start discoverable mode
 ```
 
@@ -649,12 +646,16 @@ sudo systemctl start bluetooth-discoverable.service  # Start discoverable mode
 ┌─────────────────────────────────────────────────────────────┐
 │                      Raspberry Pi                           │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │         presence-tracker-rs (Rust)                   │  │
-│  │  - Registers BlueZ agent (NoInputNoOutput)          │  │
-│  │  - Rejects audio/call profile UUIDs                 │  │
-│  │  - Polls devices sequentially (l2ping/connect)      │  │
-│  │  - Syncs status with Convex backend                 │  │
+│  │         presence_tracker.py (Python)                 │  │
+│  │  - Polls every 60 seconds                            │  │
+│  │  - Checks Bluetooth connections                      │  │
+│  │  - Syncs with Convex backend                         │  │
 │  └──────────────────┬───────────────────────────────────┘  │
+│                     │                                       │
+│  ┌──────────────────▼───────────────────────────────────┐  │
+│  │         bluetooth_scanner.py                         │  │
+│  │  - Uses bluetoothctl to check device connections    │  │
+│  └──────────────────────────────────────────────────────┘  │
 └──────────────────────────┬──────────────────────────────────┘
                            │ HTTPS API
                            │
@@ -835,14 +836,15 @@ sudo journalctl -u presence-tracker.service -n 50
 tail -f logs/presence_tracker.log
 
 # Verify dependencies installed
-cargo --version
+uv sync
 
 # Test manually
-./rust-agent/target/release/presence-tracker-rs --config config/agent.toml
+uv run src/presence_tracker.py
 ```
 
 #### Service Crashes Automatically
-- Verify Rust toolchain is installed: `cargo --version`
+- Check Python version: `python3 --version` (requires 3.10+)
+- Verify UV is installed: `uv --version`
 - Check Bluetooth hardware is accessible: `bluetoothctl show`
 - Review logs for specific errors
 
@@ -912,13 +914,10 @@ cat setup.config
 
 ```
 .
-├── rust-agent/                       # Rust runtime daemon
-│   ├── src/                          # Runtime modules (agent, probe, Convex client, loop)
-│   ├── tests/                        # Unit/integration tests
-│   └── Cargo.toml                    # Rust package manifest
-├── legacy/python/                    # Archived Python runtime (rollback reference)
-│   ├── src/                          # Former runtime sources
-│   └── deploy/                       # Former deployment copies
+├── src/                              # Python source files
+│   ├── presence_tracker.py           # Main presence tracking script
+│   ├── bluetooth_scanner.py          # Bluetooth detection and connection management
+│   └── bluetooth_agent.py            # Bluetooth pairing agent (no PIN required)
 ├── convex/                           # Convex backend
 │   ├── schema.ts                     # Database schema (devices, logs, integrations)
 │   ├── devices.ts                    # Device CRUD operations and queries
@@ -940,9 +939,8 @@ cat setup.config
 │   └── entrypoint.sh                 # Container startup script
 ├── logs/                             # Application logs
 │   └── presence_tracker.log          # Presence tracker output
-├── config/
-│   ├── agent.toml                    # Rust runtime configuration
-│   └── agent_state.json              # Persisted runtime state
+├── pyproject.toml                    # Python project configuration (UV)
+├── requirements.txt                  # Python dependencies
 ├── package.json                      # JavaScript dependencies
 ├── bun.lock                          # Bun lock file
 ├── docker-compose.yml                # Web dashboard container orchestration
@@ -954,13 +952,14 @@ cat setup.config
 
 **Additional Files Created During Setup:**
 - `.env` - Environment configuration (created from .env.example)
-- `setup.config` - Persists setup script settings (Bluetooth name, deployment mode, self-hosted defaults)
+- `setup.config` - Persists setup script settings (BLUETOOTH_NAME, DEPLOYMENT_MODE)
 
 ## Systemd Services
 
-The setup script automatically installs and configures two systemd services:
+The setup script automatically installs and configures three systemd services:
 
-- **presence-tracker.service** - Runs the Rust daemon (`presence-tracker-rs --config config/agent.toml`)
+- **presence-tracker.service** - Runs the main presence tracker (`src/presence_tracker.py`)
+- **bluetooth-agent.service** - Runs the Bluetooth pairing agent (`src/bluetooth_agent.py`)
 - **bluetooth-discoverable.service** - Makes the Pi discoverable on boot
 
 All services are automatically enabled and started during full installation.
