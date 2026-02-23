@@ -16,6 +16,66 @@ function encodeBase64Utf8(value) {
     return btoa(binary);
 }
 
+function buildEncodedLinkingEnvelope() {
+    if (!appLinkingConfig?.apiKey) {
+        return null;
+    }
+
+    const payload = {
+        apiUrl: getAppRouteUrl(),
+        apiKey: appLinkingConfig.apiKey,
+    };
+
+    return {
+        encoding: 'base64-json',
+        version: 1,
+        encodedPayload: encodeBase64Utf8(JSON.stringify(payload)),
+        decodeHint: 'Base64 decode encodedPayload, then JSON.parse(decodedString)',
+    };
+}
+
+function renderAppLinkingQr() {
+    const container = document.getElementById('app-linking-qr-container');
+    if (!container) return;
+
+    const encodedEnvelope = buildEncodedLinkingEnvelope();
+    if (!encodedEnvelope) {
+        container.innerHTML = '<p style="margin: 0; color: #666;">Rotate or fetch an API key to generate a QR code.</p>';
+        return;
+    }
+
+    if (typeof QRCode === 'undefined') {
+        container.innerHTML = '<p style="margin: 0; color: #a94442;">QRCode library failed to load. Refresh and try again.</p>';
+        return;
+    }
+
+    const qrData = JSON.stringify(encodedEnvelope);
+
+    container.innerHTML = '';
+    const qrNode = document.createElement('div');
+    qrNode.style.width = '240px';
+    qrNode.style.height = '240px';
+    qrNode.style.padding = '8px';
+    qrNode.style.border = '1px solid #ddd';
+    qrNode.style.borderRadius = '8px';
+    qrNode.style.background = '#fff';
+    container.appendChild(qrNode);
+
+    new QRCode(qrNode, {
+        text: qrData,
+        width: 224,
+        height: 224,
+        correctLevel: QRCode.CorrectLevel.M,
+    });
+
+    const hint = document.createElement('p');
+    hint.style.marginTop = '0.5rem';
+    hint.style.color = '#666';
+    hint.style.fontSize = '0.85rem';
+    hint.textContent = 'Scan this with the app to import encoded linking settings.';
+    container.appendChild(hint);
+}
+
 window.openIntegrationsModal = function () {
     const modal = document.getElementById('integrations-modal');
     if (modal) {
@@ -151,8 +211,14 @@ function renderIntegrations() {
             <button class="btn btn-secondary" onclick="downloadAppLinkingJson()">Download JSON</button>
             <button class="btn btn-primary" onclick="rotateAppApiKey()">Rotate Key</button>
         </div>
+        <div class="form-group" style="margin-top: 1rem;">
+            <label>QR Code</label>
+            <div id="app-linking-qr-container" style="display: flex; flex-direction: column; align-items: flex-start;"></div>
+        </div>
     `;
     list.appendChild(mobileApiDiv);
+
+    renderAppLinkingQr();
 }
 
 window.saveDiscord = async function () {
@@ -239,18 +305,11 @@ window.downloadAppLinkingJson = function () {
         return;
     }
 
-    const payload = {
-        apiUrl: getAppRouteUrl(),
-        apiKey: appLinkingConfig.apiKey,
-    };
-
-    const encodedPayload = encodeBase64Utf8(JSON.stringify(payload));
-    const encodedEnvelope = {
-        encoding: 'base64-json',
-        version: 1,
-        encodedPayload,
-        decodeHint: 'Base64 decode encodedPayload, then JSON.parse(decodedString)',
-    };
+    const encodedEnvelope = buildEncodedLinkingEnvelope();
+    if (!encodedEnvelope) {
+        showToast('No API key available yet. Rotate key first.', 'error');
+        return;
+    }
 
     const blob = new Blob([JSON.stringify(encodedEnvelope, null, 2)], { type: 'application/json' });
     const link = document.createElement('a');

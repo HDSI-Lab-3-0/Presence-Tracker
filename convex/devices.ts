@@ -219,7 +219,7 @@ export const updateDeviceStatus = mutation({
   handler: async (ctx: any, args: any) => {
     const existingDevice = await ctx.db
       .query("devices")
-      .withIndex("by_macAddress", (q) => q.eq("macAddress", args.macAddress))
+      .withIndex("by_macAddress", (q: any) => q.eq("macAddress", args.macAddress))
       .first();
 
     if (!existingDevice) {
@@ -295,7 +295,7 @@ export const registerDevice = mutation({
   handler: async (ctx: any, args: any) => {
     const existingDevice = await ctx.db
       .query("devices")
-      .withIndex("by_macAddress", (q) => q.eq("macAddress", args.macAddress))
+      .withIndex("by_macAddress", (q: any) => q.eq("macAddress", args.macAddress))
       .first();
 
     if (existingDevice) {
@@ -622,11 +622,11 @@ export const getAppLinkingConfig = query({
   },
   handler: async (ctx: any, args: any) => {
     requireAdmin(args.adminPassword);
-    const appConfig = await getOrCreateAppConfig(ctx);
+    const appConfig = await ctx.db.query("appConfig").first();
 
     return {
-      apiKey: appConfig.apiKey,
-      keyVersion: appConfig.keyVersion,
+      apiKey: appConfig?.apiKey || "",
+      keyVersion: appConfig?.keyVersion || 0,
       routePath: "/api/change_status",
     };
   },
