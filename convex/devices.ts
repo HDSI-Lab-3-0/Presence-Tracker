@@ -911,22 +911,143 @@ export const getAttendanceHistory = query({
       .filter((q: any) =>
         q.or(
           q.eq(q.field("changeType"), "status_change"),
-          q.eq(q.field("changeType"), "update")
+          q.eq(q.field("changeType"), "update"),
         )
       )
       .order("desc")
-      .take(100);
+      .take(200);
 
-    const records = logs
-      .filter((log: any) => log.details && log.details.includes("App status"))
+    const FIVE_MINUTES_MS = 5 * 60 * 1000;
+
+    const bluetoothStatusEvents = logs
+      .filter((log: any) => log.changeType === "status_change" && typeof log.details === "string")
       .map((log: any) => {
-        const isPresent = log.details.toLowerCase().includes("to present");
-        return {
-          timestamp: log.timestamp,
-          status: isPresent ? "present" : "absent",
-          source: "app",
-        };
-      });
+        const match = log.details.match(/Status changed from (present|absent) to (present|absent)/i);
+        const nextStatus = match?.[2]?.toLowerCase();
+        if (nextStatus === "present" || nextStatus === "absent") {
+          return { timestamp: log.timestamp, status: nextStatus };
+        }
+        return null;
+      })
+      .filter(Boolean)
+      .map((entry: any) => entry)
+      .sort((a: any, b: any) => a.timestamp - b.timestamp);
+
+    const bluetoothCheckIns = bluetoothStatusEvents.filter((event: any) => event.status === "present");
+    const bluetoothCheckOuts = bluetoothStatusEvents.filter((event: any) => event.status === "absent");
+
+    const appStatusLogs = logs.filter((log: any) => typeof log.details === "string" && log.details.includes("App status"));
+
+    const appStatusEvents = appStatusLogs
+      .map((log: any) => {
+        const match = log.details.match(/App status toggled to (present|absent)/i);
+        const nextStatus = match?.[1]?.toLowerCase();
+        if (nextStatus === "present" || nextStatus === "absent") {
+          return { timestamp: log.timestamp, status: nextStatus };
+        }
+        return null;
+      })
+      .filter(Boolean)
+      .map((entry: any) => entry)
+      .sort((a: any, b: any) => a.timestamp - b.timestamp);
+
+    const appCheckIns = appStatusEvents.filter((event: any) => event.status === "present");
+    const appCheckOuts = appStatusEvents.filter((event: any) => event.status === "absent");
+
+    const mergeEvents = (
+      primaryEvents: { timestamp: number }[],
+      secondaryEvents: { timestamp: number }[],
+      options: {
+        status: "present" | "absent";
+        bothLabel: string;
+        primaryLabel: string;
+        secondaryLabel: string;
+        bothSource: string;
+        primarySource: string;
+        secondarySource: string;
+      },
+    ) => {
+      const merged: any[] = [];
+      let primaryIndex = 0;
+      let secondaryIndex = 0;
+
+      while (primaryIndex < primaryEvents.length && secondaryIndex < secondaryEvents.length) {
+        const primaryEvent = primaryEvents[primaryIndex];
+        const secondaryEvent = secondaryEvents[secondaryIndex];
+        const diff = Math.abs(primaryEvent.timestamp - secondaryEvent.timestamp);
+
+        if (diff <= FIVE_MINUTES_MS) {
+          merged.push({
+            timestamp: Math.min(primaryEvent.timestamp, secondaryEvent.timestamp),
+            status: options.status,
+            source: options.bothSource,
+            label: options.bothLabel,
+          });
+          primaryIndex += 1;
+          secondaryIndex += 1;
+        } else if (primaryEvent.timestamp < secondaryEvent.timestamp) {
+          merged.push({
+            timestamp: primaryEvent.timestamp,
+            status: options.status,
+            source: options.primarySource,
+            label: options.primaryLabel,
+          });
+          primaryIndex += 1;
+        } else {
+          merged.push({
+            timestamp: secondaryEvent.timestamp,
+            status: options.status,
+            source: options.secondarySource,
+            label: options.secondaryLabel,
+          });
+          secondaryIndex += 1;
+        }
+      }
+
+      while (primaryIndex < primaryEvents.length) {
+        merged.push({
+          timestamp: primaryEvents[primaryIndex].timestamp,
+          status: options.status,
+          source: options.primarySource,
+          label: options.primaryLabel,
+        });
+        primaryIndex += 1;
+      }
+
+      while (secondaryIndex < secondaryEvents.length) {
+        merged.push({
+          timestamp: secondaryEvents[secondaryIndex].timestamp,
+          status: options.status,
+          source: options.secondarySource,
+          label: options.secondaryLabel,
+        });
+        secondaryIndex += 1;
+      }
+
+      return merged;
+    };
+
+    const combinedCheckIns = mergeEvents(appCheckIns, bluetoothCheckIns, {
+      status: "present",
+      bothLabel: "app check in verified with bluetooth",
+      primaryLabel: "checked in with app",
+      secondaryLabel: "checked in with bluetooth",
+      bothSource: "app+bluetooth",
+      primarySource: "app",
+      secondarySource: "bluetooth",
+    });
+
+    const combinedCheckOuts = mergeEvents(appCheckOuts, bluetoothCheckOuts, {
+      status: "absent",
+      bothLabel: "app check out verified with bluetooth",
+      primaryLabel: "checked out via app",
+      secondaryLabel: "checked out via bluetooth",
+      bothSource: "app+bluetooth",
+      primarySource: "app",
+      secondarySource: "bluetooth",
+    });
+
+    const records = [...combinedCheckIns, ...combinedCheckOuts].sort((a, b) => b.timestamp - a.timestamp);
 
     return {
       success: true,

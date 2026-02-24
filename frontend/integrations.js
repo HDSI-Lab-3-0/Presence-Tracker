@@ -71,6 +71,71 @@ function updateBoundaryStatus(message, type = 'info') {
     statusNode.textContent = message;
 }
 
+function clearBoundaryPreviewLayers() {
+    if (boundaryPreviewMarker) {
+        boundaryPreviewMarker.remove();
+        boundaryPreviewMarker = null;
+    }
+    if (boundaryPreviewCircle) {
+        boundaryPreviewCircle.remove();
+        boundaryPreviewCircle = null;
+    }
+}
+
+function setBoundaryControlsState(isEnabled) {
+    const inputs = document.querySelectorAll('[data-boundary-input]');
+    inputs.forEach(input => {
+        input.disabled = !isEnabled;
+        if (isEnabled) {
+            input.classList.remove('boundary-input-disabled');
+        } else {
+            input.classList.add('boundary-input-disabled');
+        }
+    });
+
+    const statusText = document.getElementById('boundary-status-text');
+    if (statusText) {
+        statusText.textContent = isEnabled ? '● Enabled' : '○ Disabled';
+        statusText.classList.toggle('enabled', isEnabled);
+        statusText.classList.toggle('disabled', !isEnabled);
+    }
+
+    const hintText = document.querySelector('.boundary-toggle-hint');
+    if (hintText) {
+        hintText.textContent = isEnabled
+            ? 'Presence updates must originate inside the defined radius.'
+            : 'Boundary is off; presence updates will be accepted from anywhere.';
+    }
+
+    const mapPreview = document.getElementById('boundary-map-preview');
+    if (mapPreview) {
+        mapPreview.classList.toggle('is-disabled', !isEnabled);
+    }
+
+    if (!isEnabled) {
+        updateBoundaryStatus('Boundary disabled. Enable to preview changes.', 'info');
+    }
+}
+
+function initializeBoundaryToggle() {
+    const toggleInput = document.getElementById('app-boundary-enabled');
+    if (!toggleInput) return;
+
+    setBoundaryControlsState(toggleInput.checked);
+
+    toggleInput.addEventListener('change', (event) => {
+        const isEnabled = event.target.checked;
+        setBoundaryControlsState(isEnabled);
+
+        if (!isEnabled) {
+            clearBoundaryPreviewLayers();
+            updateBoundaryStatus('Boundary disabled. Enable to preview changes.', 'info');
+        } else {
+            refreshBoundaryPreview();
+        }
+    });
+}
+
 function ensureBoundaryPreviewMap() {
     const mapContainer = document.getElementById('boundary-map-preview');
     if (!mapContainer) return null;
@@ -109,6 +174,13 @@ function ensureBoundaryPreviewMap() {
 function refreshBoundaryPreview() {
     const map = ensureBoundaryPreviewMap();
     if (!map) return;
+
+    const enabledInput = document.getElementById('app-boundary-enabled');
+    if (enabledInput && !enabledInput.checked) {
+        clearBoundaryPreviewLayers();
+        updateBoundaryStatus('Boundary disabled. Enable to preview changes.', 'info');
+        return;
+    }
 
     const coordinateInput = document.getElementById('app-boundary-coordinates');
     const radiusInput = document.getElementById('app-boundary-radius');
@@ -189,6 +261,11 @@ function initializeBoundaryPreview() {
         if (boundaryPreviewMap) {
             boundaryPreviewMap.invalidateSize();
         }
+        const enabledInput = document.getElementById('app-boundary-enabled');
+        if (enabledInput && !enabledInput.checked) {
+            updateBoundaryStatus('Boundary disabled. Enable to preview changes.', 'info');
+            return;
+        }
         refreshBoundaryPreview();
     }, 0);
 }
@@ -218,36 +295,61 @@ window.saveBoundaryConfig = async function () {
         return;
     }
 
-    const parsedCoordinates = parseCoordinatePair(coordinatesInput.value);
-    if (parsedCoordinates.error) {
-        updateBoundaryStatus(parsedCoordinates.error, 'error');
-        showToast(parsedCoordinates.error, 'error');
-        return;
-    }
+    const boundaryEnabled = enabledInput.checked;
+    let boundaryLatitude = typeof appLinkingConfig?.boundaryLatitude === 'number'
+        ? appLinkingConfig.boundaryLatitude
+        : DEFAULT_BOUNDARY_CENTER.latitude;
+    let boundaryLongitude = typeof appLinkingConfig?.boundaryLongitude === 'number'
+        ? appLinkingConfig.boundaryLongitude
+        : DEFAULT_BOUNDARY_CENTER.longitude;
+    let boundaryRadius = typeof appLinkingConfig?.boundaryRadius === 'number'
+        ? appLinkingConfig.boundaryRadius
+        : 100;
+    let boundaryRadiusUnit = appLinkingConfig?.boundaryRadiusUnit === 'miles' ? 'miles' : 'meters';
 
-    const radius = toFiniteNumber(radiusInput.value);
-    if (radius === null || radius <= 0) {
-        updateBoundaryStatus('Radius must be greater than 0.', 'error');
-        showToast('Radius must be greater than 0', 'error');
-        return;
+    if (boundaryEnabled) {
+        const parsedCoordinates = parseCoordinatePair(coordinatesInput.value);
+        if (parsedCoordinates.error) {
+            updateBoundaryStatus(parsedCoordinates.error, 'error');
+            showToast(parsedCoordinates.error, 'error');
+            return;
+        }
+        const radius = toFiniteNumber(radiusInput.value);
+        if (radius === null || radius <= 0) {
+            updateBoundaryStatus('Radius must be greater than 0.', 'error');
+            showToast('Radius must be greater than 0', 'error');
+            return;
+        }
+        boundaryLatitude = parsedCoordinates.latitude;
+        boundaryLongitude = parsedCoordinates.longitude;
+        boundaryRadius = radius;
+        boundaryRadiusUnit = radiusUnitInput.value === 'miles' ? 'miles' : 'meters';
+    } else {
+        updateBoundaryStatus('Boundary disabled. Enable to preview changes.', 'info');
     }
-
-    const boundaryRadiusUnit = radiusUnitInput.value === 'miles' ? 'miles' : 'meters';
 
     try {
         appLinkingConfig = await window.convexClient.mutation('devices:saveAppBoundaryConfig', {
             adminPassword,
-            boundaryEnabled: enabledInput.checked,
-            boundaryLatitude: parsedCoordinates.latitude,
-            boundaryLongitude: parsedCoordinates.longitude,
-            boundaryRadius: radius,
+            boundaryEnabled,
+            boundaryLatitude,
+            boundaryLongitude,
+            boundaryRadius,
             boundaryRadiusUnit,
         });
-        coordinatesInput.value = `${parsedCoordinates.latitude}, ${parsedCoordinates.longitude}`;
-        radiusInput.value = String(radius);
-        radiusUnitInput.value = boundaryRadiusUnit;
-        refreshBoundaryPreview();
-        showToast('Boundary settings saved', 'success');
+
+        coordinatesInput.value = `${appLinkingConfig.boundaryLatitude}, ${appLinkingConfig.boundaryLongitude}`;
+        radiusInput.value = String(appLinkingConfig.boundaryRadius);
+        radiusUnitInput.value = appLinkingConfig.boundaryRadiusUnit;
+        setBoundaryControlsState(boundaryEnabled);
+
+        if (boundaryEnabled) {
+            refreshBoundaryPreview();
+            showToast('Boundary settings saved', 'success');
+        } else {
+            clearBoundaryPreviewLayers();
+            showToast('Boundary disabled', 'success');
+        }
     } catch (e) {
         updateBoundaryStatus(e.message || 'Failed to save boundary settings.', 'error');
         showToast('Error saving boundary: ' + e.message, 'error');
@@ -426,8 +528,11 @@ function renderIntegrations() {
         </div>
         <div class="checkbox-grid">
             <div class="form-group checkbox-group">
-                <label class="checkbox-control">
-                    <input type="checkbox" id="discord-use-embeds" ${discord?.config?.useEmbeds ? 'checked' : ''}>
+                <label class="checkbox-control" for="discord-use-embeds">
+                    <span class="checkbox-visual">
+                        <input type="checkbox" id="discord-use-embeds" ${discord?.config?.useEmbeds ? 'checked' : ''}>
+                        <span class="checkbox-indicator"></span>
+                    </span>
                     <div class="checkbox-text">
                         <span class="checkbox-title">Use rich embeds</span>
                         <span class="checkbox-description">Send only the embed version of the status update.</span>
@@ -435,8 +540,11 @@ function renderIntegrations() {
                 </label>
             </div>
             <div class="form-group checkbox-group">
-                <label class="checkbox-control">
-                    <input type="checkbox" id="discord-show-absent" ${discord?.config?.showAbsentUsers ? 'checked' : ''}>
+                <label class="checkbox-control" for="discord-show-absent">
+                    <span class="checkbox-visual">
+                        <input type="checkbox" id="discord-show-absent" ${discord?.config?.showAbsentUsers ? 'checked' : ''}>
+                        <span class="checkbox-indicator"></span>
+                    </span>
                     <div class="checkbox-text">
                         <span class="checkbox-title">Show "Currently OUT" users</span>
                         <span class="checkbox-description">Include people who are currently marked as out.</span>
@@ -472,11 +580,14 @@ function renderIntegrations() {
             <input type="text" id="slack-channel" placeholder="C12345678" value="${slack?.config?.channelId || ''}">
         </div>
         <div class="form-group checkbox-group">
-            <label class="checkbox-control">
-                <input type="checkbox" id="slack-show-absent" ${slack?.config?.showAbsentUsers ? 'checked' : ''}>
+            <label class="checkbox-control" for="slack-show-absent">
+                <span class="checkbox-visual">
+                    <input type="checkbox" id="slack-show-absent" ${slack?.config?.showAbsentUsers ? 'checked' : ''}>
+                    <span class="checkbox-indicator"></span>
+                </span>
                 <div class="checkbox-text">
                     <span class="checkbox-title">Show "Currently OUT" users</span>
-                    <span class="checkbox-description">Adds an absent list beneath the present users.</span>
+                    <span class="checkbox-description">Include people who are currently marked as out.</span>
                 </div>
             </label>
         </div>
@@ -502,6 +613,7 @@ function renderIntegrations() {
         ? appLinkingConfig.boundaryRadius
         : 100;
     const boundaryRadiusUnit = appLinkingConfig?.boundaryRadiusUnit === 'miles' ? 'miles' : 'meters';
+    const boundaryEnabled = Boolean(appLinkingConfig?.boundaryEnabled);
     mobileApiDiv.innerHTML = `
         <h4>Mobile App Linking</h4>
         <div class="form-group">
@@ -530,33 +642,39 @@ function renderIntegrations() {
         </div>
         <div class="form-group boundary-section">
             <label style="margin-bottom: 0.5rem;">Location Boundary</label>
-            <div class="form-group" style="margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.75rem;">
-                <label class="switch">
-                    <input type="checkbox" id="app-boundary-enabled" ${appLinkingConfig?.boundaryEnabled ? 'checked' : ''}>
-                    <span class="slider"></span>
-                </label>
-                <span id="boundary-status-text" style="font-size: 0.85rem; font-weight: 500; color: ${appLinkingConfig?.boundaryEnabled ? 'var(--success)' : 'var(--text-secondary)'}">
-                    ${appLinkingConfig?.boundaryEnabled ? '● Enabled' : '○ Disabled'}
-                </span>
+            <div class="form-group boundary-toggle-row">
+                <div class="boundary-toggle-switch">
+                    <label class="switch">
+                        <input type="checkbox" id="app-boundary-enabled" ${boundaryEnabled ? 'checked' : ''}>
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                <div class="boundary-toggle-copy">
+                    <span class="boundary-toggle-label">Boundary enforcement</span>
+                    <span id="boundary-status-text" class="boundary-toggle-status ${boundaryEnabled ? 'enabled' : 'disabled'}">
+                        ${boundaryEnabled ? '● Enabled' : '○ Disabled'}
+                    </span>
+                    <span class="boundary-toggle-hint">${boundaryEnabled ? 'Presence updates must originate inside the defined radius.' : 'Boundary is off; presence updates will be accepted from anywhere.'}</span>
+                </div>
             </div>
             <div class="form-group" style="margin-bottom: 0.75rem;">
                 <label for="app-boundary-coordinates">Center (Latitude, Longitude)</label>
-                <input type="text" id="app-boundary-coordinates" value="${boundaryLatitude}, ${boundaryLongitude}" placeholder="32.88071867959147, -117.23379676539253">
+                <input type="text" id="app-boundary-coordinates" value="${boundaryLatitude}, ${boundaryLongitude}" placeholder="32.88071867959147, -117.23379676539253" data-boundary-input>
             </div>
             <div class="boundary-radius-grid">
                 <div class="form-group" style="margin-bottom: 0.75rem;">
                     <label for="app-boundary-radius">Radius</label>
-                    <input type="number" id="app-boundary-radius" min="0.0001" step="any" value="${boundaryRadius}">
+                    <input type="number" id="app-boundary-radius" min="0.0001" step="any" value="${boundaryRadius}" data-boundary-input>
                 </div>
                 <div class="form-group" style="margin-bottom: 0.75rem;">
                     <label for="app-boundary-radius-unit">Unit</label>
-                    <select id="app-boundary-radius-unit">
+                    <select id="app-boundary-radius-unit" data-boundary-input>
                         <option value="meters" ${boundaryRadiusUnit === 'meters' ? 'selected' : ''}>Meters</option>
                         <option value="miles" ${boundaryRadiusUnit === 'miles' ? 'selected' : ''}>Miles</option>
                     </select>
                 </div>
             </div>
-            <div id="boundary-map-preview" class="boundary-map-preview"></div>
+            <div id="boundary-map-preview" class="boundary-map-preview ${boundaryEnabled ? '' : 'is-disabled'}"></div>
             <p id="boundary-status" class="boundary-status info">Enter coordinates and radius to preview the boundary.</p>
             <div class="form-actions" style="justify-content: flex-end; margin-top: 0.75rem;">
                 <button class="btn btn-primary" onclick="saveBoundaryConfig()">Save Boundary</button>
@@ -567,6 +685,7 @@ function renderIntegrations() {
 
     renderAppLinkingQr('app-linking-qr-container');
     initializeBoundaryPreview();
+    initializeBoundaryToggle();
 }
 
 window.saveDiscord = async function () {

@@ -533,30 +533,9 @@ body {
 }
 
 /* Integrations */
-#integrations-list {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1rem;
-}
-
-@media (max-width: 640px) {
-    #integrations-list {
-        grid-template-columns: 1fr;
-    }
-
-    .header-actions {
-        width: 100%;
-        justify-content: flex-start;
-    }
-
-    .main-header {
-        align-items: flex-start;
-        gap: 0.75rem;
-        flex-direction: column;
-    }
-}
-
 #integrations-modal .modal-content {
+    display: flex;
+    flex-direction: column;
     max-width: min(960px, 96vw);
     width: 100%;
     max-height: min(92vh, 860px);
@@ -568,8 +547,31 @@ body {
 }
 
 #integrations-modal .modal-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
     overflow-y: auto;
     padding-right: 0.5rem;
+}
+
+#integrations-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    flex: 1;
+}
+
+@media (max-width: 640px) {
+    .header-actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .main-header {
+        align-items: flex-start;
+        gap: 0.75rem;
+        flex-direction: column;
+    }
 }
 
 .settings-tabs {
@@ -610,6 +612,7 @@ body {
     display: flex;
     flex-direction: column;
     min-height: 100%;
+    box-shadow: 0 20px 60px rgba(15, 23, 42, 0.08);
 }
 
 .integration-card h4 {
@@ -665,6 +668,75 @@ body {
     border-top: 1px solid var(--border-light);
 }
 
+.boundary-toggle-row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 1rem;
+    padding: 0.75rem;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius);
+    background: var(--bg-app);
+    align-items: center;
+    margin-bottom: 0.75rem;
+}
+
+.boundary-toggle-switch {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.boundary-toggle-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+
+.boundary-toggle-label {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-main);
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+}
+
+.boundary-toggle-status {
+    font-weight: 600;
+    font-size: 0.8rem;
+}
+
+.boundary-toggle-status.enabled {
+    color: var(--success);
+}
+
+.boundary-toggle-status.disabled {
+    color: var(--text-secondary);
+}
+
+.boundary-toggle-hint {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.boundary-map-preview.is-disabled::after {
+    content: 'Boundary disabled';
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(15, 23, 42, 0.45);
+    color: white;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    border-radius: inherit;
+}
+
+.boundary-map-preview {
+    position: relative;
+}
+
 .boundary-radius-grid {
     display: grid;
     grid-template-columns: 1fr 140px;
@@ -701,6 +773,12 @@ body {
     margin-bottom: 0;
 }
 
+[data-boundary-input].boundary-input-disabled,
+[data-boundary-input]:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
 .integration-card .form-actions {
     display: flex;
     justify-content: space-between;
@@ -724,12 +802,19 @@ body {
 .checkbox-control {
     display: flex;
     gap: 0.75rem;
-    padding: 0.75rem;
+    padding: 0.75rem 1rem;
     border: 1px solid var(--border-light);
     border-radius: var(--radius);
     background: var(--bg-app);
     cursor: pointer;
     transition: border-color 0.2s, background-color 0.2s;
+    align-items: center;
+}
+
+.checkbox-control input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
 }
 
 .checkbox-control:hover {
@@ -737,8 +822,42 @@ body {
     background: #E0F2FE;
 }
 
-.checkbox-control input {
-    margin-top: 0.2rem;
+.checkbox-visual {
+    position: relative;
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+}
+
+.checkbox-indicator {
+    position: absolute;
+    inset: 0;
+    border-radius: 5px;
+    border: 2px solid var(--border);
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.checkbox-indicator::after {
+    content: '';
+    width: 10px;
+    height: 6px;
+    border-left: 2px solid transparent;
+    border-bottom: 2px solid transparent;
+    transform: rotate(-45deg);
+    transition: border-color 0.2s ease;
+}
+
+.checkbox-control input:checked + .checkbox-indicator {
+    border-color: var(--primary);
+    background: var(--primary);
+    box-shadow: 0 6px 18px rgba(2, 132, 199, 0.35);
+}
+
+.checkbox-control input:checked + .checkbox-indicator::after {
+    border-color: white;
 }
 
 .checkbox-text {
@@ -770,6 +889,10 @@ body {
     }
 
     .boundary-radius-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .boundary-toggle-row {
         grid-template-columns: 1fr;
     }
 }
