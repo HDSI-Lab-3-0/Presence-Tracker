@@ -12,6 +12,7 @@ import type * as auth from "../auth.js";
 import type * as crons from "../crons.js";
 import type * as devices from "../devices.js";
 import type * as fixPendingDevices from "../fixPendingDevices.js";
+import type * as http from "../http.js";
 import type * as integrations from "../integrations.js";
 import type * as logs from "../logs.js";
 import type * as notifications from "../notifications.js";
@@ -27,6 +28,7 @@ declare const fullApi: ApiFromModules<{
   crons: typeof crons;
   devices: typeof devices;
   fixPendingDevices: typeof fixPendingDevices;
+  http: typeof http;
   integrations: typeof integrations;
   logs: typeof logs;
   notifications: typeof notifications;

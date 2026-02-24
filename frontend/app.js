@@ -615,17 +615,6 @@ window.forgetDevice = async function (deviceId, macAddress) {
 
     try {
         await convexClient.mutation("devices:deleteDevice", { id: deviceId, adminPassword });
-
-        const response = await fetch('/api/forget-device', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ macAddress })
-        });
-
-        if (!response.ok) {
-            throw new Error(`Backend error: ${response.statusText}`);
-        }
-
         showToast('Device forgotten successfully', 'success');
     } catch (err) {
         console.error(err);
