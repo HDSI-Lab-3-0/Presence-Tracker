@@ -879,3 +879,59 @@ export const flipAppStatusByEmail = mutation({
     };
   },
 });
+
+export const getAttendanceHistory = query({
+  args: {
+    apiKey: v.string(),
+    email: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const appConfig = await getOrCreateAppConfig(ctx);
+    if (args.apiKey !== appConfig.apiKey) {
+      throw new Error("Invalid API key");
+    }
+
+    const normalizedEmail = args.email.trim().toLowerCase();
+    if (!isValidUcsdEmail(normalizedEmail)) {
+      throw new Error("A valid @ucsd.edu email is required");
+    }
+
+    const device = await ctx.db
+      .query("devices")
+      .withIndex("by_ucsdEmail", (q: any) => q.eq("ucsdEmail", normalizedEmail))
+      .first();
+
+    if (!device || device.pendingRegistration) {
+      throw new Error("No registered device found for this UCSD email");
+    }
+
+    const logs = await ctx.db
+      .query("deviceLogs")
+      .withIndex("by_deviceId", (q: any) => q.eq("deviceId", device._id))
+      .filter((q: any) =>
+        q.or(
+          q.eq(q.field("changeType"), "status_change"),
+          q.eq(q.field("changeType"), "update")
+        )
+      )
+      .order("desc")
+      .take(100);
+
+    const records = logs
+      .filter((log: any) => log.details && log.details.includes("App status"))
+      .map((log: any) => {
+        const isPresent = log.details.toLowerCase().includes("to present");
+        return {
+          timestamp: log.timestamp,
+          status: isPresent ? "present" : "absent",
+          source: "app",
+        };
+      });
+
+    return {
+      success: true,
+      email: normalizedEmail,
+      records,
+    };
+  },
+});

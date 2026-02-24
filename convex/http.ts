@@ -163,4 +163,50 @@ http.route({
   }),
 });
 
+// OPTIONS /api/attendance - CORS preflight
+http.route({
+  path: "/api/attendance",
+  method: "OPTIONS",
+  handler: httpAction(async () => {
+    return jsonResponse(200, { ok: true });
+  }),
+});
+
+// POST /api/attendance - Get attendance history
+http.route({
+  path: "/api/attendance",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    try {
+      const apiKey = getApiKey(request);
+      if (!apiKey) {
+        return jsonResponse(401, { error: "Missing Bearer API key" });
+      }
+
+      let body: any = {};
+      try {
+        body = await request.json();
+      } catch {
+        return jsonResponse(400, { error: "Invalid JSON body" });
+      }
+
+      const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+      if (!email) {
+        return jsonResponse(400, { error: "Email is required" });
+      }
+
+      const result = await ctx.runQuery(api.devices.getAttendanceHistory, {
+        apiKey,
+        email,
+      });
+
+      return jsonResponse(200, result);
+    } catch (error: unknown) {
+      console.error("[http] /api/attendance error", error);
+      const message = error instanceof Error ? error.message : "Unable to fetch attendance";
+      return jsonResponse(400, { error: message });
+    }
+  }),
+});
+
 export default http;

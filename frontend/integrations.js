@@ -327,7 +327,22 @@ window.openIntegrationsModal = function () {
     const modal = document.getElementById('integrations-modal');
     if (modal) {
         modal.classList.add('active');
-        fetchIntegrations();
+        fetchIntegrations().then(() => {
+            // Show active tab content by default
+            const activeTab = document.querySelector('.settings-tab.active');
+            if (activeTab) {
+                const tabName = activeTab.dataset.tab;
+                document.querySelectorAll('.integration-card').forEach(card => {
+                    const isDiscord = card.querySelector('h4')?.textContent === 'Discord';
+                    const isSlack = card.querySelector('h4')?.textContent === 'Slack';
+                    const isMobile = card.querySelector('h4')?.textContent === 'Mobile App Linking';
+                    card.style.display = 'none';
+                    if (tabName === 'discord' && isDiscord) card.style.display = 'flex';
+                    if (tabName === 'slack' && isSlack) card.style.display = 'flex';
+                    if (tabName === 'mobile' && isMobile) card.style.display = 'flex';
+                });
+            }
+        });
     }
 }
 
@@ -515,11 +530,14 @@ function renderIntegrations() {
         </div>
         <div class="form-group boundary-section">
             <label style="margin-bottom: 0.5rem;">Location Boundary</label>
-            <div class="form-group" style="margin-bottom: 0.75rem;">
+            <div class="form-group" style="margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.75rem;">
                 <label class="switch">
                     <input type="checkbox" id="app-boundary-enabled" ${appLinkingConfig?.boundaryEnabled ? 'checked' : ''}>
-                    <span class="slider"></span> Boundary Check Enabled
+                    <span class="slider"></span>
                 </label>
+                <span id="boundary-status-text" style="font-size: 0.85rem; font-weight: 500; color: ${appLinkingConfig?.boundaryEnabled ? 'var(--success)' : 'var(--text-secondary)'}">
+                    ${appLinkingConfig?.boundaryEnabled ? '● Enabled' : '○ Disabled'}
+                </span>
             </div>
             <div class="form-group" style="margin-bottom: 0.75rem;">
                 <label for="app-boundary-coordinates">Center (Latitude, Longitude)</label>
@@ -677,5 +695,21 @@ window.addEventListener('click', (event) => {
     const appQrModal = document.getElementById('app-qr-modal');
     if (event.target === appQrModal) {
         closeAppQrModal();
+    }
+
+    // Handle tab clicks
+    if (event.target.classList.contains('settings-tab')) {
+        document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
+        event.target.classList.add('active');
+        const tabName = event.target.dataset.tab;
+        document.querySelectorAll('.integration-card').forEach(card => {
+            const isDiscord = card.querySelector('h4')?.textContent === 'Discord';
+            const isSlack = card.querySelector('h4')?.textContent === 'Slack';
+            const isMobile = card.querySelector('h4')?.textContent === 'Mobile App Linking';
+            card.style.display = 'none';
+            if (tabName === 'discord' && isDiscord) card.style.display = 'flex';
+            if (tabName === 'slack' && isSlack) card.style.display = 'flex';
+            if (tabName === 'mobile' && isMobile) card.style.display = 'flex';
+        });
     }
 });

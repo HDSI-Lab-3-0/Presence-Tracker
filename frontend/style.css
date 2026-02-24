@@ -572,6 +572,36 @@ body {
     padding-right: 0.5rem;
 }
 
+.settings-tabs {
+    display: flex;
+    gap: 0.25rem;
+    margin-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.5rem;
+}
+
+.settings-tab {
+    padding: 0.5rem 1rem;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    font-weight: 500;
+    cursor: pointer;
+    border-radius: 6px 6px 0 0;
+    transition: all 0.15s ease;
+}
+
+.settings-tab:hover {
+    background: var(--bg-hover);
+    color: var(--text);
+}
+
+.settings-tab.active {
+    background: var(--primary);
+    color: white;
+}
+
 .integration-card {
     border: 1px solid var(--border);
     border-radius: 8px;

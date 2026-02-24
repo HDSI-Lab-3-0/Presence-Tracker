@@ -20,13 +20,13 @@ function getPresenceSourceMessage(device) {
     const appPresent = device.appStatus === 'present';
 
     if (appPresent && bluetoothPresent) {
-        return 'Checked in with app, verified with bluetooth';
+        return '✓ App + Bluetooth';
     }
     if (appPresent) {
-        return 'Checked in with app';
+        return '✓ App';
     }
     if (bluetoothPresent) {
-        return 'Checked in with bluetooth';
+        return '✓ Bluetooth';
     }
     return '';
 }
@@ -191,7 +191,7 @@ function renderDevices(devices) {
 
 // Helper to create a resident card element
 function createResidentCard(device) {
-    const isPresent = device.status === 'present';
+    const isPresent = device.status === 'present' || device.appStatus === 'present';
     const statusClass = isPresent ? 'present' : 'away';
     const sourceMessage = getPresenceSourceMessage(device);
 
@@ -247,7 +247,7 @@ function createResidentCard(device) {
 
 // Helper to update a resident card in-place
 function updateResidentCard(card, device) {
-    const isPresent = device.status === 'present';
+    const isPresent = device.status === 'present' || device.appStatus === 'present';
     const statusClass = isPresent ? 'present' : 'away';
     const sourceMessage = getPresenceSourceMessage(device);
 
