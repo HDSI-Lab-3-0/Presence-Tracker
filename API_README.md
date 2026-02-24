@@ -4,10 +4,7 @@ This document explains the app-facing API routes, authentication, payloads, and 
 
 ## Base URL
 
-Use your frontend server origin, for example:
-
-- Local: `http://localhost:3132`
-- Deployed: `https://your-domain.example`
+`https://hdsi-lab-3-0.github.io/Presence-Tracker/api`
 
 ---
 
@@ -52,7 +49,7 @@ Flip a user app status between `present` and `absent` by UCSD email.
 #### cURL Example
 
 ```bash
-curl -X POST "http://localhost:3132/api/change_status" \
+curl -X POST "https://hdsi-lab-3-0.github.io/Presence-Tracker/api/change_status" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"email":"student@ucsd.edu","latitude":32.88071867959147,"longitude":-117.23379676539253}'
@@ -92,7 +89,7 @@ Fetch startup check-in context for a user (used by app startup auto-fetch flow).
 #### cURL Example
 
 ```bash
-curl -X POST "http://localhost:3132/api/fetch" \
+curl -X POST "https://hdsi-lab-3-0.github.io/Presence-Tracker/api/fetch" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"email":"student@ucsd.edu"}'
@@ -130,7 +127,7 @@ The decoded payload shape is:
 
 ```json
 {
-  "apiUrl": "https://your-domain.example/api/change_status",
+  "apiUrl": "https://hdsi-lab-3-0.github.io/Presence-Tracker/api",
   "apiKey": "YOUR_API_KEY"
 }
 ```
@@ -183,3 +180,4 @@ val apiKey = linking.getString("apiKey")
 2. When rotating, update the app with the newly exported linking JSON.
 3. Email must match a registered device UCSD email (`@ucsd.edu`).
 4. This route toggles status each call (it does not force a specific target status).
+`

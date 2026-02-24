@@ -5,6 +5,7 @@ let appLinkingConfig = null;
 let boundaryPreviewMap = null;
 let boundaryPreviewMarker = null;
 let boundaryPreviewCircle = null;
+const APP_API_BASE_URL = 'https://hdsi-lab-3-0.github.io/Presence-Tracker/api';
 
 const DEFAULT_BOUNDARY_CENTER = { latitude: 32.8807, longitude: -117.2338 };
 
@@ -190,12 +191,11 @@ function initializeBoundaryPreview() {
 }
 
 function getAppRouteUrl() {
-    return `${window.location.origin}/api/change_status`;
+    return APP_API_BASE_URL;
 }
 
 function getAppFetchRouteUrl() {
-    const routePath = appLinkingConfig?.fetchRoutePath || '/api/fetch';
-    return `${window.location.origin}${routePath}`;
+    return `${APP_API_BASE_URL}/fetch`;
 }
 
 window.saveBoundaryConfig = async function () {
