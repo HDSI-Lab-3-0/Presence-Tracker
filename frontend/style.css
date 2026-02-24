@@ -662,42 +662,11 @@ body {
     box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.1);
 }
 
+
 .boundary-section {
     margin-top: 1rem;
     padding-top: 1rem;
     border-top: 1px solid var(--border-light);
-}
-
-.boundary-toggle-row {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 1rem;
-    padding: 0.75rem;
-    border: 1px solid var(--border-light);
-    border-radius: var(--radius);
-    background: var(--bg-app);
-    align-items: center;
-    margin-bottom: 0.75rem;
-}
-
-.boundary-toggle-switch {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-}
-
-.boundary-toggle-copy {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-}
-
-.boundary-toggle-label {
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: var(--text-main);
-    letter-spacing: 0.02em;
-    text-transform: uppercase;
 }
 
 .boundary-toggle-status {
@@ -779,6 +748,19 @@ body {
     cursor: not-allowed;
 }
 
+.boundary-checkbox-group .checkbox-control {
+    width: 100%;
+    align-items: flex-start;
+    padding: 1rem;
+}
+
+.boundary-checkbox .checkbox-title {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
 .integration-card .form-actions {
     display: flex;
     justify-content: space-between;
@@ -820,6 +802,12 @@ body {
 .checkbox-control:hover {
     border-color: var(--primary);
     background: #E0F2FE;
+}
+
+.checkbox-control.is-checked {
+    border-color: var(--primary);
+    background: rgba(2, 132, 199, 0.08);
+    box-shadow: 0 12px 30px rgba(2, 132, 199, 0.18);
 }
 
 .checkbox-visual {
@@ -892,8 +880,9 @@ body {
         grid-template-columns: 1fr;
     }
 
-    .boundary-toggle-row {
-        grid-template-columns: 1fr;
+    .boundary-checkbox-group .checkbox-control {
+        flex-direction: column;
+        gap: 0.5rem;
     }
 }
 

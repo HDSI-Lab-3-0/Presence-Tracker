@@ -71,6 +71,21 @@ function updateBoundaryStatus(message, type = 'info') {
     statusNode.textContent = message;
 }
 
+function syncCheckboxControlState(input) {
+    if (!input) return;
+    const control = input.closest('.checkbox-control');
+    if (!control) return;
+    control.classList.toggle('is-checked', input.checked);
+}
+
+function initializeIntegrationCheckboxes() {
+    const checkboxInputs = document.querySelectorAll('.checkbox-control input[type="checkbox"]');
+    checkboxInputs.forEach(input => {
+        syncCheckboxControlState(input);
+        input.addEventListener('change', () => syncCheckboxControlState(input));
+    });
+}
+
 function clearBoundaryPreviewLayers() {
     if (boundaryPreviewMarker) {
         boundaryPreviewMarker.remove();
@@ -92,6 +107,11 @@ function setBoundaryControlsState(isEnabled) {
             input.classList.add('boundary-input-disabled');
         }
     });
+
+    const toggleInput = document.getElementById('app-boundary-enabled');
+    if (toggleInput) {
+        syncCheckboxControlState(toggleInput);
+    }
 
     const statusText = document.getElementById('boundary-status-text');
     if (statusText) {
@@ -641,21 +661,21 @@ function renderIntegrations() {
             <div id="app-linking-qr-container" style="display: flex; flex-direction: column; align-items: flex-start;"></div>
         </div>
         <div class="form-group boundary-section">
-            <label style="margin-bottom: 0.5rem;">Location Boundary</label>
-            <div class="form-group boundary-toggle-row">
-                <div class="boundary-toggle-switch">
-                    <label class="switch">
+            <label style="margin-bottom: 0.75rem;">Location Boundary</label>
+            <div class="form-group checkbox-group boundary-checkbox-group">
+                <label class="checkbox-control boundary-checkbox" for="app-boundary-enabled">
+                    <span class="checkbox-visual">
                         <input type="checkbox" id="app-boundary-enabled" ${boundaryEnabled ? 'checked' : ''}>
-                        <span class="slider"></span>
-                    </label>
-                </div>
-                <div class="boundary-toggle-copy">
-                    <span class="boundary-toggle-label">Boundary enforcement</span>
-                    <span id="boundary-status-text" class="boundary-toggle-status ${boundaryEnabled ? 'enabled' : 'disabled'}">
-                        ${boundaryEnabled ? '● Enabled' : '○ Disabled'}
+                        <span class="checkbox-indicator"></span>
                     </span>
-                    <span class="boundary-toggle-hint">${boundaryEnabled ? 'Presence updates must originate inside the defined radius.' : 'Boundary is off; presence updates will be accepted from anywhere.'}</span>
-                </div>
+                    <div class="checkbox-text">
+                        <span class="checkbox-title">Boundary enforcement</span>
+                        <span id="boundary-status-text" class="boundary-toggle-status ${boundaryEnabled ? 'enabled' : 'disabled'}">
+                            ${boundaryEnabled ? '● Enabled' : '○ Disabled'}
+                        </span>
+                        <span class="checkbox-description boundary-toggle-hint">${boundaryEnabled ? 'Presence updates must originate inside the defined radius.' : 'Boundary is off; presence updates will be accepted from anywhere.'}</span>
+                    </div>
+                </label>
             </div>
             <div class="form-group" style="margin-bottom: 0.75rem;">
                 <label for="app-boundary-coordinates">Center (Latitude, Longitude)</label>
@@ -686,6 +706,7 @@ function renderIntegrations() {
     renderAppLinkingQr('app-linking-qr-container');
     initializeBoundaryPreview();
     initializeBoundaryToggle();
+    initializeIntegrationCheckboxes();
 }
 
 window.saveDiscord = async function () {
