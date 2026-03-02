@@ -1,7 +1,7 @@
 use convex::{FunctionResult, Value, ConvexClient};
 use eframe::egui;
 use futures_util::StreamExt;
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
 use serde_json::Number;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -18,13 +18,55 @@ pub struct CheckedInUser {
     #[serde(rename = "lastName")]
     pub last_name: Option<String>,
     pub email: Option<String>,
-    #[serde(rename = "checkInTime")]
+    #[serde(rename = "checkInTime", deserialize_with = "deserialize_timestamp_ms")]
     pub check_in_time: i64,
     #[serde(rename = "checkInMethod")]
     pub check_in_method: String,
     pub status: Option<String>,
     #[serde(rename = "appStatus")]
     pub app_status: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TimestampValue {
+    Int(i64),
+    Float(f64),
+    String(String),
+}
+
+fn deserialize_timestamp_ms<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match TimestampValue::deserialize(deserializer)? {
+        TimestampValue::Int(v) => Ok(v),
+        TimestampValue::Float(v) => Ok(v as i64),
+        TimestampValue::String(v) => v
+            .parse::<f64>()
+            .map(|parsed| parsed as i64)
+            .map_err(de::Error::custom),
+    }
+}
+
+fn parse_checked_in_users(value: &serde_json::Value) -> Result<Vec<CheckedInUser>, String> {
+    if value.is_array() {
+        return serde_json::from_value::<Vec<CheckedInUser>>(value.clone())
+            .map_err(|e| format!("Unable to parse checked-in users array: {}", e));
+    }
+
+    if let Some(inner) = value.get("value") {
+        return parse_checked_in_users(inner);
+    }
+
+    if let Some(inner) = value.get("result") {
+        return parse_checked_in_users(inner);
+    }
+
+    Err(format!(
+        "Unexpected Convex response shape: {}",
+        value
+    ))
 }
 
 fn convex_value_to_json(value: &Value) -> serde_json::Value {
@@ -122,12 +164,18 @@ impl PresenceGuiApp {
                                     match update {
                                         Some(FunctionResult::Value(value)) => {
                                             let json_value = convex_value_to_json(&value);
-                                            let parsed_users: Vec<CheckedInUser> = serde_json::from_value(json_value)
-                                                .unwrap_or_default();
-                                            *users_clone.lock().unwrap() = parsed_users;
-                                            *last_update_clone.lock().unwrap() = Instant::now();
-                                            *error_clone.lock().unwrap() = None;
-                                            *status_clone.lock().unwrap() = "Live (WebSocket)".to_string();
+                                            match parse_checked_in_users(&json_value) {
+                                                Ok(parsed_users) => {
+                                                    *users_clone.lock().unwrap() = parsed_users;
+                                                    *last_update_clone.lock().unwrap() = Instant::now();
+                                                    *error_clone.lock().unwrap() = None;
+                                                    *status_clone.lock().unwrap() = "Live (WebSocket)".to_string();
+                                                }
+                                                Err(e) => {
+                                                    let error_msg = format!("WebSocket payload parse error: {}", e);
+                                                    *error_clone.lock().unwrap() = Some(error_msg);
+                                                }
+                                            }
                                         }
                                         Some(FunctionResult::ErrorMessage(message)) => {
                                             let error_msg = format!("Subscription error: {}", message);
@@ -200,54 +248,50 @@ impl PresenceGuiApp {
                     match client
                         .post(&url)
                         .header("Content-Type", "application/json")
-                        .header("Convex-Client", "rust-0.10")
-                        .body(request_body.to_string())
+                        // Use an app-specific semver client id (older rust-x.y ids are rejected by Convex).
+                        .header("Convex-Client", "presence-tracker-rs-0.1.0")
+                        .json(&request_body)
                         .send()
                         .await
                     {
                         Ok(response) => {
                             println!("HTTP response status: {}", response.status());
-                            if response.status().is_success() {
-                                // Convex HTTP API returns {status: "success", value: actual_data}
-                                match response.json::<serde_json::Value>().await {
-                                    Ok(response_json) => {
-                                        println!("Raw response: {}", response_json);
-                                        if response_json.get("status") == Some(&serde_json::Value::String("success".to_string())) {
-                                            if let Some(users_value) = response_json.get("value") {
-                                                match serde_json::from_value::<Vec<CheckedInUser>>(users_value.clone()) {
-                                                    Ok(users) => {
-                                                        println!("Successfully fetched {} users", users.len());
-                                                        *users_clone.lock().unwrap() = users;
-                                                        *last_update_clone.lock().unwrap() = Instant::now();
-                                                        *error_clone.lock().unwrap() = None;
-                                                        *status_clone.lock().unwrap() = "HTTP Polling".to_string();
-                                                    }
-                                                    Err(e) => {
-                                                        println!("JSON parse error for users: {}", e);
-                                                        let error_msg = format!("JSON parse error for users: {}", e);
-                                                        *error_clone.lock().unwrap() = Some(error_msg);
-                                                    }
+                            let status = response.status();
+                            match response.text().await {
+                                Ok(body) if status.is_success() => {
+                                    match serde_json::from_str::<serde_json::Value>(&body) {
+                                        Ok(response_json) => {
+                                            println!("Raw response: {}", response_json);
+                                            match parse_checked_in_users(&response_json) {
+                                                Ok(users) => {
+                                                    println!("Successfully fetched {} users", users.len());
+                                                    *users_clone.lock().unwrap() = users;
+                                                    *last_update_clone.lock().unwrap() = Instant::now();
+                                                    *error_clone.lock().unwrap() = None;
+                                                    *status_clone.lock().unwrap() = "HTTP Polling".to_string();
                                                 }
-                                            } else {
-                                                println!("No 'value' field in response");
-                                                *error_clone.lock().unwrap() = Some("No 'value' field in response".to_string());
+                                                Err(e) => {
+                                                    println!("{}", e);
+                                                    *error_clone.lock().unwrap() = Some(e);
+                                                }
                                             }
-                                        } else {
-                                            println!("Response status not 'success': {:?}", response_json.get("status"));
-                                            let error_msg = format!("Response status not 'success': {:?}", response_json.get("status"));
+                                        }
+                                        Err(e) => {
+                                            println!("JSON parse error: {}", e);
+                                            let error_msg = format!("JSON parse error: {}", e);
                                             *error_clone.lock().unwrap() = Some(error_msg);
                                         }
                                     }
-                                    Err(e) => {
-                                        println!("JSON parse error: {}", e);
-                                        let error_msg = format!("JSON parse error: {}", e);
-                                        *error_clone.lock().unwrap() = Some(error_msg);
-                                    }
                                 }
-                            } else {
-                                println!("HTTP error: {}", response.status());
-                                let error_msg = format!("HTTP error: {}", response.status());
-                                *error_clone.lock().unwrap() = Some(error_msg);
+                                Ok(body) => {
+                                    println!("HTTP error {}: {}", status, body);
+                                    let error_msg = format!("HTTP error {}: {}", status, body);
+                                    *error_clone.lock().unwrap() = Some(error_msg);
+                                }
+                                Err(e) => {
+                                    let error_msg = format!("Failed to read HTTP response body: {}", e);
+                                    *error_clone.lock().unwrap() = Some(error_msg);
+                                }
                             }
                         }
                         Err(e) => {
