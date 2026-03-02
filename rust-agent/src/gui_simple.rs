@@ -1,0 +1,298 @@
+use eframe::egui;
+use convex::{ConvexClient, ConvexClientOptions};
+use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckedInUser {
+    #[serde(rename = "_id")]
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "firstName")]
+    pub first_name: Option<String>,
+    #[serde(rename = "lastName")]
+    pub last_name: Option<String>,
+    pub email: Option<String>,
+    #[serde(rename = "checkInTime")]
+    pub check_in_time: i64,
+    #[serde(rename = "checkInMethod")]
+    pub check_in_method: String,
+    pub status: Option<String>,
+    #[serde(rename = "appStatus")]
+    pub app_status: Option<String>,
+}
+
+pub struct PresenceGuiApp {
+    convex_url: String,
+    checked_in_users: Arc<Mutex<Vec<CheckedInUser>>>,
+    last_update: Arc<Mutex<Instant>>,
+    loading: Arc<Mutex<bool>>,
+    error_message: Arc<Mutex<Option<String>>>,
+    connection_status: Arc<Mutex<String>>,
+}
+
+impl PresenceGuiApp {
+    pub fn new() -> Self {
+        let convex_url = std::env::var("CONVEX_URL")
+            .unwrap_or_else(|_| "https://helpless-badger-925.convex.cloud".to_string());
+        
+        Self {
+            convex_url,
+            checked_in_users: Arc::new(Mutex::new(Vec::new())),
+            last_update: Arc::new(Mutex::new(Instant::now())),
+            loading: Arc::new(Mutex::new(true)),
+            error_message: Arc::new(Mutex::new(None)),
+            connection_status: Arc::new(Mutex::new("Connecting...".to_string())),
+        }
+    }
+
+    pub async fn subscribe_to_updates(&self, shutdown_rx: &mut mpsc::Receiver<()>) {
+        let users_clone = self.checked_in_users.clone();
+        let last_update_clone = self.last_update.clone();
+        let loading_clone = self.loading.clone();
+        let error_clone = self.error_message.clone();
+        let status_clone = self.connection_status.clone();
+
+        match ConvexClient::new(
+            self.convex_url.parse().expect("Invalid Convex URL"),
+            ConvexClientOptions::default(),
+        ).await {
+            Ok(client) => {
+                *status_clone.lock().unwrap() = "Subscribing...".to_string();
+                
+                match client.subscribe("devices:getCheckedInUsers", vec![]).await {
+                    Ok(mut subscription) => {
+                        *status_clone.lock().unwrap() = "Live".to_string();
+                        *loading_clone.lock().unwrap() = false;
+
+                        loop {
+                            tokio::select! {
+                                update = subscription.next() => {
+                                    match update {
+                                        Some(Ok(users)) => {
+                                            let parsed_users: Vec<CheckedInUser> = serde_json::from_value(users)
+                                                .unwrap_or_default();
+                                            *users_clone.lock().unwrap() = parsed_users;
+                                            *last_update_clone.lock().unwrap() = Instant::now();
+                                            *error_clone.lock().unwrap() = None;
+                                            *status_clone.lock().unwrap() = "Live".to_string();
+                                        }
+                                        Some(Err(e)) => {
+                                            let error_msg = format!("Subscription error: {}", e);
+                                            *error_clone.lock().unwrap() = Some(error_msg);
+                                            *status_clone.lock().unwrap() = "Error".to_string();
+                                        }
+                                        None => {
+                                            *error_clone.lock().unwrap() = Some("Subscription ended".to_string());
+                                            *status_clone.lock().unwrap() = "Disconnected".to_string();
+                                            break;
+                                        }
+                                    }
+                                }
+                                _ = shutdown_rx.recv() => {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let error_msg = format!("Failed to subscribe: {}", e);
+                        *error_clone.lock().unwrap() = Some(error_msg);
+                        *status_clone.lock().unwrap() = "Error".to_string();
+                        *loading_clone.lock().unwrap() = false;
+                    }
+                }
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to connect: {}", e);
+                *error_clone.lock().unwrap() = Some(error_msg);
+                *status_clone.lock().unwrap() = "Error".to_string();
+                *loading_clone.lock().unwrap() = false;
+            }
+        }
+    }
+
+    fn format_check_in_time(&self, timestamp_ms: i64) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        
+        let elapsed_ms = now - timestamp_ms;
+        let elapsed_secs = elapsed_ms / 1000;
+        
+        if elapsed_secs < 60 {
+            format!("{}s ago", elapsed_secs)
+        } else if elapsed_secs < 3600 {
+            format!("{}m ago", elapsed_secs / 60)
+        } else if elapsed_secs < 86400 {
+            format!("{}h ago", elapsed_secs / 3600)
+        } else {
+            format!("{}d ago", elapsed_secs / 86400)
+        }
+    }
+
+    fn format_check_in_method(&self, method: &str) -> String {
+        match method {
+            "app+bluetooth" => "📱+📡 App & Bluetooth".to_string(),
+            "app" => "📱 App".to_string(),
+            "bluetooth" => "📡 Bluetooth".to_string(),
+            _ => "❓ Unknown".to_string(),
+        }
+    }
+
+    fn get_time_since_last_update(&self) -> String {
+        let elapsed = self.last_update.lock().unwrap().elapsed();
+        if elapsed < Duration::from_secs(60) {
+            format!("{}s", elapsed.as_secs())
+        } else if elapsed < Duration::from_secs(3600) {
+            format!("{}m", elapsed.as_secs() / 60)
+        } else if elapsed < Duration::from_secs(86400) {
+            format!("{}h", elapsed.as_secs() / 3600)
+        } else {
+            format!("{}d", elapsed.as_secs() / 86400)
+        }
+    }
+}
+
+impl eframe::App for PresenceGuiApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.request_repaint();
+
+        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Quit").clicked() {
+                        _frame.close();
+                    }
+                });
+                
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let status = self.connection_status.lock().unwrap().clone();
+                    let status_color = match status.as_str() {
+                        "Live" => egui::Color32::GREEN,
+                        "Connecting..." | "Subscribing..." => egui::Color32::YELLOW,
+                        _ => egui::Color32::RED,
+                    };
+                    ui.colored_label(status_color, format!("● {}", status));
+                });
+            });
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("🏢 Currently Checked In");
+            
+            ui.horizontal(|ui| {
+                if *self.loading.lock().unwrap() {
+                    ui.spinner();
+                    ui.label("Loading...");
+                } else {
+                    ui.label(format!("Last update: {} ago", self.get_time_since_last_update()));
+                }
+                
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let checked_in_count = self.checked_in_users.lock().unwrap().len();
+                    ui.colored_label(egui::Color32::GREEN, format!("✅ {} Checked In", checked_in_count));
+                });
+            });
+            
+            ui.separator();
+
+            if let Some(error) = self.error_message.lock().unwrap().as_ref() {
+                ui.colored_label(egui::Color32::RED, format!("❌ {}", error));
+                ui.separator();
+            }
+
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let checked_in_users = self.checked_in_users.lock().unwrap().clone();
+                
+                if checked_in_users.is_empty() {
+                    ui.centered_and_justified(|ui| {
+                        if *self.loading.lock().unwrap() {
+                            ui.label("🔄 Connecting to Convex...");
+                        } else {
+                            ui.label("📭 No one is currently checked in");
+                        }
+                    });
+                } else {
+                    for user in checked_in_users {
+                        egui::Frame::none()
+                            .fill(egui::Color32::from_rgb(230, 255, 230))
+                            .inner_margin(10.0)
+                            .rounding(4.0)
+                            .show(ui, |ui| {
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new("🟢").size(24.0));
+                                        ui.label(egui::RichText::new(&user.name).size(18.0).strong());
+                                    });
+                                    
+                                    ui.add_space(4.0);
+                                    
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new("⏰").size(14.0));
+                                        ui.label(egui::RichText::new(
+                                            format!("Checked in {}", self.format_check_in_time(user.check_in_time))
+                                        ).size(14.0).color(egui::Color32::DARK_GRAY));
+                                    });
+                                    
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new(
+                                            self.format_check_in_method(&user.check_in_method)
+                                        ).size(14.0).color(egui::Color32::DARK_GRAY));
+                                    });
+                                });
+                            });
+                        
+                        ui.add_space(6.0);
+                    }
+                }
+            });
+        });
+    }
+}
+
+pub async fn run_gui() -> Result<(), eframe::Error> {
+    dotenvy::dotenv().ok();
+
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([800.0, 600.0])
+            .with_min_inner_size([400.0, 300.0])
+            .with_title("🏢 Presence Tracker - Real-time Check-ins"),
+        ..Default::default()
+    };
+
+    let app = PresenceGuiApp::new();
+    let app_clone = app.clone();
+    
+    let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
+    
+    tokio::spawn(async move {
+        app_clone.subscribe_to_updates(&mut shutdown_rx).await;
+    });
+
+    let result = eframe::run_native(
+        "Presence Tracker GUI",
+        options,
+        Box::new(|_cc| Box::new(app)),
+    );
+    
+    let _ = shutdown_tx.send(()).await;
+    result
+}
+
+impl Clone for PresenceGuiApp {
+    fn clone(&self) -> Self {
+        Self {
+            convex_url: self.convex_url.clone(),
+            checked_in_users: self.checked_in_users.clone(),
+            last_update: self.last_update.clone(),
+            loading: self.loading.clone(),
+            error_message: self.error_message.clone(),
+            connection_status: self.connection_status.clone(),
+        }
+    }
+}

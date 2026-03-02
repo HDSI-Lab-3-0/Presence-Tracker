@@ -1,20 +1,23 @@
 # syntax=docker/dockerfile:1
-FROM oven/bun:1.1.17 AS runner
 
+FROM oven/bun:1.2.22 AS builder
 WORKDIR /app
 
-# Install dependencies (even if none are currently declared) so Bun can manage them
-COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile --production
+COPY package.json bun.lock tsconfig.json astro.config.mjs ./
+COPY scripts ./scripts
+COPY src ./src
+COPY public ./public
 
-# Copy frontend sources
-COPY frontend ./frontend
+RUN bun install --frozen-lockfile
+RUN bun run build:frontend
 
-WORKDIR /app/frontend
+FROM nginx:alpine AS runner
+WORKDIR /app
 
-ENV NODE_ENV=production
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
+COPY docker/entrypoint-config.sh /docker-entrypoint.d/99-config.sh
+RUN chmod +x /docker-entrypoint.d/99-config.sh
+
 ENV PORT=3132
-
 EXPOSE 3132
-
-CMD ["bun", "run", "server.js"]

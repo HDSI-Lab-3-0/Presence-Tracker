@@ -218,7 +218,7 @@ echo "CONVEX_DEPLOYMENT_URL=https://your-deployment.convex.cloud" >> .env
 # Run with Docker
 docker-compose up -d
 
-# Access at http://localhost:3000 (or http://<pi-ip>:3000)
+# Access at http://localhost:3132 (or http://<pi-ip>:3132)
 ```
 
 ### Deploy Web Dashboard to GitHub Pages
@@ -314,7 +314,7 @@ Follow these steps to get your presence tracker up and running:
    - **Optional**: `ADMIN_PASSWORD` - Set a password for admin access (full permissions)
 4. In **Settings > CORS**, add your web dashboard URL:
    - If using GitHub Pages: `https://<username>.github.io`
-   - If using Docker locally: `http://localhost:3000`
+   - If using Docker locally: `http://localhost:3132`
 
 ### 2. Deploy the Web Dashboard
 
@@ -332,7 +332,7 @@ Choose one of the deployment options:
    - `CONVEX_DEPLOYMENT_URL` (required)
    - `ORGANIZATION_NAME` (optional) - Your organization name for UI customization
 2. Run `docker-compose up -d`
-3. Access at `http://localhost:3000`
+3. Access at `http://localhost:3132`
 
 ### 3. Connect to the Raspberry Pi
 
@@ -352,7 +352,7 @@ Choose one of the deployment options:
 
 1. Open your web dashboard in a browser:
    - GitHub Pages: `https://<username>.github.io/<repository-name>/`
-   - Docker: `http://<pi-ip>:3000` or `http://localhost:3000`
+   - Docker: `http://<pi-ip>:3132` or `http://localhost:3132`
 2. Enter the password you set in Step 1 (`AUTH_PASSWORD` or `ADMIN_PASSWORD`)
 3. **Important**: It may take up to a minute for the dashboard to fully load and connect to the backend
 
@@ -607,7 +607,7 @@ bunx convex run getDeviceLogs '{"deviceId":"j4k2l9..." }'
 # Start web dashboard (Docker)
 docker-compose up -d
 
-# View dashboard at http://localhost:3000
+# View dashboard at http://localhost:3132
 
 # Stop web dashboard
 docker-compose down
@@ -953,16 +953,13 @@ cat setup.config
 │   ├── auth.ts                       # Authentication functions
 │   ├── fixPendingDevices.ts          # Utility for fixing pending devices
 │   └── _generated/                   # Auto-generated Convex client code
-├── frontend/                         # Web dashboard
-│   ├── index.html                    # Main dashboard page
-│   ├── app.js                        # Frontend application logic
-│   ├── auth.js                       # Authentication handling
-│   ├── integrations.js               # Integration configuration UI
-│   ├── style.css                     # Dashboard styling
+├── src/                              # Frontend + Python source files
+│   ├── pages/                        # Astro routes (`/` and `/pwa`)
+│   ├── scripts/                      # Frontend TypeScript modules
+│   └── styles/                       # Tailwind-first styles and component layers
+├── public/                           # Static frontend assets
 │   ├── config.js                     # Convex URL configuration (auto-generated)
-│   ├── edit_modal.html               # Device edit modal
-│   ├── Dockerfile                    # Container build definition
-│   └── entrypoint.sh                 # Container startup script
+│   └── pwa/                          # PWA manifest/icons/runtime config
 ├── logs/                             # Application logs
 │   └── presence_tracker.log          # Presence tracker output
 ├── pyproject.toml                    # Python project configuration (UV)

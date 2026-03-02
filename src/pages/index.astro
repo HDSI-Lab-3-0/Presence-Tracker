@@ -1,3 +1,7 @@
+---
+import "../styles/dashboard.css";
+---
+
 <!DOCTYPE html>
 <html lang="en">
 
@@ -5,7 +9,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Presence Tracker</title>
-    <link rel="stylesheet" href="./style.css">
     <link
         href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fira+Code:wght@400;500&display=swap"
         rel="stylesheet">
@@ -15,20 +18,17 @@
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
         crossorigin="" />
 
-    <!-- Convex Client -->
-    <script src="https://unpkg.com/convex@1.31.5/dist/browser.bundle.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <script is:inline src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script
+        is:inline
         src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
         crossorigin=""></script>
 
-    <!-- Runtime Config -->
-    <script src="./config.js"></script>
+    <script is:inline src="/config.js"></script>
 </head>
 
 <body>
-    <!-- Authentication Overlay -->
     <div id="auth-overlay" class="auth-overlay">
         <div class="auth-container">
             <div class="auth-header">
@@ -49,12 +49,12 @@
         </div>
     </div>
 
-    <div class="app-container" id="main-app" style="display: none;">
+    <div class="app-container app-hidden" id="main-app">
         <header class="main-header">
             <div class="logo">
                 <h1 id="main-title">Presence Tracker</h1>
             </div>
-            <div class="header-actions" style="display: flex; gap: 0.75rem; align-items: center;">
+            <div class="header-actions">
                 <button id="view-logs-btn" class="btn btn-secondary admin-only" onclick="showLogsView()">
                     View Logs
                 </button>
@@ -71,19 +71,16 @@
         </header>
 
         <main class="dashboard">
-            <!-- Active Residents Section -->
             <section class="section residents-section">
                 <div class="section-header">
                     <h2 id="members-title">Active Members</h2>
                     <span class="count-badge" id="residents-count">0</span>
                 </div>
                 <div class="grid-container" id="residents-grid">
-                    <!-- Cards injected by JS -->
                     <div class="loading-state" id="loading-members">Loading Members ...</div>
                 </div>
             </section>
 
-            <!-- New Devices Section -->
             <section class="section pending-section">
                 <div class="section-header">
                     <h2>New Devices Detected</h2>
@@ -93,14 +90,12 @@
                     </div>
                 </div>
                 <div class="list-container" id="pending-list">
-                    <!-- List items injected by JS -->
                     <div class="empty-state">No new devices nearby</div>
                 </div>
             </section>
         </main>
 
-        <!-- Logs View (Hidden by default) -->
-        <div id="logs-view" class="logs-view" style="display: none;">
+        <div id="logs-view" class="logs-view logs-hidden">
             <div class="logs-header">
                 <button class="btn btn-secondary" onclick="hideLogsView()">← Back</button>
                 <h2 id="logs-title">Device Status Logs</h2>
@@ -112,20 +107,17 @@
                 <button class="log-tab" data-tab="all" onclick="switchTab('all')">All</button>
             </div>
             <div class="logs-filter-container" id="logs-filter-container">
-                <!-- Person Selection (shown in by-person mode) -->
-                <div class="logs-filter" id="person-filter" style="display: none;">
+                <div class="logs-filter filter-hidden" id="person-filter">
                     <label for="person-select">Select Person:</label>
                     <select id="person-select">
                         <option value="">-- Choose a person --</option>
                     </select>
                 </div>
-                <!-- Date Picker (shown in by-date mode) -->
-                <div class="logs-filter" id="date-filter" style="display: none;">
+                <div class="logs-filter filter-hidden" id="date-filter">
                     <label for="date-picker">Select Date:</label>
                     <input type="date" id="date-picker">
                 </div>
-                <!-- View Mode Selector (shown in all mode) -->
-                <div class="logs-filter" id="all-filter" style="display: none;">
+                <div class="logs-filter filter-hidden" id="all-filter">
                     <label for="all-view-mode">View Mode:</label>
                     <select id="all-view-mode">
                         <option value="by-time">By Time</option>
@@ -139,7 +131,6 @@
         </div>
     </div>
 
-    <!-- Registration Modal -->
     <div id="registration-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -168,7 +159,6 @@
         </div>
     </div>
 
-    <!-- Edit Device Modal -->
     <div id="edit-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -190,14 +180,11 @@
                     <input type="email" id="edit-ucsd-email" placeholder="e.g. jdoe@ucsd.edu">
                 </div>
 
-                <hr style="border: 0; border-top: 1px solid var(--border); margin: 1.5rem 0;">
+                <hr class="edit-divider">
 
                 <div class="logs-section">
-                    <h4
-                        style="font-size: 0.85rem; margin-bottom: 0.5rem; text-transform: uppercase; color: var(--text-secondary);">
-                        Activity Log</h4>
-                    <div id="edit-logs"
-                        style="max-height: 150px; overflow-y: auto; font-size: 0.75rem; background: var(--bg-app); padding: 0.5rem; border: 1px solid var(--border); border-radius: 4px; font-family: var(--font-mono);">
+                    <h4 class="logs-subtitle">Activity Log</h4>
+                    <div id="edit-logs" class="edit-logs-box">
                         Loading logs...
                     </div>
                 </div>
@@ -208,9 +195,7 @@
             </div>
         </div>
     </div>
-    </div>
 
-    <!-- Integrations Modal -->
     <div id="integrations-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -236,17 +221,19 @@
             </div>
             <div class="modal-body">
                 <p class="helper-text">Scan this code in the mobile app to import your encoded linking configuration.</p>
-                <div id="app-linking-qr-standalone" style="display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 280px;"></div>
+                <div id="app-linking-qr-standalone" class="qr-standalone"></div>
             </div>
         </div>
     </div>
 
     <div id="toast" class="toast"></div>
 
-    <script src="./auth.js?v=3"></script>
-    <script src="./app.js?v=3"></script>
-    <script src="./logs.js?v=3"></script>
-    <script src="./integrations.js?v=4"></script>
+    <script>
+        import "../scripts/dashboard";
+        import "../scripts/auth";
+        import "../scripts/logs";
+        import "../scripts/integrations";
+    </script>
 </body>
 
 </html>

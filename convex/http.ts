@@ -1,8 +1,12 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { api } from "./_generated/api";
+import { authComponent, createAuth } from "./betterAuth";
 
 const http = httpRouter();
+
+// Register Better Auth routes with CORS enabled
+authComponent.registerRoutes(http, createAuth, { cors: true });
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",

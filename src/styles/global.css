@@ -1,0 +1,190 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #0284c7;
+  --color-primary-hover: #0369a1;
+  --color-bg-app: #f1f5f9;
+  --color-bg-card: #ffffff;
+  --color-text-main: #0f172a;
+  --color-text-secondary: #475569;
+  --color-border-main: #cbd5e1;
+  --color-border-light: #e2e8f0;
+  --color-success: #059669;
+  --color-success-bg: #ecfdf5;
+  --color-warning: #d97706;
+  --color-danger: #dc2626;
+}
+
+@layer base {
+  :root {
+    --primary: #0284c7;
+    --primary-hover: #0369a1;
+    --bg-app: #f1f5f9;
+    --bg-card: #ffffff;
+    --text-main: #0f172a;
+    --text-secondary: #475569;
+    --border: #cbd5e1;
+    --border-light: #e2e8f0;
+    --success: #059669;
+    --success-bg: #ecfdf5;
+    --warning: #d97706;
+    --danger: #dc2626;
+    --radius: 4px;
+    --font-main: "Inter", system-ui, -apple-system, sans-serif;
+    --font-mono: "Fira Code", monospace;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    @apply m-0 min-h-screen antialiased;
+    font-family: var(--font-main);
+    color: var(--text-main);
+    background-color: var(--bg-app);
+    background-image: radial-gradient(#cbd5e1 1px, transparent 1px);
+    background-size: 20px 20px;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center rounded-sm border px-3 py-2 text-sm font-medium transition-colors duration-150;
+    border-color: var(--border);
+    color: var(--text-main);
+    background: var(--bg-card);
+  }
+
+  .btn:disabled {
+    @apply cursor-not-allowed opacity-60;
+  }
+
+  .btn-primary {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: #fff;
+  }
+
+  .btn-primary:hover {
+    background: var(--primary-hover);
+    border-color: var(--primary-hover);
+  }
+
+  .btn-secondary {
+    background: var(--bg-app);
+    border-color: var(--border);
+    color: var(--text-main);
+  }
+
+  .btn-secondary:hover {
+    background: var(--border-light);
+  }
+
+  .btn-danger {
+    background: #e74c3c;
+    border-color: #c0392b;
+    color: #fff;
+  }
+
+  .admin-actions {
+    @apply mt-2.5 flex justify-end gap-2;
+  }
+
+  .admin-action-btn {
+    @apply px-1.5 py-0.5 text-[0.7rem];
+  }
+
+  .presence-source {
+    @apply mt-1 border-t-0 pt-0;
+  }
+
+  .header-actions {
+    @apply flex flex-wrap items-center justify-end gap-3;
+  }
+
+  .app-hidden {
+    display: none;
+  }
+
+  .logs-hidden {
+    display: none;
+  }
+
+  .filter-hidden {
+    display: none;
+  }
+
+  .edit-divider {
+    @apply my-6 border-0 border-t;
+    border-color: var(--border);
+  }
+
+  .logs-subtitle {
+    @apply mb-2 text-[0.85rem] uppercase;
+    color: var(--text-secondary);
+  }
+
+  .edit-logs-box {
+    @apply max-h-[150px] overflow-y-auto rounded-sm border bg-bg-app p-2 font-mono text-xs;
+    border-color: var(--border);
+  }
+
+  .edit-log-empty {
+    @apply px-1 py-1;
+    color: var(--text-secondary);
+  }
+
+  .edit-log-row {
+    @apply border-b border-dashed py-1;
+    border-color: var(--border-light);
+  }
+
+  .edit-log-time {
+    @apply text-[0.7rem];
+    color: var(--text-secondary);
+  }
+
+  .qr-standalone {
+    @apply flex min-h-[280px] flex-col items-center justify-center;
+  }
+
+  .integration-muted {
+    @apply mt-2 text-sm;
+    color: #666;
+  }
+
+  .integration-error {
+    @apply mt-2 text-sm;
+    color: #a94442;
+  }
+
+  .qr-node {
+    @apply h-60 w-60 rounded-lg border bg-white p-2;
+    border-color: #ddd;
+  }
+
+  .integration-actions-end {
+    @apply justify-end gap-2;
+  }
+
+  .integration-top-gap {
+    @apply mt-4;
+  }
+
+  .integration-qr-wrapper {
+    @apply flex flex-col items-start;
+  }
+
+  .boundary-section-label {
+    @apply mb-3 block;
+  }
+
+  .boundary-row {
+    @apply mb-3;
+  }
+
+  .pwa-hidden {
+    display: none;
+  }
+}

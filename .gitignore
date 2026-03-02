@@ -25,6 +25,8 @@ config/agent_state.json
 
 # Node modules
 node_modules/
+dist/
+.astro/
 
 # Rust build artifacts
 rust-agent/target/

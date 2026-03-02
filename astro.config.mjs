@@ -1,0 +1,20 @@
+// @ts-check
+import { defineConfig } from "astro/config";
+import tailwindcss from "@tailwindcss/vite";
+
+export default defineConfig({
+  vite: {
+    plugins: [tailwindcss()],
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes("node_modules/convex")) {
+              return "convex";
+            }
+          },
+        },
+      },
+    },
+  },
+});

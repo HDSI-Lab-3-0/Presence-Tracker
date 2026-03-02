@@ -721,6 +721,36 @@ export const saveAppBoundaryConfig = mutation({
   },
 });
 
+export const getDeviceByEmail = query({
+  args: {
+    email: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const normalizedEmail = args.email.trim().toLowerCase();
+    if (!isValidUcsdEmail(normalizedEmail)) {
+      return null;
+    }
+
+    const device = await ctx.db
+      .query("devices")
+      .withIndex("by_ucsdEmail", (q: any) => q.eq("ucsdEmail", normalizedEmail))
+      .first();
+
+    if (!device || device.pendingRegistration) {
+      return null;
+    }
+
+    return {
+      _id: device._id,
+      firstName: device.firstName,
+      lastName: device.lastName,
+      ucsdEmail: device.ucsdEmail,
+      status: device.status,
+      appStatus: device.appStatus || "absent",
+    };
+  },
+});
+
 export const fetchAppStatusByEmail = query({
   args: {
     apiKey: v.string(),
@@ -1054,5 +1084,258 @@ export const getAttendanceHistory = query({
       email: normalizedEmail,
       records,
     };
+  },
+});
+
+export const getCheckedInUsers = query({
+  args: {},
+  handler: async (ctx: any) => {
+    const devices = await ctx.db.query("devices").collect();
+    
+    const checkedInUsers = [];
+    
+    for (const device of devices) {
+      if (device.pendingRegistration) {
+        continue;
+      }
+      
+      const isCheckedIn = device.status === "present" || device.appStatus === "present";
+      
+      if (!isCheckedIn) {
+        continue;
+      }
+      
+      const logs = await ctx.db
+        .query("deviceLogs")
+        .withIndex("by_deviceId", (q: any) => q.eq("deviceId", device._id))
+        .filter((q: any) =>
+          q.or(
+            q.eq(q.field("changeType"), "status_change"),
+            q.eq(q.field("changeType"), "update"),
+          )
+        )
+        .order("desc")
+        .take(50);
+      
+      let checkInTime = device.connectedSince || device.lastSeen;
+      let checkInMethod = "unknown";
+      
+      const recentStatusChange = logs.find((log: any) => 
+        log.changeType === "status_change" && 
+        typeof log.details === "string" &&
+        log.details.includes("to present")
+      );
+      
+      const recentAppToggle = logs.find((log: any) => 
+        log.changeType === "update" && 
+        typeof log.details === "string" &&
+        log.details.includes("App status toggled to present")
+      );
+      
+      if (recentStatusChange && recentAppToggle) {
+        const timeDiff = Math.abs(recentStatusChange.timestamp - recentAppToggle.timestamp);
+        if (timeDiff <= 5 * 60 * 1000) {
+          checkInTime = Math.min(recentStatusChange.timestamp, recentAppToggle.timestamp);
+          checkInMethod = "app+bluetooth";
+        } else if (recentStatusChange.timestamp > recentAppToggle.timestamp) {
+          checkInTime = recentStatusChange.timestamp;
+          checkInMethod = "bluetooth";
+        } else {
+          checkInTime = recentAppToggle.timestamp;
+          checkInMethod = "app";
+        }
+      } else if (recentStatusChange) {
+        checkInTime = recentStatusChange.timestamp;
+        checkInMethod = "bluetooth";
+      } else if (recentAppToggle) {
+        checkInTime = recentAppToggle.timestamp;
+        checkInMethod = "app";
+      } else if (device.status === "present") {
+        checkInMethod = "bluetooth";
+      } else if (device.appStatus === "present") {
+        checkInMethod = "app";
+      }
+      
+      const displayName = device.firstName && device.lastName 
+        ? `${device.firstName} ${device.lastName}` 
+        : device.name || "Unknown";
+      
+      checkedInUsers.push({
+        _id: device._id,
+        name: displayName,
+        firstName: device.firstName,
+        lastName: device.lastName,
+        email: device.ucsdEmail,
+        checkInTime,
+        checkInMethod,
+        status: device.status,
+        appStatus: device.appStatus,
+      });
+    }
+    
+    checkedInUsers.sort((a, b) => b.checkInTime - a.checkInTime);
+    
+    return checkedInUsers;
+  },
+});
+
+export const getAttendanceHistoryByDeviceId = query({
+  args: {
+    deviceId: v.id("devices"),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const device = await ctx.db.get(args.deviceId);
+    if (!device || device.pendingRegistration) {
+      return [];
+    }
+
+    const maxRecords = args.limit || 20;
+
+    const logs = await ctx.db
+      .query("deviceLogs")
+      .withIndex("by_deviceId", (q: any) => q.eq("deviceId", args.deviceId))
+      .filter((q: any) =>
+        q.or(
+          q.eq(q.field("changeType"), "status_change"),
+          q.eq(q.field("changeType"), "update"),
+        )
+      )
+      .order("desc")
+      .take(200);
+
+    const FIVE_MINUTES_MS = 5 * 60 * 1000;
+
+    const bluetoothStatusEvents = logs
+      .filter((log: any) => log.changeType === "status_change" && typeof log.details === "string")
+      .map((log: any) => {
+        const match = log.details.match(/Status changed from (present|absent) to (present|absent)/i);
+        const nextStatus = match?.[2]?.toLowerCase();
+        if (nextStatus === "present" || nextStatus === "absent") {
+          return { timestamp: log.timestamp, status: nextStatus };
+        }
+        return null;
+      })
+      .filter(Boolean)
+      .sort((a: any, b: any) => a.timestamp - b.timestamp);
+
+    const bluetoothCheckIns = bluetoothStatusEvents.filter((event: any) => event.status === "present");
+    const bluetoothCheckOuts = bluetoothStatusEvents.filter((event: any) => event.status === "absent");
+
+    const appStatusLogs = logs.filter((log: any) => typeof log.details === "string" && log.details.includes("App status"));
+
+    const appStatusEvents = appStatusLogs
+      .map((log: any) => {
+        const match = log.details.match(/App status toggled to (present|absent)/i);
+        const nextStatus = match?.[1]?.toLowerCase();
+        if (nextStatus === "present" || nextStatus === "absent") {
+          return { timestamp: log.timestamp, status: nextStatus };
+        }
+        return null;
+      })
+      .filter(Boolean)
+      .sort((a: any, b: any) => a.timestamp - b.timestamp);
+
+    const appCheckIns = appStatusEvents.filter((event: any) => event.status === "present");
+    const appCheckOuts = appStatusEvents.filter((event: any) => event.status === "absent");
+
+    const mergeEvents = (
+      primaryEvents: { timestamp: number }[],
+      secondaryEvents: { timestamp: number }[],
+      options: {
+        status: "present" | "absent";
+        bothLabel: string;
+        primaryLabel: string;
+        secondaryLabel: string;
+        bothSource: string;
+        primarySource: string;
+        secondarySource: string;
+      },
+    ) => {
+      const merged: any[] = [];
+      let primaryIndex = 0;
+      let secondaryIndex = 0;
+
+      while (primaryIndex < primaryEvents.length && secondaryIndex < secondaryEvents.length) {
+        const primaryEvent = primaryEvents[primaryIndex];
+        const secondaryEvent = secondaryEvents[secondaryIndex];
+        const diff = Math.abs(primaryEvent.timestamp - secondaryEvent.timestamp);
+
+        if (diff <= FIVE_MINUTES_MS) {
+          merged.push({
+            timestamp: Math.min(primaryEvent.timestamp, secondaryEvent.timestamp),
+            status: options.status,
+            source: options.bothSource,
+            label: options.bothLabel,
+          });
+          primaryIndex += 1;
+          secondaryIndex += 1;
+        } else if (primaryEvent.timestamp < secondaryEvent.timestamp) {
+          merged.push({
+            timestamp: primaryEvent.timestamp,
+            status: options.status,
+            source: options.primarySource,
+            label: options.primaryLabel,
+          });
+          primaryIndex += 1;
+        } else {
+          merged.push({
+            timestamp: secondaryEvent.timestamp,
+            status: options.status,
+            source: options.secondarySource,
+            label: options.secondaryLabel,
+          });
+          secondaryIndex += 1;
+        }
+      }
+
+      while (primaryIndex < primaryEvents.length) {
+        merged.push({
+          timestamp: primaryEvents[primaryIndex].timestamp,
+          status: options.status,
+          source: options.primarySource,
+          label: options.primaryLabel,
+        });
+        primaryIndex += 1;
+      }
+
+      while (secondaryIndex < secondaryEvents.length) {
+        merged.push({
+          timestamp: secondaryEvents[secondaryIndex].timestamp,
+          status: options.status,
+          source: options.secondarySource,
+          label: options.secondaryLabel,
+        });
+        secondaryIndex += 1;
+      }
+
+      return merged;
+    };
+
+    const combinedCheckIns = mergeEvents(appCheckIns, bluetoothCheckIns, {
+      status: "present",
+      bothLabel: "app check in verified with bluetooth",
+      primaryLabel: "checked in with app",
+      secondaryLabel: "checked in with bluetooth",
+      bothSource: "app+bluetooth",
+      primarySource: "app",
+      secondarySource: "bluetooth",
+    });
+
+    const combinedCheckOuts = mergeEvents(appCheckOuts, bluetoothCheckOuts, {
+      status: "absent",
+      bothLabel: "app check out verified with bluetooth",
+      primaryLabel: "checked out via app",
+      secondaryLabel: "checked out via bluetooth",
+      bothSource: "app+bluetooth",
+      primarySource: "app",
+      secondarySource: "bluetooth",
+    });
+
+    const records = [...combinedCheckIns, ...combinedCheckOuts]
+      .sort((a, b) => b.timestamp - a.timestamp)
+      .slice(0, maxRecords);
+
+    return records;
   },
 });

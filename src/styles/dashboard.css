@@ -1,3 +1,5 @@
+@import "./global.css";
+
 :root {
     /* "Light Tech" / Blueprint Theme */
     --primary: #0284C7;

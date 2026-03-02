@@ -96,11 +96,72 @@ curl -X POST "https://<your-convex-deployment>.convex.site/api/fetch" \
   -H "Content-Type: application/json" \
   -d '{"email":"student@ucsd.edu"}'
 ```
+### 3) `POST /api/attendance`
+Fetch the user’s recent attendance records with merged app + Bluetooth logs (±5 minute window).
+
+- Auth: **Required** (`Authorization: Bearer <apiKey>`)
+- Content-Type: `application/json`
+- Body:
+
+```json
+{
+  "email": "student@ucsd.edu"
+}
+```
+
+#### Success Response (200)
+
+```json
+{
+  "success": true,
+  "email": "student@ucsd.edu",
+  "records": [
+    {
+      "timestamp": 1739236500000,
+      "status": "present",
+      "source": "app+bluetooth",
+      "label": "app check in verified with bluetooth"
+    },
+    {
+      "timestamp": 1739239800000,
+      "status": "absent",
+      "source": "app",
+      "label": "checked out via app"
+    }
+  ]
+}
+```
+
+`source`/`label` values reflect how the record was generated:
+
+| Scenario | `source` | `label` |
+|----------|----------|---------|
+| Only app toggled present | `app` | `checked in with app` |
+| Only Bluetooth detected presence | `bluetooth` | `checked in with bluetooth` |
+| App + Bluetooth within ±5 minutes | `app+bluetooth` | `app check in verified with bluetooth` |
+| App-only checkout | `app` | `checked out via app` |
+| Bluetooth-only checkout | `bluetooth` | `checked out via bluetooth` |
+| App + Bluetooth checkout pair | `app+bluetooth` | `app check out verified with bluetooth` |
+
+#### Error Responses
+
+- `400` invalid JSON or missing email
+- `401` missing Bearer API key
+- `400` invalid API key / backend validation errors
+
+#### cURL Example
+
+```bash
+curl -X POST "https://<your-convex-deployment>.convex.site/api/attendance" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"student@ucsd.edu"}'
+```
 
 ---
 
-### 3) `OPTIONS /api/change_status` and `OPTIONS /api/fetch`
-CORS preflight endpoint for mobile/web clients.
+### 4) `OPTIONS /api/change_status`, `OPTIONS /api/fetch`, and `OPTIONS /api/attendance`
+CORS preflight endpoints for mobile/web clients.
 
 #### Success Response (200)
 
