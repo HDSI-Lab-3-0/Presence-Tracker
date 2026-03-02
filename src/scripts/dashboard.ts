@@ -32,8 +32,6 @@ function escapeSingleQuote(value) {
 let selectedMacForRegistration = null;
 let subscriptionInitialized = false;
 let organizationName = "Presence Tracker";
-let appConfig = null;
-let statusRefreshInterval = null;
 
 document.addEventListener("DOMContentLoaded", () => {
   fetchAndSetOrganizationName();
@@ -48,8 +46,6 @@ export async function initializeApp() {
     setupConvexSubscription();
     subscriptionInitialized = true;
   }
-  // Start periodic status refresh like PWA
-  startPeriodicStatusRefresh();
 }
 
 window.initializeApp = initializeApp;
@@ -113,73 +109,6 @@ function setupConvexSubscription() {
   });
 }
 
-async function fetchAppConfig() {
-  try {
-    appConfig = await convexClient.query("devices:getAppLinkingConfig", {});
-  } catch (error) {
-    console.error("Failed to fetch app config:", error);
-  }
-}
-
-async function refreshAllAppStatuses() {
-  if (!convexClient || !appConfig?.apiKey) {
-    await fetchAppConfig();
-  }
-
-  if (!appConfig?.apiKey) {
-    console.warn("[Dashboard] Missing API key, skipping status refresh");
-    return;
-  }
-
-  try {
-    // Get all devices with registered emails
-    const devices = await convexClient.query("devices:getDevices", {});
-    const devicesWithEmail = devices.filter(d => d.ucsdEmail && d.pendingRegistration === false);
-
-    // Refresh app status for each device
-    for (const device of devicesWithEmail) {
-      try {
-        const status = await convexClient.query("devices:fetchAppStatusByEmail", {
-          apiKey: appConfig.apiKey,
-          email: device.ucsdEmail,
-        });
-
-        if (status?.success) {
-          // Update the device's app status locally
-          const oldStatus = device.appStatus;
-          device.appStatus = status.appStatus;
-          
-          if (oldStatus !== status.appStatus) {
-            console.log(`[Dashboard] Updated ${device.ucsdEmail} status: ${oldStatus} -> ${status.appStatus}`);
-          }
-        }
-      } catch (error) {
-        console.error(`Failed to refresh app status for ${device.ucsdEmail}:`, error);
-      }
-    }
-    
-    // Trigger a re-render with updated statuses
-    const allDevices = await convexClient.query("devices:getDevices", {});
-    renderDevices(allDevices);
-  } catch (error) {
-    console.error("Failed to refresh app statuses:", error);
-  }
-}
-
-function startPeriodicStatusRefresh() {
-  // Initial fetch
-  fetchAppConfig();
-  
-  // Refresh app statuses every 30 seconds (like PWA)
-  if (statusRefreshInterval) {
-    clearInterval(statusRefreshInterval);
-  }
-  
-  statusRefreshInterval = setInterval(async () => {
-    await refreshAllAppStatuses();
-  }, 30000);
-}
-
 function renderDevices(devices) {
   const residentsGrid = document.getElementById("residents-grid");
   const pendingList = document.getElementById("pending-list");
@@ -187,9 +116,8 @@ function renderDevices(devices) {
 
   const residents = devices.filter((d) => d.pendingRegistration === false);
   residents.sort((a, b) => {
-    // Use combined presence logic like PWA
-    const aActive = a.status === "present" || a.appStatus === "present";
-    const bActive = b.status === "present" || b.appStatus === "present";
+    const aActive = a.status === "present";
+    const bActive = b.status === "present";
 
     if (aActive && !bActive) return -1;
     if (!aActive && bActive) return 1;
@@ -201,13 +129,8 @@ function renderDevices(devices) {
 
   const pending = devices.filter((d) => d.pendingRegistration !== false);
 
-  // Count checked-in users using combined presence logic
-  const checkedInCount = residents.filter(d => 
-    d.status === "present" || d.appStatus === "present"
-  ).length;
-  
   if (residentsCount) {
-    residentsCount.textContent = String(checkedInCount);
+    residentsCount.textContent = String(residents.length);
   }
 
   reconcileResidents(residentsGrid, residents);
@@ -215,9 +138,7 @@ function renderDevices(devices) {
 }
 
 function createResidentCard(device) {
-  const bluetoothPresent = device.status === "present";
-  const appPresent = device.appStatus === "present";
-  const isPresent = bluetoothPresent || appPresent;
+  const isPresent = device.status === "present" || device.appStatus === "present";
   const statusClass = isPresent ? "present" : "away";
   const sourceMessage = getPresenceSourceMessage(device);
   const fullName = device.firstName && device.lastName
@@ -226,15 +147,10 @@ function createResidentCard(device) {
 
   let timeMessage = "";
   if (isPresent) {
-    // Prioritize app status for time display if available
-    if (appPresent && device.appLastSeen) {
-      const connectedDate = new Date(device.appLastSeen);
-      const timeStr = connectedDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      timeMessage = `Connected via app at ${timeStr}`;
-    } else if (bluetoothPresent && device.connectedSince) {
+    if (device.connectedSince) {
       const connectedDate = new Date(device.connectedSince);
       const timeStr = connectedDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      timeMessage = `Connected via Bluetooth at ${timeStr}`;
+      timeMessage = `Connected at ${timeStr}`;
     } else {
       timeMessage = "Connected";
     }
@@ -272,9 +188,7 @@ function createResidentCard(device) {
 }
 
 function updateResidentCard(card, device) {
-  const bluetoothPresent = device.status === "present";
-  const appPresent = device.appStatus === "present";
-  const isPresent = bluetoothPresent || appPresent;
+  const isPresent = device.status === "present" || device.appStatus === "present";
   const statusClass = isPresent ? "present" : "away";
   const sourceMessage = getPresenceSourceMessage(device);
 
@@ -284,15 +198,10 @@ function updateResidentCard(card, device) {
 
   let timeMessage = "";
   if (isPresent) {
-    // Prioritize app status for time display if available
-    if (appPresent && device.appLastSeen) {
-      const connectedDate = new Date(device.appLastSeen);
-      const timeStr = connectedDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      timeMessage = `Connected via app at ${timeStr}`;
-    } else if (bluetoothPresent && device.connectedSince) {
+    if (device.connectedSince) {
       const connectedDate = new Date(device.connectedSince);
       const timeStr = connectedDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      timeMessage = `Connected via Bluetooth at ${timeStr}`;
+      timeMessage = `Connected at ${timeStr}`;
     } else {
       timeMessage = "Connected";
     }
@@ -670,47 +579,3 @@ window.addEventListener("click", (event) => {
     window.closeModal?.();
   }
 });
-
-// Cleanup interval when page is unloaded
-window.addEventListener("beforeunload", () => {
-  if (statusRefreshInterval) {
-    clearInterval(statusRefreshInterval);
-    statusRefreshInterval = null;
-  }
-});
-
-// Handle page visibility changes to pause/resume refresh
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden) {
-    // Pause refresh when page is hidden
-    if (statusRefreshInterval) {
-      clearInterval(statusRefreshInterval);
-      statusRefreshInterval = null;
-    }
-  } else {
-    // Resume refresh when page becomes visible
-    if (convexClient && !statusRefreshInterval) {
-      startPeriodicStatusRefresh();
-    }
-  }
-});
-
-// Enhanced real-time update handler
-function enhanceRealTimeUpdates() {
-  if (!convexClient) return;
-  
-  // Set up additional subscription for app config changes
-  convexClient.onUpdate("devices:getAppLinkingConfig", {}, (config) => {
-    if (config && config !== appConfig) {
-      appConfig = config;
-      console.log("[Dashboard] App config updated");
-    }
-  });
-}
-
-// Initialize enhanced updates
-if (typeof window !== 'undefined') {
-  setTimeout(() => {
-    enhanceRealTimeUpdates();
-  }, 1000);
-}
