@@ -12,6 +12,41 @@ let currentLocation = null;
 let appConfig = null;
 let deferredInstallPrompt = null;
 
+async function verifyOneTimeToken(ott) {
+  const auth = ensureAuthClient();
+  if (!auth) {
+    console.error("[OAuth] Auth client unavailable while verifying OTT");
+    return false;
+  }
+
+  try {
+    console.log("[OAuth] Verifying one-time token", ott);
+    const result = await auth.crossDomain?.oneTimeToken?.verify({ token: ott });
+    const sessionToken = result?.data?.session?.token;
+
+    if (!sessionToken) {
+      console.warn("[OAuth] OTT verification succeeded but no session token returned");
+      return false;
+    }
+
+    await auth.getSession({
+      fetchOptions: {
+        headers: {
+          Authorization: `Bearer ${sessionToken}`,
+        },
+      },
+    });
+
+    auth.updateSession?.();
+    console.log("[OAuth] Session refreshed after OTT verification");
+    return true;
+  } catch (error) {
+    console.error("[OAuth] Failed to verify one-time token", error);
+    showToast("Sign in failed. Please try again.", "error");
+    return false;
+  }
+}
+
 function normalizeConvexBaseUrl(url) {
   if (typeof url !== "string") return "";
   return url.replace("/api/query", "").replace("/api/mutation", "").replace(/\/$/, "");
@@ -195,7 +230,8 @@ window.signInWithGoogle = async function () {
 };
 
 async function handleOAuthCallback() {
-  const urlParams = new URLSearchParams(window.location.search);
+  const currentUrl = new URL(window.location.href);
+  const urlParams = currentUrl.searchParams;
   const error = urlParams.get("error");
   const ott = urlParams.get("ott");
 
@@ -211,7 +247,10 @@ async function handleOAuthCallback() {
 
   if (ott) {
     console.log("[OAuth] One-time token detected:", ott);
-    return true;
+    const verified = await verifyOneTimeToken(ott);
+    urlParams.delete("ott");
+    window.history.replaceState({}, document.title, `${currentUrl.pathname}${urlParams.toString() ? `?${urlParams.toString()}` : ""}`);
+    return verified;
   }
 
   const hasOAuthParams = window.location.search || window.location.hash;
