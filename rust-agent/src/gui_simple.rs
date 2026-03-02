@@ -391,6 +391,82 @@ impl PresenceGuiApp {
             _ => egui::Color32::from_rgb(168, 42, 50),
         }
     }
+
+    fn render_compact_user_card(&self, ui: &mut egui::Ui, user: &CheckedInUser) {
+        let display_name = Self::display_name(user);
+        let email = user.email.as_deref().unwrap_or("").trim();
+
+        egui::Frame::none()
+            .fill(egui::Color32::from_rgb(232, 248, 236))
+            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(184, 224, 196)))
+            .rounding(8.0)
+            .inner_margin(8.0)
+            .show(ui, |ui| {
+                ui.set_min_height(76.0);
+                ui.label(
+                    egui::RichText::new(display_name)
+                        .size(15.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(22, 64, 40)),
+                );
+
+                if !email.is_empty() {
+                    ui.label(
+                        egui::RichText::new(email)
+                            .size(11.0)
+                            .color(egui::Color32::from_rgb(63, 92, 77)),
+                    );
+                }
+
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(
+                        Self::method_color(&user.check_in_method),
+                        egui::RichText::new(self.format_check_in_method(&user.check_in_method))
+                            .size(11.0)
+                            .strong(),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "• {}",
+                            self.format_check_in_time(user.check_in_time)
+                        ))
+                        .size(11.0)
+                        .color(egui::Color32::from_rgb(63, 92, 77)),
+                    );
+                });
+            });
+    }
+
+    fn render_role_section(&self, ui: &mut egui::Ui, title: &str, users: &[CheckedInUser]) {
+        if users.is_empty() {
+            return;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(title)
+                    .size(14.0)
+                    .strong()
+                    .color(egui::Color32::from_rgb(21, 56, 92)),
+            );
+            ui.label(
+                egui::RichText::new(format!("({})", users.len()))
+                    .size(12.0)
+                    .color(egui::Color32::from_rgb(73, 99, 125)),
+            );
+        });
+        ui.add_space(4.0);
+
+        ui.columns(3, |columns| {
+            for (idx, user) in users.iter().enumerate() {
+                let column = &mut columns[idx % 3];
+                self.render_compact_user_card(column, user);
+                column.add_space(6.0);
+            }
+        });
+
+        ui.add_space(6.0);
+    }
 }
 
 impl eframe::App for PresenceGuiApp {
@@ -399,8 +475,8 @@ impl eframe::App for PresenceGuiApp {
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading(egui::RichText::new("Presence Tracker").size(24.0));
-                ui.add_space(8.0);
+                ui.heading(egui::RichText::new("Presence Tracker").size(20.0));
+                ui.add_space(6.0);
                 if ui.button("Quit").clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -421,8 +497,8 @@ impl eframe::App for PresenceGuiApp {
 
             egui::Frame::none()
                 .fill(egui::Color32::from_rgb(240, 247, 255))
-                .rounding(10.0)
-                .inner_margin(12.0)
+                .rounding(8.0)
+                .inner_margin(8.0)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         if *self.loading.lock().unwrap() {
@@ -442,14 +518,14 @@ impl eframe::App for PresenceGuiApp {
                             ui.colored_label(
                                 egui::Color32::from_rgb(20, 120, 45),
                                 egui::RichText::new(format!("{} Checked In", checked_in_count))
-                                    .size(16.0)
+                                    .size(14.0)
                                     .strong(),
                             );
                         });
                     });
                 });
 
-            ui.add_space(10.0);
+            ui.add_space(6.0);
 
             if let Some(error) = self.error_message.lock().unwrap().as_ref() {
                 egui::Frame::none()
@@ -462,11 +538,11 @@ impl eframe::App for PresenceGuiApp {
                             format!("Connection error: {}", error),
                         );
                     });
-                ui.add_space(8.0);
+                ui.add_space(6.0);
             }
 
             ui.separator();
-            ui.add_space(6.0);
+            ui.add_space(4.0);
 
             egui::ScrollArea::vertical().show(ui, |ui| {
                 if checked_in_users.is_empty() {
@@ -480,61 +556,31 @@ impl eframe::App for PresenceGuiApp {
                     return;
                 }
 
+                ui.label(
+                    egui::RichText::new("Compact view: 3 cards per role")
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(73, 99, 125)),
+                );
+                ui.add_space(4.0);
+
+                let mut app_bluetooth = Vec::new();
+                let mut app_only = Vec::new();
+                let mut bluetooth_only = Vec::new();
+                let mut other = Vec::new();
+
                 for user in checked_in_users {
-                    let display_name = Self::display_name(&user);
-                    let email = user.email.as_deref().unwrap_or("").trim();
-
-                    egui::Frame::none()
-                        .fill(egui::Color32::from_rgb(232, 248, 236))
-                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(184, 224, 196)))
-                        .rounding(10.0)
-                        .inner_margin(12.0)
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    egui::RichText::new("●")
-                                        .size(20.0)
-                                        .color(egui::Color32::from_rgb(28, 132, 64)),
-                                );
-                                ui.label(
-                                    egui::RichText::new(display_name)
-                                        .size(20.0)
-                                        .strong()
-                                        .color(egui::Color32::from_rgb(22, 64, 40)),
-                                );
-
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.colored_label(
-                                        Self::method_color(&user.check_in_method),
-                                        egui::RichText::new(self.format_check_in_method(&user.check_in_method))
-                                            .size(13.0)
-                                            .strong(),
-                                    );
-                                });
-                            });
-
-                            if !email.is_empty() {
-                                ui.add_space(2.0);
-                                ui.label(
-                                    egui::RichText::new(email)
-                                        .size(13.0)
-                                        .color(egui::Color32::from_rgb(63, 92, 77)),
-                                );
-                            }
-
-                            ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "Checked in {}",
-                                    self.format_check_in_time(user.check_in_time)
-                                ))
-                                .size(13.0)
-                                .color(egui::Color32::from_rgb(63, 92, 77)),
-                            );
-                        });
-
-                    ui.add_space(8.0);
+                    match user.check_in_method.as_str() {
+                        "app+bluetooth" => app_bluetooth.push(user),
+                        "app" => app_only.push(user),
+                        "bluetooth" => bluetooth_only.push(user),
+                        _ => other.push(user),
+                    }
                 }
+
+                self.render_role_section(ui, "App + Bluetooth", &app_bluetooth);
+                self.render_role_section(ui, "App", &app_only);
+                self.render_role_section(ui, "Bluetooth", &bluetooth_only);
+                self.render_role_section(ui, "Other", &other);
             });
         });
     }
@@ -545,8 +591,8 @@ pub async fn run_gui() -> Result<(), eframe::Error> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([800.0, 600.0])
-            .with_min_inner_size([400.0, 300.0])
+            .with_inner_size([980.0, 620.0])
+            .with_min_inner_size([760.0, 360.0])
             .with_title("🏢 Presence Tracker - Real-time Check-ins"),
         ..Default::default()
     };
@@ -571,8 +617,8 @@ pub async fn run_gui() -> Result<(), eframe::Error> {
             cc.egui_ctx.set_visuals(visuals);
 
             let mut style = (*cc.egui_ctx.style()).clone();
-            style.spacing.item_spacing = egui::vec2(10.0, 10.0);
-            style.spacing.button_padding = egui::vec2(10.0, 6.0);
+            style.spacing.item_spacing = egui::vec2(6.0, 6.0);
+            style.spacing.button_padding = egui::vec2(8.0, 4.0);
             cc.egui_ctx.set_style(style);
 
             Ok(Box::new(app))
