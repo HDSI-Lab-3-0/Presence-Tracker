@@ -174,7 +174,7 @@ impl PresenceGuiApp {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    let url = format!("{}/api/getCheckedInUsers", convex_url);
+                    let url = format!("{}/api/query/devices:getCheckedInUsers", convex_url);
                     match client
                         .post(&url)
                         .header("Content-Type", "application/json")
