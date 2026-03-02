@@ -435,65 +435,31 @@ impl PresenceGuiApp {
         format!("{}...", truncated)
     }
 
-    fn calculate_bento_grid(count: usize, available_width: f32, available_height: f32) -> Vec<(usize, usize)> {
+    fn choose_bento_grid(count: usize, window_aspect: f32) -> (usize, usize) {
         if count == 0 {
-            return vec![];
+            return (1, 1);
+        }
+        if count == 1 {
+            return (1, 1);
         }
 
-        let aspect = (available_width / available_height.max(1.0)).max(0.5);
-        let mut grid: Vec<(usize, usize)> = Vec::new();
+        let mut best_rows = 1usize;
+        let mut best_cols = count;
+        let mut best_score = f32::INFINITY;
+        let target_card_aspect = 1.5f32;
 
-        if count <= 3 {
-            for _ in 0..count {
-                grid.push((1, 1));
-            }
-        } else if count == 4 {
-            grid = vec![(1, 2), (1, 1), (1, 1)];
-        } else if count <= 6 {
-            if aspect > 1.3 {
-                grid = vec![(2, 2), (1, 1), (1, 1), (1, 1), (1, 1)];
-            } else {
-                grid = vec![(1, 2), (1, 1), (1, 1), (1, 1), (1, 1), (1, 1)];
-            }
-        } else if count <= 9 {
-            if aspect > 1.5 {
-                grid = vec![(2, 2), (1, 1), (1, 1), (1, 1), (1, 1), (1, 1), (1, 1), (1, 1)];
-            } else {
-                grid = vec![(2, 1), (1, 1), (1, 1), (1, 1), (1, 1), (1, 1), (1, 1), (1, 1), (1, 1)];
-            }
-        } else {
-            let large_count = (count as f32 * 0.15).ceil() as usize;
-            let small_count = count - large_count;
-            for _ in 0..large_count {
-                grid.push((1, 2));
-            }
-            for _ in 0..small_count {
-                grid.push((1, 1));
+        for cols in 1..=count {
+            let rows = (count as f32 / cols as f32).ceil() as usize;
+            let tile_aspect = window_aspect * (rows as f32 / cols as f32);
+            let score = (tile_aspect / target_card_aspect).ln().abs();
+            if score < best_score {
+                best_score = score;
+                best_rows = rows;
+                best_cols = cols;
             }
         }
 
-        while grid.len() < count {
-            grid.push((1, 1));
-        }
-
-        grid.truncate(count);
-        grid
-    }
-
-    fn get_bento_text_sizes(card_area: f32) -> (f32, f32, f32) {
-        if card_area > 30000.0 {
-            (22.0, 14.0, 10.0)
-        } else if card_area > 18000.0 {
-            (18.0, 13.0, 10.0)
-        } else if card_area > 10000.0 {
-            (15.0, 12.0, 9.0)
-        } else if card_area > 5000.0 {
-            (13.0, 11.0, 9.0)
-        } else if card_area > 2500.0 {
-            (11.0, 10.0, 8.0)
-        } else {
-            (9.0, 8.0, 7.0)
-        }
+        (best_rows, best_cols)
     }
 
     fn render_bento_card(
@@ -503,88 +469,100 @@ impl PresenceGuiApp {
         card_width: f32,
         card_height: f32,
     ) {
-        let card_area = card_width * card_height;
-        let (name_size, meta_size, time_size) = Self::get_bento_text_sizes(card_area);
         let display_name = Self::display_name(user);
         let email = user.email.as_deref().unwrap_or("").trim();
         
-        let max_name_chars = (((card_width / 7.0).floor() as usize) * 2).clamp(8, 40);
-        let show_email = card_area > 12000.0;
-        let show_method = card_area > 6000.0;
-
-        let (fill_color, border_color) = match user.check_in_method.as_str() {
+        let card_area = card_width * card_height;
+        let name_size = (card_width * 0.045).clamp(10.0, 22.0);
+        let meta_size = (card_width * 0.032).clamp(8.0, 13.0);
+        let badge_size = (card_width * 0.028).clamp(7.0, 11.0);
+        let padding = (card_width * 0.04).clamp(6.0, 16.0);
+        let rounding = (card_width * 0.025).clamp(6.0, 12.0);
+        
+        let show_email = card_area > 8000.0 && !email.is_empty();
+        let show_full_time = card_area > 6000.0;
+        let show_badge = card_width > 80.0;
+        
+        let chars_per_line = (card_width / (name_size * 0.55)).floor() as usize;
+        let max_name_chars = (chars_per_line * 2).clamp(12, 50);
+        
+        let (fill_color, border_color, accent_color) = match user.check_in_method.as_str() {
             "app+bluetooth" => (
-                egui::Color32::from_rgb(235, 242, 255),
-                egui::Color32::from_rgb(180, 205, 245),
+                egui::Color32::from_rgb(237, 245, 255),
+                egui::Color32::from_rgb(191, 219, 254),
+                egui::Color32::from_rgb(59, 130, 246),
             ),
             "app" => (
-                egui::Color32::from_rgb(235, 250, 238),
-                egui::Color32::from_rgb(195, 225, 200),
+                egui::Color32::from_rgb(236, 253, 245),
+                egui::Color32::from_rgb(167, 243, 208),
+                egui::Color32::from_rgb(16, 185, 129),
             ),
             "bluetooth" => (
-                egui::Color32::from_rgb(235, 245, 252),
-                egui::Color32::from_rgb(185, 210, 235),
+                egui::Color32::from_rgb(238, 242, 255),
+                egui::Color32::from_rgb(199, 210, 254),
+                egui::Color32::from_rgb(99, 102, 241),
             ),
             _ => (
-                egui::Color32::from_rgb(248, 248, 248),
-                egui::Color32::from_rgb(215, 215, 215),
+                egui::Color32::from_rgb(249, 250, 251),
+                egui::Color32::from_rgb(229, 231, 235),
+                egui::Color32::from_rgb(107, 114, 128),
             ),
         };
-
-        let method_color = Self::method_color(&user.check_in_method);
-        let margin = if card_area > 15000.0 { 16.0 } else if card_area > 8000.0 { 12.0 } else { 8.0 };
 
         egui::Frame::none()
             .fill(fill_color)
             .stroke(egui::Stroke::new(1.5, border_color))
-            .rounding(12.0)
-            .inner_margin(margin)
+            .rounding(rounding)
+            .inner_margin(padding)
             .show(ui, |ui| {
-                ui.set_min_height(card_height);
+                ui.set_min_size(egui::vec2(card_width - padding * 2.0, card_height - padding * 2.0));
                 ui.vertical(|ui| {
-                    ui.colored_label(
-                        method_color,
-                        egui::RichText::new(self.format_check_in_method(&user.check_in_method))
-                            .size(meta_size)
-                            .strong(),
-                    );
+                    ui.spacing_mut().item_spacing.y = padding * 0.3;
                     
-                    ui.add_space(4.0);
+                    if show_badge {
+                        egui::Frame::none()
+                            .fill(accent_color)
+                            .rounding(rounding * 0.4)
+                            .inner_margin(egui::vec2(padding * 0.5, padding * 0.25))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(self.format_check_in_method(&user.check_in_method))
+                                        .size(badge_size)
+                                        .color(egui::Color32::WHITE)
+                                        .strong(),
+                                );
+                            });
+                        ui.add_space(padding * 0.4);
+                    }
                     
                     ui.label(
                         egui::RichText::new(Self::truncate_text(&display_name, max_name_chars))
                             .size(name_size)
                             .strong()
-                            .color(egui::Color32::from_rgb(25, 55, 45)),
+                            .color(egui::Color32::from_rgb(17, 24, 39)),
                     );
-
-                    if show_email && !email.is_empty() {
-                        ui.add_space(2.0);
+                    
+                    if show_email {
                         ui.label(
                             egui::RichText::new(email)
-                                .size(time_size)
-                                .color(egui::Color32::from_rgb(80, 100, 90)),
+                                .size(meta_size)
+                                .color(egui::Color32::from_rgb(107, 114, 128)),
                         );
                     }
-
-                    ui.add_space(if show_method { 8.0 } else { 4.0 });
-
-                    if show_method {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "Checked in {}",
-                                self.format_check_in_time(user.check_in_time)
-                            ))
-                            .size(time_size)
-                            .color(egui::Color32::from_rgb(80, 100, 90)),
-                        );
+                    
+                    ui.add_space(padding * 0.2);
+                    
+                    let time_text = if show_full_time {
+                        format!("Checked in {}", self.format_check_in_time(user.check_in_time))
                     } else {
-                        ui.colored_label(
-                            egui::Color32::from_rgb(80, 100, 90),
-                            egui::RichText::new(self.format_check_in_time(user.check_in_time))
-                                .size(time_size),
-                        );
-                    }
+                        self.format_check_in_time(user.check_in_time)
+                    };
+                    
+                    ui.label(
+                        egui::RichText::new(time_text)
+                            .size(meta_size)
+                            .color(egui::Color32::from_rgb(156, 163, 175)),
+                    );
                 });
             });
     }
@@ -676,89 +654,55 @@ impl eframe::App for PresenceGuiApp {
             });
 
             let total_users = sorted_users.len();
-            let grid_spacing = 10.0;
             let available_width = ui.available_width();
             let available_height = ui.available_height().max(1.0);
-
-            let grid_layout = Self::calculate_bento_grid(total_users, available_width, available_height);
+            let window_aspect = (available_width / available_height).max(0.1);
             
-            let max_col_span = grid_layout.iter().map(|(w, _)| *w).max().unwrap_or(1);
-            let max_row_span = grid_layout.iter().map(|(_, h)| *h).max().unwrap_or(1);
-            let base_cell_width = (available_width - grid_spacing * (max_col_span as f32 - 1.0)) 
-                / max_col_span as f32;
-            let base_cell_height = (available_height - grid_spacing * (max_row_span as f32 - 1.0)) 
-                / max_row_span as f32;
+            let base_spacing = (available_width * 0.012).clamp(8.0, 16.0);
+            let grid_x_spacing = base_spacing;
+            let grid_y_spacing = base_spacing;
+            
+            let (rows, columns) = Self::choose_bento_grid(total_users, window_aspect);
+            let card_width =
+                ((available_width - grid_x_spacing * (columns.saturating_sub(1)) as f32) / columns as f32)
+                    .max(1.0);
+            let card_height =
+                ((available_height - grid_y_spacing * (rows.saturating_sub(1)) as f32) / rows as f32)
+                    .max(40.0);
 
-            let mut current_x = 0.0;
-            let mut current_y = 0.0;
-            let mut row_heights: Vec<f32> = vec![];
-            let mut current_row_max_height = 0.0;
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    for row in 0..rows {
+                        let start = row * columns;
+                        let end = (start + columns).min(total_users);
 
-            for (idx, (col_span, row_span)) in grid_layout.iter().enumerate() {
-                let cell_width = base_cell_width * (*col_span as f32) + grid_spacing * ((*col_span as f32) - 1.0).max(0.0);
-                let cell_height = base_cell_height * (*row_span as f32) + grid_spacing * ((*row_span as f32) - 1.0).max(0.0);
-
-                if idx == 0 {
-                    current_row_max_height = cell_height;
-                } else if current_x + cell_width > available_width + 1.0 {
-                    row_heights.push(current_row_max_height);
-                    current_y += current_row_max_height + grid_spacing;
-                    current_x = 0.0;
-                    current_row_max_height = cell_height;
-                } else {
-                    current_row_max_height = current_row_max_height.max(cell_height);
-                }
-                current_x += cell_width + grid_spacing;
-            }
-            if current_row_max_height > 0.0 {
-                row_heights.push(current_row_max_height);
-            }
-
-            current_x = 0.0;
-            current_y = 0.0;
-            let mut row_idx = 0;
-            let mut col_in_row = 0;
-            current_row_max_height = row_heights.first().copied().unwrap_or(base_cell_height);
-
-            for (idx, (col_span, row_span)) in grid_layout.iter().enumerate() {
-                let cell_width = base_cell_width * (*col_span as f32) + grid_spacing * ((*col_span as f32) - 1.0).max(0.0);
-                let cell_height = base_cell_height * (*row_span as f32) + grid_spacing * ((*row_span as f32) - 1.0).max(0.0);
-
-                if idx > 0 && col_in_row == 0 {
-                    current_y += current_row_max_height + grid_spacing;
-                    current_x = 0.0;
-                    row_idx += 1;
-                    current_row_max_height = row_heights.get(row_idx).copied().unwrap_or(base_cell_height);
-                }
-
-                let actual_cell_height = current_row_max_height.min(cell_height);
-
-                ui.allocate_ui_with_layout(
-                    egui::vec2(cell_width, actual_cell_height),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |cell_ui| {
-                        if let Some(user) = sorted_users.get(idx) {
-                            self.render_bento_card(cell_ui, user, cell_width, actual_cell_height);
+                        ui.horizontal(|ui| {
+                            for idx in start..end {
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(card_width, card_height),
+                                    egui::Layout::top_down(egui::Align::Min),
+                                    |cell_ui| {
+                                        if let Some(user) = sorted_users.get(idx) {
+                                            self.render_bento_card(
+                                                cell_ui,
+                                                user,
+                                                card_width,
+                                                card_height,
+                                            );
+                                        }
+                                    },
+                                );
+                                if idx + 1 < end {
+                                    ui.add_space(grid_x_spacing);
+                                }
+                            }
+                        });
+                        if row + 1 < rows {
+                            ui.add_space(grid_y_spacing);
                         }
-                    },
-                );
-
-                current_x += cell_width + grid_spacing;
-                col_in_row += 1;
-
-                if idx + 1 < grid_layout.len() {
-                    let next_col_span = grid_layout[idx + 1].0;
-                    if col_in_row >= 2 || (col_in_row == 1 && next_col_span == 2) {
-                        if current_x >= available_width - 1.0 {
-                            // row will wrap
-                        } else {
-                            ui.add_space(grid_spacing);
-                        }
-                    } else {
-                        ui.add_space(grid_spacing);
                     }
-                }
-            }
+                });
         });
     }
 }
@@ -768,8 +712,8 @@ pub async fn run_gui() -> Result<(), eframe::Error> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([980.0, 620.0])
-            .with_min_inner_size([760.0, 360.0])
+            .with_inner_size([1200.0, 800.0])
+            .with_min_inner_size([800.0, 500.0])
             .with_title("🏢 Presence Tracker - Real-time Check-ins"),
         ..Default::default()
     };
@@ -788,14 +732,14 @@ pub async fn run_gui() -> Result<(), eframe::Error> {
         options,
         Box::new(|cc| {
             let mut visuals = egui::Visuals::light();
-            visuals.window_fill = egui::Color32::from_rgb(248, 251, 255);
-            visuals.panel_fill = egui::Color32::from_rgb(248, 251, 255);
-            visuals.extreme_bg_color = egui::Color32::from_rgb(232, 240, 252);
+            visuals.window_fill = egui::Color32::from_rgb(255, 255, 255);
+            visuals.panel_fill = egui::Color32::from_rgb(255, 255, 255);
+            visuals.extreme_bg_color = egui::Color32::from_rgb(249, 250, 251);
             cc.egui_ctx.set_visuals(visuals);
 
             let mut style = (*cc.egui_ctx.style()).clone();
-            style.spacing.item_spacing = egui::vec2(6.0, 6.0);
-            style.spacing.button_padding = egui::vec2(8.0, 4.0);
+            style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+            style.spacing.button_padding = egui::vec2(12.0, 6.0);
             cc.egui_ctx.set_style(style);
 
             Ok(Box::new(app))
