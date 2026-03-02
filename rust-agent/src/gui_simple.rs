@@ -177,25 +177,53 @@ impl PresenceGuiApp {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    let url = format!("{}/api/query/devices:getCheckedInUsers", convex_url);
+                    let url = format!("{}/api/query", convex_url);
                     println!("Making HTTP request to: {}", url);
+                    let request_body = serde_json::json!({
+                        "path": "devices:getCheckedInUsers",
+                        "args": {},
+                        "format": "json"
+                    });
+                    println!("Request body: {}", request_body);
                     match client
                         .post(&url)
                         .header("Content-Type", "application/json")
-                        .body("{}")
+                        .body(request_body.to_string())
                         .send()
                         .await
                     {
                         Ok(response) => {
                             println!("HTTP response status: {}", response.status());
                             if response.status().is_success() {
-                                match response.json::<Vec<CheckedInUser>>().await {
-                                    Ok(users) => {
-                                        println!("Successfully fetched {} users", users.len());
-                                        *users_clone.lock().unwrap() = users;
-                                        *last_update_clone.lock().unwrap() = Instant::now();
-                                        *error_clone.lock().unwrap() = None;
-                                        *status_clone.lock().unwrap() = "HTTP Polling".to_string();
+                                // Convex HTTP API returns {status: "success", value: actual_data}
+                                match response.json::<serde_json::Value>().await {
+                                    Ok(response_json) => {
+                                        println!("Raw response: {}", response_json);
+                                        if response_json.get("status") == Some(&serde_json::Value::String("success".to_string())) {
+                                            if let Some(users_value) = response_json.get("value") {
+                                                match serde_json::from_value::<Vec<CheckedInUser>>(users_value.clone()) {
+                                                    Ok(users) => {
+                                                        println!("Successfully fetched {} users", users.len());
+                                                        *users_clone.lock().unwrap() = users;
+                                                        *last_update_clone.lock().unwrap() = Instant::now();
+                                                        *error_clone.lock().unwrap() = None;
+                                                        *status_clone.lock().unwrap() = "HTTP Polling".to_string();
+                                                    }
+                                                    Err(e) => {
+                                                        println!("JSON parse error for users: {}", e);
+                                                        let error_msg = format!("JSON parse error for users: {}", e);
+                                                        *error_clone.lock().unwrap() = Some(error_msg);
+                                                    }
+                                                }
+                                            } else {
+                                                println!("No 'value' field in response");
+                                                *error_clone.lock().unwrap() = Some("No 'value' field in response".to_string());
+                                            }
+                                        } else {
+                                            println!("Response status not 'success': {:?}", response_json.get("status"));
+                                            let error_msg = format!("Response status not 'success': {:?}", response_json.get("status"));
+                                            *error_clone.lock().unwrap() = Some(error_msg);
+                                        }
                                     }
                                     Err(e) => {
                                         println!("JSON parse error: {}", e);
