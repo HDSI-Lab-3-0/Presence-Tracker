@@ -1,7 +1,8 @@
-use convex::{FunctionResult, ConvexClient};
+use convex::{FunctionResult, Value, ConvexClient};
 use eframe::egui;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use serde_json::Number;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -24,6 +25,30 @@ pub struct CheckedInUser {
     pub status: Option<String>,
     #[serde(rename = "appStatus")]
     pub app_status: Option<String>,
+}
+
+fn convex_value_to_json(value: &Value) -> serde_json::Value {
+    match value {
+        Value::Null => serde_json::Value::Null,
+        Value::Int64(v) => serde_json::Value::Number(Number::from(*v)),
+        Value::Float64(v) => Number::from_f64(*v)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        Value::Boolean(v) => serde_json::Value::Bool(*v),
+        Value::String(v) => serde_json::Value::String(v.clone()),
+        Value::Bytes(bytes) => serde_json::Value::Array(
+            bytes
+                .iter()
+                .map(|b| serde_json::Value::Number(Number::from(*b)))
+                .collect(),
+        ),
+        Value::Array(values) => serde_json::Value::Array(values.iter().map(convex_value_to_json).collect()),
+        Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), convex_value_to_json(v)))
+                .collect(),
+        ),
+    }
 }
 
 pub struct PresenceGuiApp {
@@ -71,21 +96,13 @@ impl PresenceGuiApp {
                                 update = subscription.next() => {
                                     match update {
                                         Some(FunctionResult::Value(value)) => {
-                                            match serde_json::to_value(&value) {
-                                                Ok(json_value) => {
-                                                    let parsed_users: Vec<CheckedInUser> = serde_json::from_value(json_value)
-                                                        .unwrap_or_default();
-                                                    *users_clone.lock().unwrap() = parsed_users;
-                                                    *last_update_clone.lock().unwrap() = Instant::now();
-                                                    *error_clone.lock().unwrap() = None;
-                                                    *status_clone.lock().unwrap() = "Live".to_string();
-                                                }
-                                                Err(e) => {
-                                                    let error_msg = format!("Failed to parse subscription payload: {}", e);
-                                                    *error_clone.lock().unwrap() = Some(error_msg);
-                                                    *status_clone.lock().unwrap() = "Error".to_string();
-                                                }
-                                            }
+                                            let json_value = convex_value_to_json(&value);
+                                            let parsed_users: Vec<CheckedInUser> = serde_json::from_value(json_value)
+                                                .unwrap_or_default();
+                                            *users_clone.lock().unwrap() = parsed_users;
+                                            *last_update_clone.lock().unwrap() = Instant::now();
+                                            *error_clone.lock().unwrap() = None;
+                                            *status_clone.lock().unwrap() = "Live".to_string();
                                         }
                                         Some(FunctionResult::ErrorMessage(message)) => {
                                             let error_msg = format!("Subscription error: {}", message);
@@ -166,7 +183,7 @@ impl PresenceGuiApp {
 }
 
 impl eframe::App for PresenceGuiApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint();
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
