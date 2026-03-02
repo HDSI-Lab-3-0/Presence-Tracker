@@ -109,6 +109,11 @@ impl PresenceGuiApp {
                                             *error_clone.lock().unwrap() = Some(error_msg);
                                             *status_clone.lock().unwrap() = "Error".to_string();
                                         }
+                                        Some(FunctionResult::ConvexError(err)) => {
+                                            let error_msg = format!("Convex error: {}", err);
+                                            *error_clone.lock().unwrap() = Some(error_msg);
+                                            *status_clone.lock().unwrap() = "Error".to_string();
+                                        }
                                         None => {
                                             *error_clone.lock().unwrap() = Some("Subscription ended".to_string());
                                             *status_clone.lock().unwrap() = "Disconnected".to_string();

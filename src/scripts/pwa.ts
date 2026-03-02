@@ -11,6 +11,13 @@ let currentDevice = null;
 let currentLocation = null;
 let appConfig = null;
 let deferredInstallPrompt = null;
+let logEntries = [];
+let logsPage = 1;
+let logsTotalPages = 1;
+let logsCollapsed = true;
+
+const LOGS_PER_PAGE = 5;
+const LOG_MERGE_THRESHOLD_MS = 6 * 60 * 60 * 1000;
 
 async function verifyOneTimeToken(ott) {
   const auth = ensureAuthClient();

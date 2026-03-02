@@ -120,9 +120,21 @@ import "../../styles/pwa.css";
                 </div>
 
                 <div class="logs-section">
-                    <h3 class="logs-title">Recent Activity</h3>
-                    <div class="logs-list" id="logs-list">
-                        <div class="logs-loading">Loading activity...</div>
+                    <button class="logs-toggle" id="logs-toggle" onclick="toggleLogsCollapse()" aria-expanded="false">
+                        <span id="logs-toggle-text">Show recent activity</span>
+                        <svg id="logs-toggle-icon" class="logs-toggle-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="6 9 12 15 18 9" />
+                        </svg>
+                    </button>
+                    <div class="logs-content collapsed" id="logs-content">
+                        <div class="logs-list" id="logs-list">
+                            <div class="logs-loading">Loading activity...</div>
+                        </div>
+                        <div class="logs-pagination" id="logs-pagination">
+                            <button class="btn btn-secondary btn-small" id="logs-prev" onclick="changeLogsPage(-1)">Previous</button>
+                            <span class="logs-page-indicator" id="logs-page-indicator">Page 1 of 1</span>
+                            <button class="btn btn-secondary btn-small" id="logs-next" onclick="changeLogsPage(1)">Next</button>
+                        </div>
                     </div>
                 </div>
             </main>
