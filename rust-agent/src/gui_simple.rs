@@ -413,6 +413,7 @@ impl PresenceGuiApp {
         &self,
         ui: &mut egui::Ui,
         user: &CheckedInUser,
+        card_width: f32,
         card_height: f32,
         density: u8,
     ) {
@@ -424,20 +425,39 @@ impl PresenceGuiApp {
             2 => (11.0, 9.0, 4.0, false, false),
             _ => (9.0, 8.0, 1.5, false, false),
         };
-        let max_name_chars = match density {
-            0 => 28,
-            1 => 24,
-            2 => 20,
-            _ => 14,
+        let max_name_chars = (((card_width / 8.0).floor() as usize) * 2).clamp(10, 32);
+        let (fill_color, border_color) = match user.check_in_method.as_str() {
+            "app+bluetooth" => (
+                egui::Color32::from_rgb(230, 240, 255),
+                egui::Color32::from_rgb(170, 198, 238),
+            ),
+            "app" => (
+                egui::Color32::from_rgb(232, 248, 236),
+                egui::Color32::from_rgb(184, 224, 196),
+            ),
+            "bluetooth" => (
+                egui::Color32::from_rgb(232, 245, 255),
+                egui::Color32::from_rgb(177, 214, 239),
+            ),
+            _ => (
+                egui::Color32::from_rgb(242, 242, 242),
+                egui::Color32::from_rgb(209, 209, 209),
+            ),
         };
 
         egui::Frame::none()
-            .fill(egui::Color32::from_rgb(232, 248, 236))
-            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(184, 224, 196)))
+            .fill(fill_color)
+            .stroke(egui::Stroke::new(1.0, border_color))
             .rounding(8.0)
             .inner_margin(margin)
             .show(ui, |ui| {
                 ui.set_min_height(card_height);
+                ui.colored_label(
+                    Self::method_color(&user.check_in_method),
+                    egui::RichText::new(self.format_check_in_method(&user.check_in_method))
+                        .size(meta_size)
+                        .strong(),
+                );
                 ui.label(
                     egui::RichText::new(Self::truncate_text(&display_name, max_name_chars))
                         .size(name_size)
@@ -454,22 +474,14 @@ impl PresenceGuiApp {
                 }
 
                 if show_method {
-                    ui.horizontal_wrapped(|ui| {
-                        ui.colored_label(
-                            Self::method_color(&user.check_in_method),
-                            egui::RichText::new(self.format_check_in_method(&user.check_in_method))
-                                .size(meta_size)
-                                .strong(),
-                        );
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "• {}",
-                                self.format_check_in_time(user.check_in_time)
-                            ))
-                            .size(meta_size)
-                            .color(egui::Color32::from_rgb(63, 92, 77)),
-                        );
-                    });
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Checked in {}",
+                            self.format_check_in_time(user.check_in_time)
+                        ))
+                        .size(meta_size)
+                        .color(egui::Color32::from_rgb(63, 92, 77)),
+                    );
                 } else if density < 3 {
                     ui.colored_label(
                         egui::Color32::from_rgb(63, 92, 77),
@@ -488,8 +500,9 @@ impl eframe::App for PresenceGuiApp {
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading(egui::RichText::new("Presence Tracker").size(20.0));
-                ui.add_space(6.0);
+                let checked_in_count = self.checked_in_users.lock().unwrap().len();
+                ui.heading(egui::RichText::new(format!("Presence ({})", checked_in_count)).size(18.0));
+                ui.add_space(4.0);
                 if ui.button("Quit").clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
@@ -506,39 +519,20 @@ impl eframe::App for PresenceGuiApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let checked_in_users = self.checked_in_users.lock().unwrap().clone();
-            let checked_in_count = checked_in_users.len();
+            ui.horizontal(|ui| {
+                if *self.loading.lock().unwrap() {
+                    ui.spinner();
+                    ui.label("Loading...");
+                } else {
+                    ui.label(
+                        egui::RichText::new(format!("Updated {} ago", self.get_time_since_last_update()))
+                            .size(12.0)
+                            .color(egui::Color32::from_rgb(73, 99, 125)),
+                    );
+                }
+            });
 
-            egui::Frame::none()
-                .fill(egui::Color32::from_rgb(240, 247, 255))
-                .rounding(8.0)
-                .inner_margin(8.0)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        if *self.loading.lock().unwrap() {
-                            ui.spinner();
-                            ui.label("Loading...");
-                        } else {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "Last update: {} ago",
-                                    self.get_time_since_last_update()
-                                ))
-                                .size(14.0),
-                            );
-                        }
-
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(20, 120, 45),
-                                egui::RichText::new(format!("{} Checked In", checked_in_count))
-                                    .size(14.0)
-                                    .strong(),
-                            );
-                        });
-                    });
-                });
-
-            ui.add_space(6.0);
+            ui.add_space(4.0);
 
             if let Some(error) = self.error_message.lock().unwrap().as_ref() {
                 egui::Frame::none()
@@ -553,9 +547,6 @@ impl eframe::App for PresenceGuiApp {
                     });
                 ui.add_space(6.0);
             }
-
-            ui.separator();
-            ui.add_space(4.0);
 
             if checked_in_users.is_empty() {
                 ui.centered_and_justified(|ui| {
@@ -577,16 +568,13 @@ impl eframe::App for PresenceGuiApp {
                     .then_with(|| Self::display_name(a).cmp(&Self::display_name(b)))
             });
 
-            let columns: usize = 4;
+            let max_columns: usize = 4;
             let total_users = sorted_users.len();
-            let rows = ((total_users + columns - 1) / columns).max(1);
+            let rows = ((total_users + max_columns - 1) / max_columns).max(1);
             let grid_x_spacing = 6.0;
             let grid_y_spacing = 6.0;
             let available_width = ui.available_width();
             let available_height = ui.available_height().max(1.0);
-            let card_width =
-                ((available_width - grid_x_spacing * (columns.saturating_sub(1)) as f32) / columns as f32)
-                    .max(60.0);
             let card_height =
                 ((available_height - grid_y_spacing * (rows.saturating_sub(1)) as f32) / rows as f32)
                     .min(110.0)
@@ -601,33 +589,41 @@ impl eframe::App for PresenceGuiApp {
                 0
             };
 
-            ui.label(
-                egui::RichText::new("Adaptive 4-column view (no scrolling)")
-                    .size(12.0)
-                    .color(egui::Color32::from_rgb(73, 99, 125)),
-            );
-            ui.add_space(4.0);
+            for row in 0..rows {
+                let start = row * max_columns;
+                let end = (start + max_columns).min(total_users);
+                let row_count = end.saturating_sub(start).max(1);
+                let row_card_width =
+                    ((available_width - grid_x_spacing * (row_count.saturating_sub(1)) as f32)
+                        / row_count as f32)
+                        .max(1.0);
 
-            egui::Grid::new("checked_in_users_grid")
-                .num_columns(columns)
-                .spacing(egui::vec2(grid_x_spacing, grid_y_spacing))
-                .show(ui, |ui| {
-                    for idx in 0..(rows * columns) {
+                ui.horizontal(|ui| {
+                    for idx in start..end {
                         ui.allocate_ui_with_layout(
-                            egui::vec2(card_width, card_height),
+                            egui::vec2(row_card_width, card_height),
                             egui::Layout::top_down(egui::Align::Min),
                             |cell_ui| {
                                 if let Some(user) = sorted_users.get(idx) {
-                                    self.render_compact_user_card(cell_ui, user, card_height - 2.0, density);
+                                    self.render_compact_user_card(
+                                        cell_ui,
+                                        user,
+                                        row_card_width,
+                                        card_height - 2.0,
+                                        density,
+                                    );
                                 }
                             },
                         );
-
-                        if (idx + 1) % columns == 0 {
-                            ui.end_row();
+                        if idx + 1 < end {
+                            ui.add_space(grid_x_spacing);
                         }
                     }
                 });
+                if row + 1 < rows {
+                    ui.add_space(grid_y_spacing);
+                }
+            }
         });
     }
 }
