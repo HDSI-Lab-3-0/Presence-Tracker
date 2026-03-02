@@ -34,7 +34,12 @@ function deriveAuthBaseUrl() {
 
 const authBaseUrl = deriveAuthBaseUrl();
 const siteUrl = process.env.SITE_URL || "http://localhost:3132";
-const defaultTrustedOrigins = [siteUrl, "http://localhost:3132", "http://127.0.0.1:3132"];
+const defaultTrustedOrigins = [
+  siteUrl,
+  "http://localhost:3132",
+  "http://127.0.0.1:3132",
+  "https://hdsi-lab-3-0.github.io",
+];
 if (process.env.FRONTEND_URL) {
   defaultTrustedOrigins.push(process.env.FRONTEND_URL);
 }
