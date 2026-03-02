@@ -6,6 +6,12 @@ let appLinkingConfig = null;
 let boundaryPreviewMap = null;
 let boundaryPreviewMarker = null;
 let boundaryPreviewCircle = null;
+let boundaryPreviewResizeObserver = null;
+let boundaryPreviewRefreshTimer = null;
+let pendingBoundaryPreviewRefresh = false;
+
+const BOUNDARY_PREVIEW_ZOOM = 17;
+const BOUNDARY_PREVIEW_REFRESH_DEBOUNCE_MS = 120;
 
 function normalizeConvexBaseUrl(url) {
   if (typeof url !== "string") return "";
@@ -102,6 +108,47 @@ function clearBoundaryPreviewLayers() {
   }
 }
 
+function isElementVisible(element) {
+  if (!element) return false;
+  const style = window.getComputedStyle(element);
+  if (style.display === "none" || style.visibility === "hidden") return false;
+  const rect = element.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+
+function queueBoundaryPreviewRefresh() {
+  pendingBoundaryPreviewRefresh = true;
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      if (!pendingBoundaryPreviewRefresh) return;
+      refreshBoundaryPreview();
+    });
+  });
+}
+
+function scheduleBoundaryPreviewRefresh() {
+  if (boundaryPreviewRefreshTimer) window.clearTimeout(boundaryPreviewRefreshTimer);
+  boundaryPreviewRefreshTimer = window.setTimeout(() => {
+    boundaryPreviewRefreshTimer = null;
+    refreshBoundaryPreview();
+  }, BOUNDARY_PREVIEW_REFRESH_DEBOUNCE_MS);
+}
+
+function setIntegrationCardsVisibility(tabName) {
+  const resolvedTabName = tabName || "discord";
+  document.querySelectorAll(".integration-card").forEach((card) => {
+    const isDiscord = card.querySelector("h4")?.textContent === "Discord";
+    const isSlack = card.querySelector("h4")?.textContent === "Slack";
+    const isMobile = card.querySelector("h4")?.textContent === "Mobile App Linking";
+    card.style.display = "none";
+    if (resolvedTabName === "discord" && isDiscord) card.style.display = "flex";
+    if (resolvedTabName === "slack" && isSlack) card.style.display = "flex";
+    if (resolvedTabName === "mobile" && isMobile) card.style.display = "flex";
+  });
+
+  if (resolvedTabName === "mobile") queueBoundaryPreviewRefresh();
+}
+
 function setBoundaryControlsState(isEnabled) {
   const inputs = document.querySelectorAll("[data-boundary-input]");
   inputs.forEach((input) => {
@@ -167,6 +214,10 @@ function ensureBoundaryPreviewMap() {
   if (boundaryPreviewMap) {
     const currentContainer = boundaryPreviewMap.getContainer();
     if (!currentContainer || !document.body.contains(currentContainer)) {
+      if (boundaryPreviewResizeObserver) {
+        boundaryPreviewResizeObserver.disconnect();
+        boundaryPreviewResizeObserver = null;
+      }
       boundaryPreviewMap.remove();
       boundaryPreviewMap = null;
       boundaryPreviewMarker = null;
@@ -181,28 +232,45 @@ function ensureBoundaryPreviewMap() {
   boundaryPreviewMap = L.map(mapContainer, {
     zoomControl: true,
     preferCanvas: true,
-  }).setView([DEFAULT_BOUNDARY_CENTER.latitude, DEFAULT_BOUNDARY_CENTER.longitude], 18);
+    zoomAnimation: false,
+    fadeAnimation: false,
+    markerZoomAnimation: false,
+  }).setView([DEFAULT_BOUNDARY_CENTER.latitude, DEFAULT_BOUNDARY_CENTER.longitude], BOUNDARY_PREVIEW_ZOOM);
 
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
     attribution: "&copy; OpenStreetMap contributors",
-    updateWhenIdle: false,
+    updateWhenIdle: true,
     updateWhenZooming: false,
-    keepBuffer: 2,
+    keepBuffer: 3,
   }).addTo(boundaryPreviewMap);
 
-  boundaryPreviewMap.on('load', () => {
-    requestAnimationFrame(() => {
-      boundaryPreviewMap?.invalidateSize();
-    });
+  boundaryPreviewMap.whenReady(() => {
+    queueBoundaryPreviewRefresh();
   });
+
+  if (typeof ResizeObserver !== "undefined") {
+    boundaryPreviewResizeObserver = new ResizeObserver(() => {
+      if (isElementVisible(mapContainer)) queueBoundaryPreviewRefresh();
+    });
+    boundaryPreviewResizeObserver.observe(mapContainer);
+  }
 
   return boundaryPreviewMap;
 }
 
 function refreshBoundaryPreview() {
+  const mapContainer = document.getElementById("boundary-map-preview");
+  if (!mapContainer) return;
+  if (!isElementVisible(mapContainer)) {
+    pendingBoundaryPreviewRefresh = true;
+    return;
+  }
+
   const map = ensureBoundaryPreviewMap();
   if (!map) return;
+  pendingBoundaryPreviewRefresh = false;
+  map.invalidateSize({ pan: false });
 
   const enabledInput = document.getElementById("app-boundary-enabled");
   if (enabledInput && !enabledInput.checked) {
@@ -239,8 +307,12 @@ function refreshBoundaryPreview() {
   const center = [latitude, longitude];
 
   if (!boundaryPreviewMarker) {
-    boundaryPreviewMarker = L.marker(center, {
-      autoPan: false,
+    boundaryPreviewMarker = L.circleMarker(center, {
+      radius: 8,
+      color: "#0C4A6E",
+      fillColor: "#0284C7",
+      fillOpacity: 0.95,
+      weight: 3,
     }).addTo(map);
   } else {
     boundaryPreviewMarker.setLatLng(center);
@@ -259,7 +331,10 @@ function refreshBoundaryPreview() {
     boundaryPreviewCircle.setRadius(radiusMeters);
   }
 
-  map.setView(center, 18, { animate: true });
+  map.fitBounds(boundaryPreviewCircle.getBounds().pad(0.35), {
+    animate: false,
+    maxZoom: BOUNDARY_PREVIEW_ZOOM,
+  });
   updateBoundaryStatus("Map preview updated.", "success");
 }
 
@@ -270,21 +345,21 @@ function initializeBoundaryPreview() {
 
   if (!coordinateInput || !radiusInput || !radiusUnitInput) return;
 
-  ["input", "change"].forEach((eventName) => {
-    coordinateInput.addEventListener(eventName, refreshBoundaryPreview);
-    radiusInput.addEventListener(eventName, refreshBoundaryPreview);
-    radiusUnitInput.addEventListener(eventName, refreshBoundaryPreview);
-  });
+  coordinateInput.addEventListener("input", scheduleBoundaryPreviewRefresh);
+  radiusInput.addEventListener("input", scheduleBoundaryPreviewRefresh);
 
-  setTimeout(() => {
-    if (boundaryPreviewMap) boundaryPreviewMap.invalidateSize({ reset: true });
+  coordinateInput.addEventListener("change", refreshBoundaryPreview);
+  radiusInput.addEventListener("change", refreshBoundaryPreview);
+  radiusUnitInput.addEventListener("change", refreshBoundaryPreview);
+
+  requestAnimationFrame(() => {
     const enabledInput = document.getElementById("app-boundary-enabled");
     if (enabledInput && !enabledInput.checked) {
       updateBoundaryStatus("Boundary disabled. Enable to preview changes.", "info");
       return;
     }
-    refreshBoundaryPreview();
-  }, 100);
+    queueBoundaryPreviewRefresh();
+  });
 }
 
 function getAppRouteUrl() {
@@ -443,21 +518,20 @@ window.openIntegrationsModal = function () {
   fetchIntegrations().then(() => {
     const activeTab = document.querySelector(".settings-tab.active");
     if (!activeTab) return;
-
-    const tabName = activeTab.dataset.tab;
-    document.querySelectorAll(".integration-card").forEach((card) => {
-      const isDiscord = card.querySelector("h4")?.textContent === "Discord";
-      const isSlack = card.querySelector("h4")?.textContent === "Slack";
-      const isMobile = card.querySelector("h4")?.textContent === "Mobile App Linking";
-      card.style.display = "none";
-      if (tabName === "discord" && isDiscord) card.style.display = "flex";
-      if (tabName === "slack" && isSlack) card.style.display = "flex";
-      if (tabName === "mobile" && isMobile) card.style.display = "flex";
-    });
+    setIntegrationCardsVisibility(activeTab.dataset.tab);
   });
 };
 
 window.closeIntegrationsModal = function () {
+  if (boundaryPreviewRefreshTimer) {
+    window.clearTimeout(boundaryPreviewRefreshTimer);
+    boundaryPreviewRefreshTimer = null;
+  }
+  pendingBoundaryPreviewRefresh = false;
+  if (boundaryPreviewResizeObserver) {
+    boundaryPreviewResizeObserver.disconnect();
+    boundaryPreviewResizeObserver = null;
+  }
   if (boundaryPreviewMap) {
     boundaryPreviewMap.remove();
     boundaryPreviewMap = null;
@@ -837,15 +911,6 @@ window.addEventListener("click", (event) => {
     event.target.classList.add("active");
 
     const tabName = event.target.dataset.tab;
-    document.querySelectorAll(".integration-card").forEach((card) => {
-      const isDiscord = card.querySelector("h4")?.textContent === "Discord";
-      const isSlack = card.querySelector("h4")?.textContent === "Slack";
-      const isMobile = card.querySelector("h4")?.textContent === "Mobile App Linking";
-
-      card.style.display = "none";
-      if (tabName === "discord" && isDiscord) card.style.display = "flex";
-      if (tabName === "slack" && isSlack) card.style.display = "flex";
-      if (tabName === "mobile" && isMobile) card.style.display = "flex";
-    });
+    setIntegrationCardsVisibility(tabName);
   }
 });

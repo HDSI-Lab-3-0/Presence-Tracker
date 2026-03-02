@@ -18,6 +18,11 @@ let logsCollapsed = true;
 
 const LOGS_PER_PAGE = 5;
 const LOG_MERGE_THRESHOLD_MS = 6 * 60 * 60 * 1000;
+const PWA_ROOT_PATH = new URL("./", window.location.href).pathname;
+
+function toPwaPath(relativePath: string) {
+  return `${PWA_ROOT_PATH}${relativePath.replace(/^\/+/, "")}`;
+}
 
 async function verifyOneTimeToken(ott) {
   const auth = ensureAuthClient();
@@ -114,7 +119,7 @@ async function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
 
   try {
-    await navigator.serviceWorker.register("/pwa/service-worker.js");
+    await navigator.serviceWorker.register(toPwaPath("service-worker.js"));
   } catch (error) {
     console.error("Service Worker registration failed:", error);
   }
@@ -178,16 +183,16 @@ async function checkAuthSession(isAfterOAuthCallback = false) {
 
     if (user?.email) {
       console.log("[Auth] User authenticated:", user.email);
-      window.history.replaceState({}, document.title, "/pwa/");
+      window.history.replaceState({}, document.title, PWA_ROOT_PATH);
       await handleAuthenticatedUser(user);
     } else {
       console.log("[Auth] No authenticated user found, showing auth screen");
-      window.history.replaceState({}, document.title, "/pwa/");
+      window.history.replaceState({}, document.title, PWA_ROOT_PATH);
       showAuthScreen();
     }
   } catch (error) {
     console.error("[Auth] Session check error:", error);
-    window.history.replaceState({}, document.title, "/pwa/");
+    window.history.replaceState({}, document.title, PWA_ROOT_PATH);
     showAuthScreen();
   } finally {
     hideLoading();
@@ -203,7 +208,7 @@ window.signInWithGoogle = async function () {
       throw new Error("Auth client is not configured");
     }
 
-    const callbackURL = `${window.location.origin}/pwa/`;
+    const callbackURL = new URL(PWA_ROOT_PATH, window.location.origin).toString();
     console.log("[OAuth] Starting sign-in with callbackURL:", callbackURL);
 
     const result = await auth.signIn.social({
@@ -248,7 +253,7 @@ async function handleOAuthCallback() {
     console.error("[OAuth] Error in callback:", error);
     showToast(`Sign in failed: ${error}`, "error");
     showAuthScreen();
-    window.history.replaceState({}, document.title, "/pwa/");
+    window.history.replaceState({}, document.title, PWA_ROOT_PATH);
     return false;
   }
 
