@@ -146,12 +146,21 @@ async function refreshAllAppStatuses() {
 
         if (status?.success) {
           // Update the device's app status locally
+          const oldStatus = device.appStatus;
           device.appStatus = status.appStatus;
+          
+          if (oldStatus !== status.appStatus) {
+            console.log(`[Dashboard] Updated ${device.ucsdEmail} status: ${oldStatus} -> ${status.appStatus}`);
+          }
         }
       } catch (error) {
         console.error(`Failed to refresh app status for ${device.ucsdEmail}:`, error);
       }
     }
+    
+    // Trigger a re-render with updated statuses
+    const allDevices = await convexClient.query("devices:getDevices", {});
+    renderDevices(allDevices);
   } catch (error) {
     console.error("Failed to refresh app statuses:", error);
   }
@@ -178,8 +187,9 @@ function renderDevices(devices) {
 
   const residents = devices.filter((d) => d.pendingRegistration === false);
   residents.sort((a, b) => {
-    const aActive = a.status === "present";
-    const bActive = b.status === "present";
+    // Use combined presence logic like PWA
+    const aActive = a.status === "present" || a.appStatus === "present";
+    const bActive = b.status === "present" || b.appStatus === "present";
 
     if (aActive && !bActive) return -1;
     if (!aActive && bActive) return 1;
@@ -191,8 +201,13 @@ function renderDevices(devices) {
 
   const pending = devices.filter((d) => d.pendingRegistration !== false);
 
+  // Count checked-in users using combined presence logic
+  const checkedInCount = residents.filter(d => 
+    d.status === "present" || d.appStatus === "present"
+  ).length;
+  
   if (residentsCount) {
-    residentsCount.textContent = String(residents.length);
+    residentsCount.textContent = String(checkedInCount);
   }
 
   reconcileResidents(residentsGrid, residents);
@@ -200,7 +215,9 @@ function renderDevices(devices) {
 }
 
 function createResidentCard(device) {
-  const isPresent = device.status === "present" || device.appStatus === "present";
+  const bluetoothPresent = device.status === "present";
+  const appPresent = device.appStatus === "present";
+  const isPresent = bluetoothPresent || appPresent;
   const statusClass = isPresent ? "present" : "away";
   const sourceMessage = getPresenceSourceMessage(device);
   const fullName = device.firstName && device.lastName
@@ -209,10 +226,15 @@ function createResidentCard(device) {
 
   let timeMessage = "";
   if (isPresent) {
-    if (device.connectedSince) {
+    // Prioritize app status for time display if available
+    if (appPresent && device.appLastSeen) {
+      const connectedDate = new Date(device.appLastSeen);
+      const timeStr = connectedDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      timeMessage = `Connected via app at ${timeStr}`;
+    } else if (bluetoothPresent && device.connectedSince) {
       const connectedDate = new Date(device.connectedSince);
       const timeStr = connectedDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      timeMessage = `Connected at ${timeStr}`;
+      timeMessage = `Connected via Bluetooth at ${timeStr}`;
     } else {
       timeMessage = "Connected";
     }
@@ -250,7 +272,9 @@ function createResidentCard(device) {
 }
 
 function updateResidentCard(card, device) {
-  const isPresent = device.status === "present" || device.appStatus === "present";
+  const bluetoothPresent = device.status === "present";
+  const appPresent = device.appStatus === "present";
+  const isPresent = bluetoothPresent || appPresent;
   const statusClass = isPresent ? "present" : "away";
   const sourceMessage = getPresenceSourceMessage(device);
 
@@ -260,10 +284,15 @@ function updateResidentCard(card, device) {
 
   let timeMessage = "";
   if (isPresent) {
-    if (device.connectedSince) {
+    // Prioritize app status for time display if available
+    if (appPresent && device.appLastSeen) {
+      const connectedDate = new Date(device.appLastSeen);
+      const timeStr = connectedDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      timeMessage = `Connected via app at ${timeStr}`;
+    } else if (bluetoothPresent && device.connectedSince) {
       const connectedDate = new Date(device.connectedSince);
       const timeStr = connectedDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      timeMessage = `Connected at ${timeStr}`;
+      timeMessage = `Connected via Bluetooth at ${timeStr}`;
     } else {
       timeMessage = "Connected";
     }
@@ -641,3 +670,47 @@ window.addEventListener("click", (event) => {
     window.closeModal?.();
   }
 });
+
+// Cleanup interval when page is unloaded
+window.addEventListener("beforeunload", () => {
+  if (statusRefreshInterval) {
+    clearInterval(statusRefreshInterval);
+    statusRefreshInterval = null;
+  }
+});
+
+// Handle page visibility changes to pause/resume refresh
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    // Pause refresh when page is hidden
+    if (statusRefreshInterval) {
+      clearInterval(statusRefreshInterval);
+      statusRefreshInterval = null;
+    }
+  } else {
+    // Resume refresh when page becomes visible
+    if (convexClient && !statusRefreshInterval) {
+      startPeriodicStatusRefresh();
+    }
+  }
+});
+
+// Enhanced real-time update handler
+function enhanceRealTimeUpdates() {
+  if (!convexClient) return;
+  
+  // Set up additional subscription for app config changes
+  convexClient.onUpdate("devices:getAppLinkingConfig", {}, (config) => {
+    if (config && config !== appConfig) {
+      appConfig = config;
+      console.log("[Dashboard] App config updated");
+    }
+  });
+}
+
+// Initialize enhanced updates
+if (typeof window !== 'undefined') {
+  setTimeout(() => {
+    enhanceRealTimeUpdates();
+  }, 1000);
+}
