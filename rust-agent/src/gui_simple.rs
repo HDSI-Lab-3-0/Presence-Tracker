@@ -682,10 +682,12 @@ impl eframe::App for PresenceGuiApp {
 
             let grid_layout = Self::calculate_bento_grid(total_users, available_width, available_height);
             
-            let base_cell_width = (available_width - grid_spacing * (grid_layout.iter().map(|(w, _)| w).max().unwrap_or(&1) as f32 - 1.0)) 
-                / grid_layout.iter().map(|(w, _)| *w).max().unwrap_or(&1) as f32;
-            let base_cell_height = (available_height - grid_spacing * (grid_layout.iter().map(|(_, h)| h).max().unwrap_or(&1) as f32 - 1.0)) 
-                / grid_layout.iter().map(|(_, h)| *h).max().unwrap_or(&1) as f32;
+            let max_col_span = grid_layout.iter().map(|(w, _)| *w).max().unwrap_or(1);
+            let max_row_span = grid_layout.iter().map(|(_, h)| *h).max().unwrap_or(1);
+            let base_cell_width = (available_width - grid_spacing * (max_col_span as f32 - 1.0)) 
+                / max_col_span as f32;
+            let base_cell_height = (available_height - grid_spacing * (max_row_span as f32 - 1.0)) 
+                / max_row_span as f32;
 
             let mut current_x = 0.0;
             let mut current_y = 0.0;
