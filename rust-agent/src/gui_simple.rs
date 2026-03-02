@@ -136,10 +136,7 @@ impl PresenceGuiApp {
         
         // Fall back to HTTP polling if WebSocket fails
         println!("Falling back to HTTP polling...");
-        
-        // Create a new receiver for HTTP polling
-        let (_, mut http_rx) = mpsc::channel(1);
-        self.run_http_fallback(&mut http_rx).await;
+        self.run_http_fallback(shutdown_rx).await;
     }
 
     async fn try_websocket_subscription(&self, shutdown_rx: &mut mpsc::Receiver<()>) -> bool {
