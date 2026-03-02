@@ -55,6 +55,7 @@ Actions:
   --redeploy-backend
   --restart-services
   --make-discoverable
+  --run-gui
 
 Options:
   --bluetooth-name <name>
@@ -76,6 +77,7 @@ parse_args() {
       --redeploy-backend) CLI_ACTION="redeploy_backend"; shift ;;
       --restart-services) CLI_ACTION="restart_services_menu"; shift ;;
       --make-discoverable) CLI_ACTION="make_discoverable_menu"; shift ;;
+      --run-gui) CLI_ACTION="run_gui_menu"; shift ;;
       --bluetooth-name) CLI_BLUETOOTH_NAME="$2"; shift 2 ;;
       --deployment-mode)
         CLI_DEPLOYMENT_MODE="$2"
@@ -653,6 +655,30 @@ make_discoverable_menu() {
   log_info "Bluetooth discoverable mode refreshed"
 }
 
+run_gui_menu() {
+  log_step "Building and launching GUI"
+  source_runtime_paths
+  install_rust_if_missing
+
+  if [[ ! -f "$RUST_AGENT_DIR/Cargo.toml" ]]; then
+    log_error "Missing rust-agent/Cargo.toml"
+    exit 1
+  fi
+
+  (cd "$RUST_AGENT_DIR" && cargo build --release)
+
+  (
+    set -a
+    [[ -f "$ENV_FILE" ]] && source "$ENV_FILE"
+    set +a
+
+    cd "$RUST_AGENT_DIR"
+    DISPLAY="${DISPLAY:-:0}" \
+    XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}" \
+    "$RUST_BIN_PATH" --gui
+  )
+}
+
 show_menu() {
   echo ""
   echo "=========================================="
@@ -663,21 +689,23 @@ show_menu() {
   echo "  3) Resetup/Redeploy Backend"
   echo "  4) Restart Services"
   echo "  5) Make Bluetooth Discoverable"
-  echo "  6) Exit"
+  echo "  6) Compile & Run GUI"
+  echo "  7) Exit"
   echo "=========================================="
 }
 
 main_menu() {
   while true; do
     show_menu
-    read -r -p "Select an option [1-6]: " choice
+    read -r -p "Select an option [1-7]: " choice
     case "$choice" in
       1) full_install; break ;;
       2) update_config ;;
       3) redeploy_backend ;;
       4) restart_services_menu ;;
       5) make_discoverable_menu ;;
-      6) exit 0 ;;
+      6) run_gui_menu ;;
+      7) exit 0 ;;
       *) log_warn "Invalid option" ;;
     esac
   done
@@ -692,6 +720,7 @@ run_action_if_requested() {
     redeploy_backend) redeploy_backend ;;
     restart_services_menu) restart_services_menu ;;
     make_discoverable_menu) make_discoverable_menu ;;
+    run_gui_menu) run_gui_menu ;;
     *) log_error "Unknown action: $CLI_ACTION"; exit 1 ;;
   esac
   return 0
