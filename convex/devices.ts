@@ -1090,92 +1090,116 @@ export const getAttendanceHistory = query({
 export const getCheckedInUsers = query({
   args: {},
   handler: async (ctx: any) => {
-    const devices = await ctx.db.query("devices").collect();
-    
-    const checkedInUsers = [];
-    
-    for (const device of devices) {
-      if (device.pendingRegistration) {
-        continue;
-      }
+    try {
+      const devices = await ctx.db.query("devices").collect();
       
-      const isCheckedIn = device.status === "present" || device.appStatus === "present";
+      const checkedInUsers: any[] = [];
       
-      if (!isCheckedIn) {
-        continue;
-      }
-      
-      const logs = await ctx.db
-        .query("deviceLogs")
-        .withIndex("by_deviceId", (q: any) => q.eq("deviceId", device._id))
-        .filter((q: any) =>
-          q.or(
-            q.eq(q.field("changeType"), "status_change"),
-            q.eq(q.field("changeType"), "update"),
-          )
-        )
-        .order("desc")
-        .take(50);
-      
-      let checkInTime = device.connectedSince || device.lastSeen;
-      let checkInMethod = "unknown";
-      
-      const recentStatusChange = logs.find((log: any) => 
-        log.changeType === "status_change" && 
-        typeof log.details === "string" &&
-        log.details.includes("to present")
-      );
-      
-      const recentAppToggle = logs.find((log: any) => 
-        log.changeType === "update" && 
-        typeof log.details === "string" &&
-        log.details.includes("App status toggled to present")
-      );
-      
-      if (recentStatusChange && recentAppToggle) {
-        const timeDiff = Math.abs(recentStatusChange.timestamp - recentAppToggle.timestamp);
-        if (timeDiff <= 5 * 60 * 1000) {
-          checkInTime = Math.min(recentStatusChange.timestamp, recentAppToggle.timestamp);
-          checkInMethod = "app+bluetooth";
-        } else if (recentStatusChange.timestamp > recentAppToggle.timestamp) {
-          checkInTime = recentStatusChange.timestamp;
-          checkInMethod = "bluetooth";
-        } else {
-          checkInTime = recentAppToggle.timestamp;
-          checkInMethod = "app";
+      for (const device of devices) {
+        // Skip pending registration devices
+        if (device.pendingRegistration) {
+          continue;
         }
-      } else if (recentStatusChange) {
-        checkInTime = recentStatusChange.timestamp;
-        checkInMethod = "bluetooth";
-      } else if (recentAppToggle) {
-        checkInTime = recentAppToggle.timestamp;
-        checkInMethod = "app";
-      } else if (device.status === "present") {
-        checkInMethod = "bluetooth";
-      } else if (device.appStatus === "present") {
-        checkInMethod = "app";
+        
+        // Check if device is checked in (either via app or bluetooth)
+        const isCheckedIn = device.status === "present" || device.appStatus === "present";
+        
+        if (!isCheckedIn) {
+          continue;
+        }
+        
+        // Default values
+        let checkInTime = device.connectedSince || device.lastSeen || Date.now();
+        let checkInMethod = "unknown";
+        
+        try {
+          // Get recent logs for this device
+          const logs = await ctx.db
+            .query("deviceLogs")
+            .withIndex("by_deviceId", (q: any) => q.eq("deviceId", device._id))
+            .filter((q: any) =>
+              q.or(
+                q.eq(q.field("changeType"), "status_change"),
+                q.eq(q.field("changeType"), "update"),
+              )
+            )
+            .order("desc")
+            .take(50);
+          
+          // Find recent check-in events
+          const recentStatusChange = logs.find((log: any) => 
+            log.changeType === "status_change" && 
+            typeof log.details === "string" &&
+            log.details.includes("to present")
+          );
+          
+          const recentAppToggle = logs.find((log: any) => 
+            log.changeType === "update" && 
+            typeof log.details === "string" &&
+            log.details.includes("App status toggled to present")
+          );
+          
+          // Determine check-in time and method
+          if (recentStatusChange && recentAppToggle) {
+            const timeDiff = Math.abs(recentStatusChange.timestamp - recentAppToggle.timestamp);
+            if (timeDiff <= 5 * 60 * 1000) {
+              checkInTime = Math.min(recentStatusChange.timestamp, recentAppToggle.timestamp);
+              checkInMethod = "app+bluetooth";
+            } else if (recentStatusChange.timestamp > recentAppToggle.timestamp) {
+              checkInTime = recentStatusChange.timestamp;
+              checkInMethod = "bluetooth";
+            } else {
+              checkInTime = recentAppToggle.timestamp;
+              checkInMethod = "app";
+            }
+          } else if (recentStatusChange) {
+            checkInTime = recentStatusChange.timestamp;
+            checkInMethod = "bluetooth";
+          } else if (recentAppToggle) {
+            checkInTime = recentAppToggle.timestamp;
+            checkInMethod = "app";
+          } else if (device.status === "present") {
+            checkInMethod = "bluetooth";
+          } else if (device.appStatus === "present") {
+            checkInMethod = "app";
+          }
+        } catch (logError) {
+          // If log query fails, use device defaults
+          console.error("Error fetching logs for device", device._id, logError);
+          if (device.status === "present") {
+            checkInMethod = "bluetooth";
+          } else if (device.appStatus === "present") {
+            checkInMethod = "app";
+          }
+        }
+        
+        // Build display name
+        const displayName = (device.firstName && device.lastName) 
+          ? `${device.firstName} ${device.lastName}` 
+          : (device.name || "Unknown");
+        
+        checkedInUsers.push({
+          _id: device._id,
+          name: displayName,
+          firstName: device.firstName,
+          lastName: device.lastName,
+          email: device.ucsdEmail,
+          checkInTime,
+          checkInMethod,
+          status: device.status,
+          appStatus: device.appStatus,
+        });
       }
       
-      const displayName = device.firstName && device.lastName 
-        ? `${device.firstName} ${device.lastName}` 
-        : device.name || "Unknown";
+      // Sort by check-in time, most recent first
+      checkedInUsers.sort((a, b) => b.checkInTime - a.checkInTime);
       
-      checkedInUsers.push({
-        _id: device._id,
-        name: displayName,
-        firstName: device.firstName,
-        lastName: device.lastName,
-        email: device.ucsdEmail,
-        checkInTime,
-        checkInMethod,
-        status: device.status,
-        appStatus: device.appStatus,
-      });
+      return checkedInUsers;
+    } catch (error) {
+      console.error("Error in getCheckedInUsers:", error);
+      // Return empty array on error rather than crashing
+      return [];
     }
-    
-    checkedInUsers.sort((a, b) => b.checkInTime - a.checkInTime);
-    
-    return checkedInUsers;
   },
 });
 

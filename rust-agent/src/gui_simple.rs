@@ -76,6 +76,17 @@ impl PresenceGuiApp {
     }
 
     pub async fn subscribe_to_updates(&self, shutdown_rx: &mut mpsc::Receiver<()>) {
+        // Try WebSocket subscription first
+        if self.try_websocket_subscription(shutdown_rx).await {
+            return;
+        }
+        
+        // Fall back to HTTP polling if WebSocket fails
+        println!("WebSocket subscription failed, falling back to HTTP polling...");
+        self.run_http_fallback(shutdown_rx).await;
+    }
+
+    async fn try_websocket_subscription(&self, shutdown_rx: &mut mpsc::Receiver<()>) -> bool {
         let users_clone = self.checked_in_users.clone();
         let last_update_clone = self.last_update.clone();
         let loading_clone = self.loading.clone();
@@ -88,7 +99,7 @@ impl PresenceGuiApp {
                 
                 match client.subscribe("devices:getCheckedInUsers", BTreeMap::new()).await {
                     Ok(mut subscription) => {
-                        *status_clone.lock().unwrap() = "Live".to_string();
+                        *status_clone.lock().unwrap() = "Live (WebSocket)".to_string();
                         *loading_clone.lock().unwrap() = false;
 
                         loop {
@@ -102,27 +113,29 @@ impl PresenceGuiApp {
                                             *users_clone.lock().unwrap() = parsed_users;
                                             *last_update_clone.lock().unwrap() = Instant::now();
                                             *error_clone.lock().unwrap() = None;
-                                            *status_clone.lock().unwrap() = "Live".to_string();
+                                            *status_clone.lock().unwrap() = "Live (WebSocket)".to_string();
                                         }
                                         Some(FunctionResult::ErrorMessage(message)) => {
                                             let error_msg = format!("Subscription error: {}", message);
                                             *error_clone.lock().unwrap() = Some(error_msg);
                                             *status_clone.lock().unwrap() = "Error".to_string();
+                                            return false; // Fall back to HTTP
                                         }
                                         Some(FunctionResult::ConvexError(err)) => {
                                             let error_msg = format!("Convex error: {}", err);
                                             *error_clone.lock().unwrap() = Some(error_msg);
                                             *status_clone.lock().unwrap() = "Error".to_string();
+                                            return false; // Fall back to HTTP
                                         }
                                         None => {
                                             *error_clone.lock().unwrap() = Some("Subscription ended".to_string());
                                             *status_clone.lock().unwrap() = "Disconnected".to_string();
-                                            break;
+                                            return false; // Fall back to HTTP
                                         }
                                     }
                                 }
                                 _ = shutdown_rx.recv() => {
-                                    break;
+                                    return true;
                                 }
                             }
                         }
@@ -131,7 +144,7 @@ impl PresenceGuiApp {
                         let error_msg = format!("Failed to subscribe: {}", e);
                         *error_clone.lock().unwrap() = Some(error_msg);
                         *status_clone.lock().unwrap() = "Error".to_string();
-                        *loading_clone.lock().unwrap() = false;
+                        return false;
                     }
                 }
             }
@@ -139,7 +152,64 @@ impl PresenceGuiApp {
                 let error_msg = format!("Failed to connect: {}", e);
                 *error_clone.lock().unwrap() = Some(error_msg);
                 *status_clone.lock().unwrap() = "Error".to_string();
-                *loading_clone.lock().unwrap() = false;
+                return false;
+            }
+        }
+    }
+
+    async fn run_http_fallback(&self, shutdown_rx: &mut mpsc::Receiver<()>) {
+        let users_clone = self.checked_in_users.clone();
+        let last_update_clone = self.last_update.clone();
+        let loading_clone = self.loading.clone();
+        let error_clone = self.error_message.clone();
+        let status_clone = self.connection_status.clone();
+        let convex_url = self.convex_url.clone();
+
+        *status_clone.lock().unwrap() = "HTTP Polling".to_string();
+        *loading_clone.lock().unwrap() = false;
+
+        let client = reqwest::Client::new();
+        let mut interval = tokio::time::interval(Duration::from_secs(3));
+
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let url = format!("{}/api/getCheckedInUsers", convex_url);
+                    match client
+                        .post(&url)
+                        .header("Content-Type", "application/json")
+                        .body("{}")
+                        .send()
+                        .await
+                    {
+                        Ok(response) => {
+                            if response.status().is_success() {
+                                match response.json::<Vec<CheckedInUser>>().await {
+                                    Ok(users) => {
+                                        *users_clone.lock().unwrap() = users;
+                                        *last_update_clone.lock().unwrap() = Instant::now();
+                                        *error_clone.lock().unwrap() = None;
+                                        *status_clone.lock().unwrap() = "HTTP Polling".to_string();
+                                    }
+                                    Err(e) => {
+                                        let error_msg = format!("JSON parse error: {}", e);
+                                        *error_clone.lock().unwrap() = Some(error_msg);
+                                    }
+                                }
+                            } else {
+                                let error_msg = format!("HTTP error: {}", response.status());
+                                *error_clone.lock().unwrap() = Some(error_msg);
+                            }
+                        }
+                        Err(e) => {
+                            let error_msg = format!("Request failed: {}", e);
+                            *error_clone.lock().unwrap() = Some(error_msg);
+                        }
+                    }
+                }
+                _ = shutdown_rx.recv() => {
+                    break;
+                }
             }
         }
     }
@@ -202,7 +272,8 @@ impl eframe::App for PresenceGuiApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let status = self.connection_status.lock().unwrap().clone();
                     let status_color = match status.as_str() {
-                        "Live" => egui::Color32::GREEN,
+                        "Live (WebSocket)" => egui::Color32::GREEN,
+                        "HTTP Polling" => egui::Color32::from_rgb(100, 150, 255), // Blue for HTTP
                         "Connecting..." | "Subscribing..." => egui::Color32::YELLOW,
                         _ => egui::Color32::RED,
                     };
