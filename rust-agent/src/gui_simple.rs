@@ -177,7 +177,7 @@ impl PresenceGuiApp {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    let url = format!("{}/api/query", convex_url);
+                    let url = format!("{}/api/query_ts", convex_url);
                     println!("Making HTTP request to: {}", url);
                     let request_body = serde_json::json!({
                         "path": "devices:getCheckedInUsers",
@@ -188,6 +188,7 @@ impl PresenceGuiApp {
                     match client
                         .post(&url)
                         .header("Content-Type", "application/json")
+                        .header("Convex-Client", "rust-0.10")
                         .body(request_body.to_string())
                         .send()
                         .await
