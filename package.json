@@ -7,7 +7,7 @@
     "dev:backend": "convex dev",
     "dev:frontend": "bun run generate:config && astro dev --host 0.0.0.0 --port 3132",
     "build:frontend": "bun run generate:config && astro build && bun run copy:scripts",
-    "copy:scripts": "mkdir -p dist/scripts && cp src/scripts/*.ts dist/scripts/",
+    "copy:scripts": "mkdir -p dist/scripts && tsc --outDir dist/scripts src/scripts/*.ts --module ESNext --target ES2020 --skipLibCheck && cp dist/scripts/*.js dist/scripts/ 2>/dev/null || true",
     "preview:frontend": "bun run generate:config && astro preview --host 0.0.0.0 --port 3132",
     "deploy": "convex deploy"
   },

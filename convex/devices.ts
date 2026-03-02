@@ -1101,7 +1101,7 @@ export const getCheckedInUsers = query({
           continue;
         }
         
-        // Check if device is checked in (either via app or bluetooth)
+        // Check if device is checked in (via app or bluetooth)
         const isCheckedIn = device.status === "present" || device.appStatus === "present";
         
         if (!isCheckedIn) {
