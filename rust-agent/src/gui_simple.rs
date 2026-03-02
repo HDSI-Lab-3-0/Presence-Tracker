@@ -1,4 +1,4 @@
-use convex::ConvexClient;
+use convex::{FunctionResult, ConvexClient};
 use eframe::egui;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -58,11 +58,10 @@ impl PresenceGuiApp {
         let status_clone = self.connection_status.clone();
 
         match ConvexClient::new(&self.convex_url).await {
-            Ok(client) => {
+            Ok(mut client) => {
                 *status_clone.lock().unwrap() = "Subscribing...".to_string();
                 
-                let mut args = BTreeMap::new();
-                match client.subscribe("devices:getCheckedInUsers", args).await {
+                match client.subscribe("devices:getCheckedInUsers", BTreeMap::new()).await {
                     Ok(mut subscription) => {
                         *status_clone.lock().unwrap() = "Live".to_string();
                         *loading_clone.lock().unwrap() = false;
@@ -71,16 +70,25 @@ impl PresenceGuiApp {
                             tokio::select! {
                                 update = subscription.next() => {
                                     match update {
-                                        Some(Ok(users)) => {
-                                            let parsed_users: Vec<CheckedInUser> = serde_json::from_value(users)
-                                                .unwrap_or_default();
-                                            *users_clone.lock().unwrap() = parsed_users;
-                                            *last_update_clone.lock().unwrap() = Instant::now();
-                                            *error_clone.lock().unwrap() = None;
-                                            *status_clone.lock().unwrap() = "Live".to_string();
+                                        Some(FunctionResult::Value(value)) => {
+                                            match serde_json::to_value(&value) {
+                                                Ok(json_value) => {
+                                                    let parsed_users: Vec<CheckedInUser> = serde_json::from_value(json_value)
+                                                        .unwrap_or_default();
+                                                    *users_clone.lock().unwrap() = parsed_users;
+                                                    *last_update_clone.lock().unwrap() = Instant::now();
+                                                    *error_clone.lock().unwrap() = None;
+                                                    *status_clone.lock().unwrap() = "Live".to_string();
+                                                }
+                                                Err(e) => {
+                                                    let error_msg = format!("Failed to parse subscription payload: {}", e);
+                                                    *error_clone.lock().unwrap() = Some(error_msg);
+                                                    *status_clone.lock().unwrap() = "Error".to_string();
+                                                }
+                                            }
                                         }
-                                        Some(Err(e)) => {
-                                            let error_msg = format!("Subscription error: {}", e);
+                                        Some(FunctionResult::ErrorMessage(message)) => {
+                                            let error_msg = format!("Subscription error: {}", message);
                                             *error_clone.lock().unwrap() = Some(error_msg);
                                             *status_clone.lock().unwrap() = "Error".to_string();
                                         }
@@ -158,14 +166,14 @@ impl PresenceGuiApp {
 }
 
 impl eframe::App for PresenceGuiApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         ctx.request_repaint();
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Quit").clicked() {
-                        _frame.close();
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
                 
@@ -266,7 +274,7 @@ pub async fn run_gui() -> Result<(), eframe::Error> {
     };
 
     let app = PresenceGuiApp::new();
-    let mut app_clone = app.clone();
+    let app_clone = app.clone();
 
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
 
