@@ -2,11 +2,6 @@
 import "../styles/dashboard.css";
 
 const base = import.meta.env.BASE_URL;
-const dashboardScript = `${base}scripts/dashboard.js`;
-const authScript = `${base}scripts/auth.js`;
-const logsScript = `${base}scripts/logs.js`;
-const integrationsScript = `${base}scripts/integrations.js`;
-
 ---
 
 <!DOCTYPE html>
@@ -235,10 +230,12 @@ const integrationsScript = `${base}scripts/integrations.js`;
 
     <div id="toast" class="toast"></div>
 
-    <script type="module" src={dashboardScript}></script>
-    <script type="module" src={authScript}></script>
-    <script type="module" src={logsScript}></script>
-    <script type="module" src={integrationsScript}></script>
+    <script>
+        import "../scripts/dashboard.js";
+        import "../scripts/auth.js";
+        import "../scripts/logs.js";
+        import "../scripts/integrations.js";
+    </script>
 </body>
 
 </html>
