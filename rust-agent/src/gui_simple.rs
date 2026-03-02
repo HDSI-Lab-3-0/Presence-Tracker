@@ -4,6 +4,7 @@ use futures_util::StreamExt;
 use serde::{de, Deserialize, Deserializer, Serialize};
 use serde_json::Number;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -100,6 +101,7 @@ pub struct PresenceGuiApp {
     loading: Arc<Mutex<bool>>,
     error_message: Arc<Mutex<Option<String>>>,
     connection_status: Arc<Mutex<String>>,
+    http_polling_enabled: Arc<AtomicBool>,
 }
 
 impl PresenceGuiApp {
@@ -114,29 +116,48 @@ impl PresenceGuiApp {
             loading: Arc::new(Mutex::new(true)),
             error_message: Arc::new(Mutex::new(None)),
             connection_status: Arc::new(Mutex::new("Connecting...".to_string())),
+            http_polling_enabled: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub async fn subscribe_to_updates(&self, shutdown_rx: &mut mpsc::Receiver<()>) {
         println!("Attempting to connect to Convex at: {}", self.convex_url);
-        
-        // Try WebSocket subscription first with timeout
-        let websocket_future = self.try_websocket_subscription(shutdown_rx);
-        match tokio::time::timeout(Duration::from_secs(10), websocket_future).await {
-            Ok(result) => {
-                if result {
-                    return;
+
+        loop {
+            // Try WebSocket subscription first with timeout
+            let websocket_future = self.try_websocket_subscription(shutdown_rx);
+            match tokio::time::timeout(Duration::from_secs(10), websocket_future).await {
+                Ok(result) => {
+                    if result {
+                        return;
+                    }
+                    println!("WebSocket subscription failed or returned false");
                 }
-                println!("WebSocket subscription failed or returned false");
+                Err(_) => {
+                    println!("WebSocket connection timed out after 10 seconds");
+                }
             }
-            Err(_) => {
-                println!("WebSocket connection timed out after 10 seconds");
+
+            if self.http_polling_enabled.load(Ordering::Relaxed) {
+                println!("HTTP polling enabled; falling back to polling mode...");
+                self.run_http_fallback(shutdown_rx).await;
+                continue;
+            }
+
+            *self.connection_status.lock().unwrap() = "WebSocket only (polling off)".to_string();
+            *self.loading.lock().unwrap() = false;
+
+            loop {
+                tokio::select! {
+                    _ = shutdown_rx.recv() => return,
+                    _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                        if self.http_polling_enabled.load(Ordering::Relaxed) {
+                            break;
+                        }
+                    }
+                }
             }
         }
-        
-        // Fall back to HTTP polling if WebSocket fails
-        println!("Falling back to HTTP polling...");
-        self.run_http_fallback(shutdown_rx).await;
     }
 
     async fn try_websocket_subscription(&self, shutdown_rx: &mut mpsc::Receiver<()>) -> bool {
@@ -234,6 +255,10 @@ impl PresenceGuiApp {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
+                    if !self.http_polling_enabled.load(Ordering::Relaxed) {
+                        *status_clone.lock().unwrap() = "WebSocket only (polling off)".to_string();
+                        break;
+                    }
                     let url = format!("{}/api/query", convex_url);
                     println!("Making HTTP request to: {}", url);
                     let request_body = serde_json::json!({
@@ -387,6 +412,7 @@ impl PresenceGuiApp {
         match status {
             "Live (WebSocket)" => egui::Color32::from_rgb(28, 132, 64),
             "HTTP Polling" => egui::Color32::from_rgb(21, 102, 192),
+            "WebSocket only (polling off)" => egui::Color32::from_rgb(95, 95, 95),
             "Connecting..." | "Subscribing..." => egui::Color32::from_rgb(171, 119, 0),
             _ => egui::Color32::from_rgb(168, 42, 50),
         }
@@ -407,6 +433,33 @@ impl PresenceGuiApp {
         }
         let truncated: String = text.chars().take(max_chars.saturating_sub(3)).collect();
         format!("{}...", truncated)
+    }
+
+    fn choose_factor_grid(count: usize, window_aspect: f32) -> (usize, usize) {
+        if count == 0 {
+            return (1, 1);
+        }
+
+        let mut best_rows = 1usize;
+        let mut best_cols = count;
+        let mut best_score = f32::INFINITY;
+        let target_aspect = 1.0f32;
+
+        for cols in 1..=count {
+            if count % cols != 0 {
+                continue;
+            }
+            let rows = count / cols;
+            let tile_aspect = window_aspect * (rows as f32 / cols as f32);
+            let score = (tile_aspect / target_aspect).ln().abs();
+            if score < best_score {
+                best_score = score;
+                best_rows = rows;
+                best_cols = cols;
+            }
+        }
+
+        (best_rows, best_cols)
     }
 
     fn render_compact_user_card(
@@ -508,6 +561,17 @@ impl eframe::App for PresenceGuiApp {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut http_enabled = self.http_polling_enabled.load(Ordering::Relaxed);
+                    if ui.checkbox(&mut http_enabled, "HTTP Polling").changed() {
+                        self.http_polling_enabled.store(http_enabled, Ordering::Relaxed);
+                        if !http_enabled {
+                            let mut status = self.connection_status.lock().unwrap();
+                            if *status == "HTTP Polling" {
+                                *status = "WebSocket only (polling off)".to_string();
+                            }
+                        }
+                    }
+                    ui.add_space(8.0);
                     let status = self.connection_status.lock().unwrap().clone();
                     ui.colored_label(
                         Self::connection_color(status.as_str()),
@@ -568,47 +632,45 @@ impl eframe::App for PresenceGuiApp {
                     .then_with(|| Self::display_name(a).cmp(&Self::display_name(b)))
             });
 
-            let max_columns: usize = 4;
             let total_users = sorted_users.len();
-            let rows = ((total_users + max_columns - 1) / max_columns).max(1);
             let grid_x_spacing = 6.0;
             let grid_y_spacing = 6.0;
             let available_width = ui.available_width();
             let available_height = ui.available_height().max(1.0);
+            let window_aspect = (available_width / available_height).max(0.1);
+            let (rows, columns) = Self::choose_factor_grid(total_users, window_aspect);
+            let card_width =
+                ((available_width - grid_x_spacing * (columns.saturating_sub(1)) as f32) / columns as f32)
+                    .max(1.0);
             let card_height =
                 ((available_height - grid_y_spacing * (rows.saturating_sub(1)) as f32) / rows as f32)
-                    .min(110.0)
-                    .max(12.0);
-            let density = if card_height < 24.0 {
+                    .max(16.0);
+            let compact_size = card_width.min(card_height);
+            let density = if compact_size < 28.0 {
                 3
-            } else if card_height < 40.0 {
+            } else if compact_size < 44.0 {
                 2
-            } else if card_height < 70.0 {
+            } else if compact_size < 84.0 {
                 1
             } else {
                 0
             };
 
             for row in 0..rows {
-                let start = row * max_columns;
-                let end = (start + max_columns).min(total_users);
-                let row_count = end.saturating_sub(start).max(1);
-                let row_card_width =
-                    ((available_width - grid_x_spacing * (row_count.saturating_sub(1)) as f32)
-                        / row_count as f32)
-                        .max(1.0);
+                let start = row * columns;
+                let end = (start + columns).min(total_users);
 
                 ui.horizontal(|ui| {
                     for idx in start..end {
                         ui.allocate_ui_with_layout(
-                            egui::vec2(row_card_width, card_height),
+                            egui::vec2(card_width, card_height),
                             egui::Layout::top_down(egui::Align::Min),
                             |cell_ui| {
                                 if let Some(user) = sorted_users.get(idx) {
                                     self.render_compact_user_card(
                                         cell_ui,
                                         user,
-                                        row_card_width,
+                                        card_width,
                                         card_height - 2.0,
                                         density,
                                     );
@@ -680,6 +742,7 @@ impl Clone for PresenceGuiApp {
             loading: self.loading.clone(),
             error_message: self.error_message.clone(),
             connection_status: self.connection_status.clone(),
+            http_polling_enabled: self.http_polling_enabled.clone(),
         }
     }
 }
