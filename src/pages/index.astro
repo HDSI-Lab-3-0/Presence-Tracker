@@ -1,5 +1,7 @@
 ---
 import "../styles/dashboard.css";
+
+const base = import.meta.env.BASE_URL;
 ---
 
 <!DOCTYPE html>
@@ -25,7 +27,7 @@ import "../styles/dashboard.css";
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
         crossorigin=""></script>
 
-    <script is:inline src="/config.js"></script>
+    <script is:inline src={`${base}config.js`}></script>
 </head>
 
 <body>

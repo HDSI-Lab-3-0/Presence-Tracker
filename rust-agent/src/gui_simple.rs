@@ -1,6 +1,8 @@
+use convex::ConvexClient;
 use eframe::egui;
-use convex::{ConvexClient, ConvexClientOptions};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -55,14 +57,12 @@ impl PresenceGuiApp {
         let error_clone = self.error_message.clone();
         let status_clone = self.connection_status.clone();
 
-        match ConvexClient::new(
-            self.convex_url.parse().expect("Invalid Convex URL"),
-            ConvexClientOptions::default(),
-        ).await {
+        match ConvexClient::new(&self.convex_url).await {
             Ok(client) => {
                 *status_clone.lock().unwrap() = "Subscribing...".to_string();
                 
-                match client.subscribe("devices:getCheckedInUsers", vec![]).await {
+                let mut args = BTreeMap::new();
+                match client.subscribe("devices:getCheckedInUsers", args).await {
                     Ok(mut subscription) => {
                         *status_clone.lock().unwrap() = "Live".to_string();
                         *loading_clone.lock().unwrap() = false;
@@ -266,10 +266,10 @@ pub async fn run_gui() -> Result<(), eframe::Error> {
     };
 
     let app = PresenceGuiApp::new();
-    let app_clone = app.clone();
-    
+    let mut app_clone = app.clone();
+
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
-    
+
     tokio::spawn(async move {
         app_clone.subscribe_to_updates(&mut shutdown_rx).await;
     });
@@ -277,9 +277,9 @@ pub async fn run_gui() -> Result<(), eframe::Error> {
     let result = eframe::run_native(
         "Presence Tracker GUI",
         options,
-        Box::new(|_cc| Box::new(app)),
+        Box::new(|_cc| Ok(Box::new(app))),
     );
-    
+
     let _ = shutdown_tx.send(()).await;
     result
 }

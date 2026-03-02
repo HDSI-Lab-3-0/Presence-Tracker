@@ -1,6 +1,9 @@
 mod bluetooth_agent;
 mod bluetooth_probe;
+mod config;
+mod convex_client;
 mod gui_simple;
+mod logging;
 
 use clap::{Arg, Command};
 use gui_simple::run_gui;

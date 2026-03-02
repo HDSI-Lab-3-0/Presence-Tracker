@@ -2,7 +2,10 @@
 import { defineConfig } from "astro/config";
 import tailwindcss from "@tailwindcss/vite";
 
+const base = process.env.ASTRO_BASE?.trim() || "/";
+
 export default defineConfig({
+  base,
   vite: {
     plugins: [tailwindcss()],
     build: {

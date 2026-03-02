@@ -340,6 +340,7 @@ async function showMainScreen() {
 
   updateUserInfo();
   await fetchAppConfig();
+  await refreshAppStatus();
   await requestLocation();
   updateStatus();
   await loadAttendanceLogs();
@@ -366,6 +367,47 @@ async function fetchAppConfig() {
     appConfig = await convexClient.query("devices:getAppLinkingConfig", {});
   } catch (error) {
     console.error("Failed to fetch app config:", error);
+  }
+}
+
+async function refreshAppStatus() {
+  if (!currentUser) return;
+
+  if (!appConfig?.apiKey) {
+    await fetchAppConfig();
+  }
+
+  if (!appConfig?.apiKey) {
+    console.warn("[Status] Missing API key, skipping status refresh");
+    return;
+  }
+
+  try {
+    const status = await convexClient.query("devices:fetchAppStatusByEmail", {
+      apiKey: appConfig.apiKey,
+      email: currentUser.email,
+    });
+
+    if (status?.success) {
+      if (currentDevice) {
+        currentDevice = {
+          ...currentDevice,
+          appStatus: status.appStatus,
+        };
+      }
+
+      appConfig = {
+        ...appConfig,
+        boundaryEnabled: status.boundaryEnabled,
+        boundaryLatitude: status.boundaryLatitude,
+        boundaryLongitude: status.boundaryLongitude,
+        boundaryRadius: status.boundaryRadius,
+        boundaryRadiusUnit: status.boundaryRadiusUnit,
+      };
+      updateStatus();
+    }
+  } catch (error) {
+    console.error("Failed to refresh app status:", error);
   }
 }
 
