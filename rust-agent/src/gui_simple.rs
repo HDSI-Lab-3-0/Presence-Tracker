@@ -76,6 +76,8 @@ impl PresenceGuiApp {
     }
 
     pub async fn subscribe_to_updates(&self, shutdown_rx: &mut mpsc::Receiver<()>) {
+        println!("Attempting to connect to Convex at: {}", self.convex_url);
+        
         // Try WebSocket subscription first
         if self.try_websocket_subscription(shutdown_rx).await {
             return;
@@ -165,6 +167,7 @@ impl PresenceGuiApp {
         let status_clone = self.connection_status.clone();
         let convex_url = self.convex_url.clone();
 
+        println!("Starting HTTP polling to: {}", convex_url);
         *status_clone.lock().unwrap() = "HTTP Polling".to_string();
         *loading_clone.lock().unwrap() = false;
 
@@ -175,6 +178,7 @@ impl PresenceGuiApp {
             tokio::select! {
                 _ = interval.tick() => {
                     let url = format!("{}/api/query/devices:getCheckedInUsers", convex_url);
+                    println!("Making HTTP request to: {}", url);
                     match client
                         .post(&url)
                         .header("Content-Type", "application/json")
@@ -183,20 +187,24 @@ impl PresenceGuiApp {
                         .await
                     {
                         Ok(response) => {
+                            println!("HTTP response status: {}", response.status());
                             if response.status().is_success() {
                                 match response.json::<Vec<CheckedInUser>>().await {
                                     Ok(users) => {
+                                        println!("Successfully fetched {} users", users.len());
                                         *users_clone.lock().unwrap() = users;
                                         *last_update_clone.lock().unwrap() = Instant::now();
                                         *error_clone.lock().unwrap() = None;
                                         *status_clone.lock().unwrap() = "HTTP Polling".to_string();
                                     }
                                     Err(e) => {
+                                        println!("JSON parse error: {}", e);
                                         let error_msg = format!("JSON parse error: {}", e);
                                         *error_clone.lock().unwrap() = Some(error_msg);
                                     }
                                 }
                             } else {
+                                println!("HTTP error: {}", response.status());
                                 let error_msg = format!("HTTP error: {}", response.status());
                                 *error_clone.lock().unwrap() = Some(error_msg);
                             }
