@@ -392,80 +392,93 @@ impl PresenceGuiApp {
         }
     }
 
-    fn render_compact_user_card(&self, ui: &mut egui::Ui, user: &CheckedInUser) {
+    fn method_rank(method: &str) -> u8 {
+        match method {
+            "app+bluetooth" => 0,
+            "app" => 1,
+            "bluetooth" => 2,
+            _ => 3,
+        }
+    }
+
+    fn truncate_text(text: &str, max_chars: usize) -> String {
+        if text.chars().count() <= max_chars {
+            return text.to_string();
+        }
+        let truncated: String = text.chars().take(max_chars.saturating_sub(3)).collect();
+        format!("{}...", truncated)
+    }
+
+    fn render_compact_user_card(
+        &self,
+        ui: &mut egui::Ui,
+        user: &CheckedInUser,
+        card_height: f32,
+        density: u8,
+    ) {
         let display_name = Self::display_name(user);
         let email = user.email.as_deref().unwrap_or("").trim();
+        let (name_size, meta_size, margin, show_email, show_method) = match density {
+            0 => (14.0, 11.0, 7.0, true, true),
+            1 => (12.5, 10.0, 5.5, false, true),
+            2 => (11.0, 9.0, 4.0, false, false),
+            _ => (9.0, 8.0, 1.5, false, false),
+        };
+        let max_name_chars = match density {
+            0 => 28,
+            1 => 24,
+            2 => 20,
+            _ => 14,
+        };
 
         egui::Frame::none()
             .fill(egui::Color32::from_rgb(232, 248, 236))
             .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(184, 224, 196)))
             .rounding(8.0)
-            .inner_margin(8.0)
+            .inner_margin(margin)
             .show(ui, |ui| {
-                ui.set_min_height(76.0);
+                ui.set_min_height(card_height);
                 ui.label(
-                    egui::RichText::new(display_name)
-                        .size(15.0)
+                    egui::RichText::new(Self::truncate_text(&display_name, max_name_chars))
+                        .size(name_size)
                         .strong()
                         .color(egui::Color32::from_rgb(22, 64, 40)),
                 );
 
-                if !email.is_empty() {
+                if show_email && !email.is_empty() {
                     ui.label(
                         egui::RichText::new(email)
-                            .size(11.0)
+                            .size(meta_size)
                             .color(egui::Color32::from_rgb(63, 92, 77)),
                     );
                 }
 
-                ui.horizontal_wrapped(|ui| {
+                if show_method {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.colored_label(
+                            Self::method_color(&user.check_in_method),
+                            egui::RichText::new(self.format_check_in_method(&user.check_in_method))
+                                .size(meta_size)
+                                .strong(),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "• {}",
+                                self.format_check_in_time(user.check_in_time)
+                            ))
+                            .size(meta_size)
+                            .color(egui::Color32::from_rgb(63, 92, 77)),
+                        );
+                    });
+                } else if density < 3 {
                     ui.colored_label(
-                        Self::method_color(&user.check_in_method),
-                        egui::RichText::new(self.format_check_in_method(&user.check_in_method))
-                            .size(11.0)
-                            .strong(),
+                        egui::Color32::from_rgb(63, 92, 77),
+                        egui::RichText::new(self.format_check_in_time(user.check_in_time))
+                            .size(meta_size)
+                            .color(egui::Color32::from_rgb(63, 92, 77)),
                     );
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "• {}",
-                            self.format_check_in_time(user.check_in_time)
-                        ))
-                        .size(11.0)
-                        .color(egui::Color32::from_rgb(63, 92, 77)),
-                    );
-                });
+                }
             });
-    }
-
-    fn render_role_section(&self, ui: &mut egui::Ui, title: &str, users: &[CheckedInUser]) {
-        if users.is_empty() {
-            return;
-        }
-
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new(title)
-                    .size(14.0)
-                    .strong()
-                    .color(egui::Color32::from_rgb(21, 56, 92)),
-            );
-            ui.label(
-                egui::RichText::new(format!("({})", users.len()))
-                    .size(12.0)
-                    .color(egui::Color32::from_rgb(73, 99, 125)),
-            );
-        });
-        ui.add_space(4.0);
-
-        ui.columns(3, |columns| {
-            for (idx, user) in users.iter().enumerate() {
-                let column = &mut columns[idx % 3];
-                self.render_compact_user_card(column, user);
-                column.add_space(6.0);
-            }
-        });
-
-        ui.add_space(6.0);
     }
 }
 
@@ -544,44 +557,77 @@ impl eframe::App for PresenceGuiApp {
             ui.separator();
             ui.add_space(4.0);
 
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                if checked_in_users.is_empty() {
-                    ui.centered_and_justified(|ui| {
-                        if *self.loading.lock().unwrap() {
-                            ui.label("Connecting to Convex...");
-                        } else {
-                            ui.label("No one is currently checked in");
-                        }
-                    });
-                    return;
-                }
-
-                ui.label(
-                    egui::RichText::new("Compact view: 3 cards per role")
-                        .size(12.0)
-                        .color(egui::Color32::from_rgb(73, 99, 125)),
-                );
-                ui.add_space(4.0);
-
-                let mut app_bluetooth = Vec::new();
-                let mut app_only = Vec::new();
-                let mut bluetooth_only = Vec::new();
-                let mut other = Vec::new();
-
-                for user in checked_in_users {
-                    match user.check_in_method.as_str() {
-                        "app+bluetooth" => app_bluetooth.push(user),
-                        "app" => app_only.push(user),
-                        "bluetooth" => bluetooth_only.push(user),
-                        _ => other.push(user),
+            if checked_in_users.is_empty() {
+                ui.centered_and_justified(|ui| {
+                    if *self.loading.lock().unwrap() {
+                        ui.label("Connecting to Convex...");
+                    } else {
+                        ui.label("No one is currently checked in");
                     }
-                }
+                });
+                return;
+            }
 
-                self.render_role_section(ui, "App + Bluetooth", &app_bluetooth);
-                self.render_role_section(ui, "App", &app_only);
-                self.render_role_section(ui, "Bluetooth", &bluetooth_only);
-                self.render_role_section(ui, "Other", &other);
+            let mut sorted_users = checked_in_users;
+            sorted_users.sort_by(|a, b| {
+                let ra = Self::method_rank(&a.check_in_method);
+                let rb = Self::method_rank(&b.check_in_method);
+                ra.cmp(&rb)
+                    .then_with(|| b.check_in_time.cmp(&a.check_in_time))
+                    .then_with(|| Self::display_name(a).cmp(&Self::display_name(b)))
             });
+
+            let columns: usize = 4;
+            let total_users = sorted_users.len();
+            let rows = ((total_users + columns - 1) / columns).max(1);
+            let grid_x_spacing = 6.0;
+            let grid_y_spacing = 6.0;
+            let available_width = ui.available_width();
+            let available_height = ui.available_height().max(1.0);
+            let card_width =
+                ((available_width - grid_x_spacing * (columns.saturating_sub(1)) as f32) / columns as f32)
+                    .max(60.0);
+            let card_height =
+                ((available_height - grid_y_spacing * (rows.saturating_sub(1)) as f32) / rows as f32)
+                    .min(110.0)
+                    .max(12.0);
+            let density = if card_height < 24.0 {
+                3
+            } else if card_height < 40.0 {
+                2
+            } else if card_height < 70.0 {
+                1
+            } else {
+                0
+            };
+
+            ui.label(
+                egui::RichText::new("Adaptive 4-column view (no scrolling)")
+                    .size(12.0)
+                    .color(egui::Color32::from_rgb(73, 99, 125)),
+            );
+            ui.add_space(4.0);
+
+            egui::Grid::new("checked_in_users_grid")
+                .num_columns(columns)
+                .spacing(egui::vec2(grid_x_spacing, grid_y_spacing))
+                .show(ui, |ui| {
+                    for idx in 0..(rows * columns) {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(card_width, card_height),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |cell_ui| {
+                                if let Some(user) = sorted_users.get(idx) {
+                                    self.render_compact_user_card(cell_ui, user, card_height - 2.0, density);
+                                }
+                            },
+                        );
+
+                        if (idx + 1) % columns == 0 {
+                            ui.end_row();
+                        }
+                    }
+                });
         });
     }
 }
