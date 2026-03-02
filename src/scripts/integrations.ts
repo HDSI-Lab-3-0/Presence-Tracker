@@ -181,7 +181,7 @@ function ensureBoundaryPreviewMap() {
   boundaryPreviewMap = L.map(mapContainer, {
     zoomControl: true,
     preferCanvas: true,
-  }).setView([DEFAULT_BOUNDARY_CENTER.latitude, DEFAULT_BOUNDARY_CENTER.longitude], 15);
+  }).setView([DEFAULT_BOUNDARY_CENTER.latitude, DEFAULT_BOUNDARY_CENTER.longitude], 18);
 
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19,
@@ -190,6 +190,12 @@ function ensureBoundaryPreviewMap() {
     updateWhenZooming: false,
     keepBuffer: 2,
   }).addTo(boundaryPreviewMap);
+
+  boundaryPreviewMap.on('load', () => {
+    requestAnimationFrame(() => {
+      boundaryPreviewMap?.invalidateSize();
+    });
+  });
 
   return boundaryPreviewMap;
 }
@@ -245,15 +251,15 @@ function refreshBoundaryPreview() {
       radius: radiusMeters,
       color: "#0284C7",
       fillColor: "#0EA5E9",
-      fillOpacity: 0.18,
+      fillOpacity: 0.25,
+      weight: 3,
     }).addTo(map);
   } else {
     boundaryPreviewCircle.setLatLng(center);
     boundaryPreviewCircle.setRadius(radiusMeters);
   }
 
-  const bounds = boundaryPreviewCircle.getBounds();
-  map.fitBounds(bounds.pad(0.2), { animate: false, duration: 0 });
+  map.setView(center, 18, { animate: true });
   updateBoundaryStatus("Map preview updated.", "success");
 }
 
@@ -270,7 +276,7 @@ function initializeBoundaryPreview() {
     radiusUnitInput.addEventListener(eventName, refreshBoundaryPreview);
   });
 
-  requestAnimationFrame(() => {
+  setTimeout(() => {
     if (boundaryPreviewMap) boundaryPreviewMap.invalidateSize({ reset: true });
     const enabledInput = document.getElementById("app-boundary-enabled");
     if (enabledInput && !enabledInput.checked) {
@@ -278,7 +284,7 @@ function initializeBoundaryPreview() {
       return;
     }
     refreshBoundaryPreview();
-  });
+  }, 100);
 }
 
 function getAppRouteUrl() {

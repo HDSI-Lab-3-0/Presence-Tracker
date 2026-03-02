@@ -78,11 +78,8 @@ impl PresenceGuiApp {
     pub async fn subscribe_to_updates(&self, shutdown_rx: &mut mpsc::Receiver<()>) {
         println!("Attempting to connect to Convex at: {}", self.convex_url);
         
-        // Clone the receiver for the WebSocket attempt so we can fall back to HTTP if needed
-        let mut shutdown_rx_ws = shutdown_rx.clone();
-        
         // Try WebSocket subscription first with timeout
-        let websocket_future = self.try_websocket_subscription(&mut shutdown_rx_ws);
+        let websocket_future = self.try_websocket_subscription(shutdown_rx);
         match tokio::time::timeout(Duration::from_secs(10), websocket_future).await {
             Ok(result) => {
                 if result {
@@ -97,7 +94,10 @@ impl PresenceGuiApp {
         
         // Fall back to HTTP polling if WebSocket fails
         println!("Falling back to HTTP polling...");
-        self.run_http_fallback(shutdown_rx).await;
+        
+        // Create a new receiver for HTTP polling
+        let (_, mut http_rx) = mpsc::channel(1);
+        self.run_http_fallback(&mut http_rx).await;
     }
 
     async fn try_websocket_subscription(&self, shutdown_rx: &mut mpsc::Receiver<()>) -> bool {
