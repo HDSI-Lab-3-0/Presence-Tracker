@@ -104,7 +104,7 @@ function setupConvexSubscription() {
     return;
   }
 
-  convexClient.onUpdate("devices:getCheckedInUsers", {}, (devices) => {
+  convexClient.onUpdate("devices:getDevices", {}, (devices) => {
     renderDevices(devices);
   });
 }
