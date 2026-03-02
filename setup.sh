@@ -451,6 +451,10 @@ cleanup_legacy_services() {
 
 generate_services() {
   log_step "Generating systemd units"
+  local gui_user="${SUDO_USER:-$CURRENT_USER}"
+  local gui_home
+  gui_home="$(getent passwd "$gui_user" | cut -d: -f6)"
+  [[ -n "$gui_home" ]] || gui_home="$USER_HOME"
 
   sudo tee /etc/systemd/system/presence-tracker.service >/dev/null << UNIT
 [Unit]
@@ -468,6 +472,31 @@ Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$
 ExecStart=$RUST_BIN_PATH --config $AGENT_CONFIG_FILE
 Restart=always
 RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+  sudo tee /etc/systemd/system/presence-tracker-gui.service >/dev/null << UNIT
+[Unit]
+Description=Presence Tracker GUI
+After=network-online.target display-manager.service graphical.target
+Wants=network-online.target display-manager.service graphical.target
+
+[Service]
+Type=simple
+User=$gui_user
+Group=$gui_user
+WorkingDirectory=$RUST_AGENT_DIR
+EnvironmentFile=$ENV_FILE
+Environment="DISPLAY=:0"
+Environment="XAUTHORITY=$gui_home/.Xauthority"
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$gui_home/.cargo/bin:$gui_home/.bun/bin"
+ExecStart=$RUST_BIN_PATH --gui
+Restart=always
+RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
@@ -541,8 +570,10 @@ restart_services() {
   generate_services
   sudo systemctl daemon-reload
   sudo systemctl enable presence-tracker.service
+  sudo systemctl enable presence-tracker-gui.service
   sudo systemctl enable bluetooth-discoverable.service
   sudo systemctl restart presence-tracker.service
+  sudo systemctl restart presence-tracker-gui.service
   sudo rfkill unblock bluetooth || true
   sudo systemctl restart bluetooth
   sudo systemctl restart bluetooth-discoverable.service

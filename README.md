@@ -979,10 +979,10 @@ cat setup.config
 
 ## Systemd Services
 
-The setup script automatically installs and configures three systemd services:
+The setup script automatically installs and configures systemd services:
 
-- **presence-tracker.service** - Runs the main presence tracker (`src/presence_tracker.py`)
-- **bluetooth-agent.service** - Runs the Bluetooth pairing agent (`src/bluetooth_agent.py`)
+- **presence-tracker.service** - Runs the Rust tracker backend
+- **presence-tracker-gui.service** - Launches the Rust GUI on boot (`--gui`)
 - **bluetooth-discoverable.service** - Makes the Pi discoverable on boot
 
 All services are automatically enabled and started during full installation.

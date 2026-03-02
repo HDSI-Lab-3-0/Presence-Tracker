@@ -326,10 +326,10 @@ impl PresenceGuiApp {
 
     fn format_check_in_method(&self, method: &str) -> String {
         match method {
-            "app+bluetooth" => "📱+📡 App & Bluetooth".to_string(),
-            "app" => "📱 App".to_string(),
-            "bluetooth" => "📡 Bluetooth".to_string(),
-            _ => "❓ Unknown".to_string(),
+            "app+bluetooth" => "App + Bluetooth".to_string(),
+            "app" => "App".to_string(),
+            "bluetooth" => "Bluetooth".to_string(),
+            _ => "Unknown".to_string(),
         }
     }
 
@@ -345,6 +345,52 @@ impl PresenceGuiApp {
             format!("{}d", elapsed.as_secs() / 86400)
         }
     }
+
+    fn display_name(user: &CheckedInUser) -> String {
+        let first = user.first_name.as_deref().unwrap_or("").trim();
+        let last = user.last_name.as_deref().unwrap_or("").trim();
+        let full_name = format!("{} {}", first, last).trim().to_string();
+
+        if !full_name.is_empty() {
+            return full_name;
+        }
+
+        let fallback_name = user.name.trim();
+        if !fallback_name.is_empty() && !fallback_name.eq_ignore_ascii_case("unknown") {
+            return fallback_name.to_string();
+        }
+
+        if let Some(email) = user.email.as_ref() {
+            let normalized = email.trim();
+            if !normalized.is_empty() {
+                return normalized
+                    .split('@')
+                    .next()
+                    .unwrap_or(normalized)
+                    .replace('.', " ");
+            }
+        }
+
+        "Unknown User".to_string()
+    }
+
+    fn method_color(method: &str) -> egui::Color32 {
+        match method {
+            "app+bluetooth" => egui::Color32::from_rgb(26, 95, 180),
+            "app" => egui::Color32::from_rgb(54, 120, 45),
+            "bluetooth" => egui::Color32::from_rgb(0, 100, 180),
+            _ => egui::Color32::from_gray(80),
+        }
+    }
+
+    fn connection_color(status: &str) -> egui::Color32 {
+        match status {
+            "Live (WebSocket)" => egui::Color32::from_rgb(28, 132, 64),
+            "HTTP Polling" => egui::Color32::from_rgb(21, 102, 192),
+            "Connecting..." | "Subscribing..." => egui::Color32::from_rgb(171, 119, 0),
+            _ => egui::Color32::from_rgb(168, 42, 50),
+        }
+    }
 }
 
 impl eframe::App for PresenceGuiApp {
@@ -352,93 +398,142 @@ impl eframe::App for PresenceGuiApp {
         ctx.request_repaint();
 
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
-                ui.menu_button("File", |ui| {
-                    if ui.button("Quit").clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                });
-                
+            ui.horizontal(|ui| {
+                ui.heading(egui::RichText::new("Presence Tracker").size(24.0));
+                ui.add_space(8.0);
+                if ui.button("Quit").clicked() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let status = self.connection_status.lock().unwrap().clone();
-                    let status_color = match status.as_str() {
-                        "Live (WebSocket)" => egui::Color32::GREEN,
-                        "HTTP Polling" => egui::Color32::from_rgb(100, 150, 255), // Blue for HTTP
-                        "Connecting..." | "Subscribing..." => egui::Color32::YELLOW,
-                        _ => egui::Color32::RED,
-                    };
-                    ui.colored_label(status_color, format!("● {}", status));
+                    ui.colored_label(
+                        Self::connection_color(status.as_str()),
+                        egui::RichText::new(format!("● {}", status)).size(14.0).strong(),
+                    );
                 });
             });
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("🏢 Currently Checked In");
-            
-            ui.horizontal(|ui| {
-                if *self.loading.lock().unwrap() {
-                    ui.spinner();
-                    ui.label("Loading...");
-                } else {
-                    ui.label(format!("Last update: {} ago", self.get_time_since_last_update()));
-                }
-                
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let checked_in_count = self.checked_in_users.lock().unwrap().len();
-                    ui.colored_label(egui::Color32::GREEN, format!("✅ {} Checked In", checked_in_count));
+            let checked_in_users = self.checked_in_users.lock().unwrap().clone();
+            let checked_in_count = checked_in_users.len();
+
+            egui::Frame::none()
+                .fill(egui::Color32::from_rgb(240, 247, 255))
+                .rounding(10.0)
+                .inner_margin(12.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if *self.loading.lock().unwrap() {
+                            ui.spinner();
+                            ui.label("Loading...");
+                        } else {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Last update: {} ago",
+                                    self.get_time_since_last_update()
+                                ))
+                                .size(14.0),
+                            );
+                        }
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.colored_label(
+                                egui::Color32::from_rgb(20, 120, 45),
+                                egui::RichText::new(format!("{} Checked In", checked_in_count))
+                                    .size(16.0)
+                                    .strong(),
+                            );
+                        });
+                    });
                 });
-            });
-            
-            ui.separator();
+
+            ui.add_space(10.0);
 
             if let Some(error) = self.error_message.lock().unwrap().as_ref() {
-                ui.colored_label(egui::Color32::RED, format!("❌ {}", error));
-                ui.separator();
+                egui::Frame::none()
+                    .fill(egui::Color32::from_rgb(255, 238, 238))
+                    .rounding(8.0)
+                    .inner_margin(10.0)
+                    .show(ui, |ui| {
+                        ui.colored_label(
+                            egui::Color32::from_rgb(168, 42, 50),
+                            format!("Connection error: {}", error),
+                        );
+                    });
+                ui.add_space(8.0);
             }
 
+            ui.separator();
+            ui.add_space(6.0);
+
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let checked_in_users = self.checked_in_users.lock().unwrap().clone();
-                
                 if checked_in_users.is_empty() {
                     ui.centered_and_justified(|ui| {
                         if *self.loading.lock().unwrap() {
-                            ui.label("🔄 Connecting to Convex...");
+                            ui.label("Connecting to Convex...");
                         } else {
-                            ui.label("📭 No one is currently checked in");
+                            ui.label("No one is currently checked in");
                         }
                     });
-                } else {
-                    for user in checked_in_users {
-                        egui::Frame::none()
-                            .fill(egui::Color32::from_rgb(230, 255, 230))
-                            .inner_margin(10.0)
-                            .rounding(4.0)
-                            .show(ui, |ui| {
-                                ui.vertical(|ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(egui::RichText::new("🟢").size(24.0));
-                                        ui.label(egui::RichText::new(&user.name).size(18.0).strong());
-                                    });
-                                    
-                                    ui.add_space(4.0);
-                                    
-                                    ui.horizontal(|ui| {
-                                        ui.label(egui::RichText::new("⏰").size(14.0));
-                                        ui.label(egui::RichText::new(
-                                            format!("Checked in {}", self.format_check_in_time(user.check_in_time))
-                                        ).size(14.0).color(egui::Color32::DARK_GRAY));
-                                    });
-                                    
-                                    ui.horizontal(|ui| {
-                                        ui.label(egui::RichText::new(
-                                            self.format_check_in_method(&user.check_in_method)
-                                        ).size(14.0).color(egui::Color32::DARK_GRAY));
-                                    });
+                    return;
+                }
+
+                for user in checked_in_users {
+                    let display_name = Self::display_name(&user);
+                    let email = user.email.as_deref().unwrap_or("").trim();
+
+                    egui::Frame::none()
+                        .fill(egui::Color32::from_rgb(232, 248, 236))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(184, 224, 196)))
+                        .rounding(10.0)
+                        .inner_margin(12.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("●")
+                                        .size(20.0)
+                                        .color(egui::Color32::from_rgb(28, 132, 64)),
+                                );
+                                ui.label(
+                                    egui::RichText::new(display_name)
+                                        .size(20.0)
+                                        .strong()
+                                        .color(egui::Color32::from_rgb(22, 64, 40)),
+                                );
+
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.colored_label(
+                                        Self::method_color(&user.check_in_method),
+                                        egui::RichText::new(self.format_check_in_method(&user.check_in_method))
+                                            .size(13.0)
+                                            .strong(),
+                                    );
                                 });
                             });
-                        
-                        ui.add_space(6.0);
-                    }
+
+                            if !email.is_empty() {
+                                ui.add_space(2.0);
+                                ui.label(
+                                    egui::RichText::new(email)
+                                        .size(13.0)
+                                        .color(egui::Color32::from_rgb(63, 92, 77)),
+                                );
+                            }
+
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Checked in {}",
+                                    self.format_check_in_time(user.check_in_time)
+                                ))
+                                .size(13.0)
+                                .color(egui::Color32::from_rgb(63, 92, 77)),
+                            );
+                        });
+
+                    ui.add_space(8.0);
                 }
             });
         });
@@ -468,7 +563,20 @@ pub async fn run_gui() -> Result<(), eframe::Error> {
     let result = eframe::run_native(
         "Presence Tracker GUI",
         options,
-        Box::new(|_cc| Ok(Box::new(app))),
+        Box::new(|cc| {
+            let mut visuals = egui::Visuals::light();
+            visuals.window_fill = egui::Color32::from_rgb(248, 251, 255);
+            visuals.panel_fill = egui::Color32::from_rgb(248, 251, 255);
+            visuals.extreme_bg_color = egui::Color32::from_rgb(232, 240, 252);
+            cc.egui_ctx.set_visuals(visuals);
+
+            let mut style = (*cc.egui_ctx.style()).clone();
+            style.spacing.item_spacing = egui::vec2(10.0, 10.0);
+            style.spacing.button_padding = egui::vec2(10.0, 6.0);
+            cc.egui_ctx.set_style(style);
+
+            Ok(Box::new(app))
+        }),
     );
 
     let _ = shutdown_tx.send(()).await;
