@@ -510,11 +510,37 @@ html, body {
     box-shadow: var(--shadow-sm);
 }
 
-.logs-title {
-    font-size: 0.875rem;
+.logs-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: transparent;
+    border: none;
+    font-size: 0.9375rem;
     font-weight: 600;
     color: var(--text-main);
-    margin-bottom: 16px;
+    cursor: pointer;
+    padding: 0;
+}
+
+.logs-toggle-icon {
+    transition: transform 0.2s ease;
+}
+
+.logs-toggle-icon.open {
+    transform: rotate(180deg);
+}
+
+.logs-content {
+    margin-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.logs-content.collapsed {
+    display: none;
 }
 
 .logs-list {
@@ -592,6 +618,18 @@ html, body {
     padding: 24px;
     color: var(--text-muted);
     font-size: 0.875rem;
+}
+
+.logs-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.logs-page-indicator {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
 }
 
 /* Loading Overlay */

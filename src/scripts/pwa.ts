@@ -588,8 +588,12 @@ async function loadAttendanceLogs() {
 
   if (!currentDevice) {
     logsList.innerHTML = '<div class="logs-empty">No device found</div>';
+    logEntries = [];
+    renderLogs();
     return;
   }
+
+  logsList.innerHTML = '<div class="logs-loading">Loading activity...</div>';
 
   try {
     const history = await convexClient.query("devices:getAttendanceHistoryByDeviceId", {
@@ -597,53 +601,145 @@ async function loadAttendanceLogs() {
       limit: 20,
     });
 
-    if (!history || history.length === 0) {
-      logsList.innerHTML = '<div class="logs-empty">No activity yet</div>';
-      return;
-    }
-
-    logsList.innerHTML = history.map((log) => {
-      const isCheckIn = log.status === "present";
-      const iconClass = isCheckIn ? "check-in" : "check-out";
-      const actionText = isCheckIn ? "Checked In" : "Checked Out";
-
-      let sourceLabel = "";
-      let sourceClass = "";
-      if (log.source === "app+bluetooth") {
-        sourceLabel = "Via App, verified with Bluetooth";
-        sourceClass = "verified";
-      } else if (log.source === "app") {
-        sourceLabel = "Via App";
-      } else if (log.source === "bluetooth") {
-        sourceLabel = "Via Bluetooth";
-        sourceClass = "verified";
-      } else {
-        sourceLabel = log.label || "Unknown source";
-      }
-
-      const time = formatTime(log.timestamp);
-
-      return `
-        <div class="log-item">
-          <div class="log-icon ${iconClass}">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-              ${isCheckIn
-                ? '<polyline points="20 6 9 17 4 12"/>'
-                : '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>'}
-            </svg>
-          </div>
-          <div class="log-content">
-            <div class="log-action">${actionText}</div>
-            <div class="log-source ${sourceClass}">${sourceLabel}</div>
-            <div class="log-time">${time}</div>
-          </div>
-        </div>
-      `;
-    }).join("");
+    logEntries = normalizeLogs(history || []);
+    logsPage = 1;
+    renderLogs();
   } catch (error) {
     console.error("Failed to load logs:", error);
-    logsList.innerHTML = '<div class="logs-empty">Failed to load activity</div>';
+    logEntries = [];
+    renderLogs("Failed to load activity");
   }
+}
+
+function normalizeLogs(history = []) {
+  if (!Array.isArray(history)) return [];
+
+  const normalized = [];
+
+  for (let i = 0; i < history.length; i += 1) {
+    const entry = history[i];
+    if (!entry) continue;
+
+    if (entry.source === "app+bluetooth") {
+      normalized.push(entry);
+      continue;
+    }
+
+    const nextEntry = history[i + 1];
+    if (shouldMergeAsVerified(entry, nextEntry)) {
+      normalized.push({
+        ...entry,
+        timestamp: Math.max(entry.timestamp, nextEntry.timestamp),
+        source: "app+bluetooth",
+        label: entry.status === "present"
+          ? "app check in verified with bluetooth"
+          : "app check out verified with bluetooth",
+      });
+      i += 1;
+      continue;
+    }
+
+    normalized.push(entry);
+  }
+
+  return normalized;
+}
+
+function shouldMergeAsVerified(entry, nextEntry) {
+  if (!entry || !nextEntry) return false;
+  if (entry.status !== nextEntry.status) return false;
+  const sources = new Set([entry.source, nextEntry.source].filter(Boolean));
+  if (!(sources.has("app") && sources.has("bluetooth"))) return false;
+  const diff = Math.abs(entry.timestamp - nextEntry.timestamp);
+  return diff <= LOG_MERGE_THRESHOLD_MS;
+}
+
+function renderLogs(emptyMessage = "No activity yet") {
+  const logsList = document.getElementById("logs-list");
+  const pagination = document.getElementById("logs-pagination");
+  const pageIndicator = document.getElementById("logs-page-indicator");
+  const prevBtn = document.getElementById("logs-prev");
+  const nextBtn = document.getElementById("logs-next");
+
+  if (!logsList) return;
+
+  if (!logEntries || logEntries.length === 0) {
+    logsTotalPages = 1;
+    logsPage = 1;
+    logsList.innerHTML = `<div class="logs-empty">${emptyMessage}</div>`;
+    if (pagination) pagination.style.display = "none";
+    if (pageIndicator) pageIndicator.textContent = "Page 1 of 1";
+    if (prevBtn) prevBtn.disabled = true;
+    if (nextBtn) nextBtn.disabled = true;
+    return;
+  }
+
+  logsTotalPages = Math.max(1, Math.ceil(logEntries.length / LOGS_PER_PAGE));
+  logsPage = Math.min(Math.max(logsPage, 1), logsTotalPages);
+
+  const start = (logsPage - 1) * LOGS_PER_PAGE;
+  const visibleEntries = logEntries.slice(start, start + LOGS_PER_PAGE);
+
+  logsList.innerHTML = visibleEntries.map((log) => formatLogMarkup(log)).join("");
+
+  if (pagination) pagination.style.display = logsTotalPages > 1 ? "flex" : "none";
+  if (pageIndicator) pageIndicator.textContent = `Page ${logsPage} of ${logsTotalPages}`;
+  if (prevBtn) prevBtn.disabled = logsPage === 1;
+  if (nextBtn) nextBtn.disabled = logsPage === logsTotalPages;
+}
+
+function formatLogMarkup(log) {
+  const isCheckIn = log.status === "present";
+  const iconClass = isCheckIn ? "check-in" : "check-out";
+  const actionText = formatLogActionText(log);
+  const { label, cssClass } = formatLogSourceInfo(log);
+  const time = formatTime(log.timestamp);
+  const sourceMarkup = label
+    ? `<div class="log-source ${cssClass}">${label}</div>`
+    : "";
+
+  return `
+    <div class="log-item">
+      <div class="log-icon ${iconClass}">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
+          ${isCheckIn
+            ? '<polyline points="20 6 9 17 4 12"/>'
+            : '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>'}
+        </svg>
+      </div>
+      <div class="log-content">
+        <div class="log-action">${actionText}</div>
+        ${sourceMarkup}
+        <div class="log-time">${time}</div>
+      </div>
+    </div>
+  `;
+}
+
+function formatLogActionText(log) {
+  const base = log.status === "present" ? "Checked in" : "Checked out";
+
+  if (log.source === "app+bluetooth") {
+    return `${base} via app, verified with bluetooth`;
+  }
+
+  return base;
+}
+
+function formatLogSourceInfo(log) {
+  if (log.source === "app+bluetooth") {
+    return { label: "Verified with bluetooth", cssClass: "verified" };
+  }
+
+  if (log.source === "app") {
+    return { label: "Via app", cssClass: "" };
+  }
+
+  if (log.source === "bluetooth") {
+    return { label: "Via bluetooth", cssClass: "verified" };
+  }
+
+  return { label: log.label || "", cssClass: "" };
 }
 
 function formatTime(timestamp) {
@@ -700,6 +796,43 @@ function showToast(message, type = "info") {
   }, 3000);
 }
 
+window.changeLogsPage = function (direction) {
+  if (!logEntries || logEntries.length === 0) return;
+  const nextPage = logsPage + direction;
+  if (nextPage < 1 || nextPage > logsTotalPages) return;
+  logsPage = nextPage;
+  renderLogs();
+};
+
+window.toggleLogsCollapse = function () {
+  logsCollapsed = !logsCollapsed;
+  updateLogsCollapseUI();
+};
+
+function updateLogsCollapseUI() {
+  const content = document.getElementById("logs-content");
+  const toggle = document.getElementById("logs-toggle");
+  const toggleText = document.getElementById("logs-toggle-text");
+  const icon = document.getElementById("logs-toggle-icon");
+
+  if (content) {
+    content.classList.toggle("collapsed", logsCollapsed);
+  }
+
+  if (toggle) {
+    toggle.setAttribute("aria-expanded", (!logsCollapsed).toString());
+  }
+
+  if (toggleText) {
+    toggleText.textContent = logsCollapsed ? "Show recent activity" : "Hide recent activity";
+  }
+
+  if (icon) {
+    icon.classList.toggle("open", !logsCollapsed);
+  }
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
   await init();
+  updateLogsCollapseUI();
 });

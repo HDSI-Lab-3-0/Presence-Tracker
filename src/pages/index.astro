@@ -2,6 +2,11 @@
 import "../styles/dashboard.css";
 
 const base = import.meta.env.BASE_URL;
+const dashboardScript = new URL("../scripts/dashboard.ts", import.meta.url).pathname;
+const authScript = new URL("../scripts/auth.ts", import.meta.url).pathname;
+const logsScript = new URL("../scripts/logs.ts", import.meta.url).pathname;
+const integrationsScript = new URL("../scripts/integrations.ts", import.meta.url).pathname;
+
 ---
 
 <!DOCTYPE html>
@@ -230,12 +235,10 @@ const base = import.meta.env.BASE_URL;
 
     <div id="toast" class="toast"></div>
 
-    <script>
-        import "../scripts/dashboard";
-        import "../scripts/auth";
-        import "../scripts/logs";
-        import "../scripts/integrations";
-    </script>
+    <script type="module" src={dashboardScript}></script>
+    <script type="module" src={authScript}></script>
+    <script type="module" src={logsScript}></script>
+    <script type="module" src={integrationsScript}></script>
 </body>
 
 </html>

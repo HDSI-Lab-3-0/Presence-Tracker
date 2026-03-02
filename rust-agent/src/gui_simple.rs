@@ -63,7 +63,7 @@ pub struct PresenceGuiApp {
 impl PresenceGuiApp {
     pub fn new() -> Self {
         let convex_url = std::env::var("CONVEX_URL")
-            .unwrap_or_else(|_| "https://helpless-badger-925.convex.cloud".to_string());
+            .unwrap_or_else(|_| "https://greedy-moose-508.convex.cloud".to_string());
         
         Self {
             convex_url,
