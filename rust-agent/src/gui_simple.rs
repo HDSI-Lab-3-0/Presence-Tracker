@@ -473,18 +473,20 @@ impl PresenceGuiApp {
         let email = user.email.as_deref().unwrap_or("").trim();
         
         let card_area = card_width * card_height;
-        let name_size = (card_width * 0.045).clamp(10.0, 22.0);
-        let meta_size = (card_width * 0.032).clamp(8.0, 13.0);
-        let badge_size = (card_width * 0.028).clamp(7.0, 11.0);
-        let padding = (card_width * 0.04).clamp(6.0, 16.0);
-        let rounding = (card_width * 0.025).clamp(6.0, 12.0);
+        let min_dimension = card_width.min(card_height);
         
-        let show_email = card_area > 8000.0 && !email.is_empty();
-        let show_full_time = card_area > 6000.0;
-        let show_badge = card_width > 80.0;
+        let name_size = (min_dimension * 0.12).clamp(9.0, 20.0);
+        let meta_size = (min_dimension * 0.08).clamp(7.0, 12.0);
+        let badge_size = (min_dimension * 0.07).clamp(6.0, 10.0);
+        let padding = (min_dimension * 0.08).clamp(4.0, 14.0);
+        let rounding = (min_dimension * 0.06).clamp(4.0, 10.0);
         
-        let chars_per_line = (card_width / (name_size * 0.55)).floor() as usize;
-        let max_name_chars = (chars_per_line * 2).clamp(12, 50);
+        let show_email = card_area > 12000.0 && !email.is_empty();
+        let show_full_time = card_area > 8000.0;
+        let show_badge = min_dimension > 60.0;
+        
+        let chars_per_line = (card_width / (name_size * 0.5)).floor() as usize;
+        let max_name_chars = (chars_per_line * 2).clamp(8, 40);
         
         let (fill_color, border_color, accent_color) = match user.check_in_method.as_str() {
             "app+bluetooth" => (
@@ -516,53 +518,55 @@ impl PresenceGuiApp {
             .inner_margin(padding)
             .show(ui, |ui| {
                 ui.set_min_size(egui::vec2(card_width - padding * 2.0, card_height - padding * 2.0));
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = padding * 0.3;
-                    
-                    if show_badge {
-                        egui::Frame::none()
-                            .fill(accent_color)
-                            .rounding(rounding * 0.4)
-                            .inner_margin(egui::vec2(padding * 0.5, padding * 0.25))
-                            .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(self.format_check_in_method(&user.check_in_method))
-                                        .size(badge_size)
-                                        .color(egui::Color32::WHITE)
-                                        .strong(),
-                                );
-                            });
-                        ui.add_space(padding * 0.4);
-                    }
-                    
-                    ui.label(
-                        egui::RichText::new(Self::truncate_text(&display_name, max_name_chars))
-                            .size(name_size)
-                            .strong()
-                            .color(egui::Color32::from_rgb(17, 24, 39)),
-                    );
-                    
-                    if show_email {
+                ui.centered_and_justified(|ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.spacing_mut().item_spacing.y = padding * 0.25;
+                        
+                        if show_badge {
+                            egui::Frame::none()
+                                .fill(accent_color)
+                                .rounding(rounding * 0.4)
+                                .inner_margin(egui::vec2(padding * 0.6, padding * 0.3))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(self.format_check_in_method(&user.check_in_method))
+                                            .size(badge_size)
+                                            .color(egui::Color32::WHITE)
+                                            .strong(),
+                                    );
+                                });
+                            ui.add_space(padding * 0.3);
+                        }
+                        
                         ui.label(
-                            egui::RichText::new(email)
-                                .size(meta_size)
-                                .color(egui::Color32::from_rgb(107, 114, 128)),
+                            egui::RichText::new(Self::truncate_text(&display_name, max_name_chars))
+                                .size(name_size)
+                                .strong()
+                                .color(egui::Color32::from_rgb(17, 24, 39)),
                         );
-                    }
-                    
-                    ui.add_space(padding * 0.2);
-                    
-                    let time_text = if show_full_time {
-                        format!("Checked in {}", self.format_check_in_time(user.check_in_time))
-                    } else {
-                        self.format_check_in_time(user.check_in_time)
-                    };
-                    
-                    ui.label(
-                        egui::RichText::new(time_text)
-                            .size(meta_size)
-                            .color(egui::Color32::from_rgb(156, 163, 175)),
-                    );
+                        
+                        if show_email {
+                            ui.label(
+                                egui::RichText::new(email)
+                                    .size(meta_size)
+                                    .color(egui::Color32::from_rgb(107, 114, 128)),
+                            );
+                        }
+                        
+                        ui.add_space(padding * 0.15);
+                        
+                        let time_text = if show_full_time {
+                            format!("Checked in {}", self.format_check_in_time(user.check_in_time))
+                        } else {
+                            self.format_check_in_time(user.check_in_time)
+                        };
+                        
+                        ui.label(
+                            egui::RichText::new(time_text)
+                                .size(meta_size)
+                                .color(egui::Color32::from_rgb(156, 163, 175)),
+                        );
+                    });
                 });
             });
     }
@@ -670,39 +674,35 @@ impl eframe::App for PresenceGuiApp {
                 ((available_height - grid_y_spacing * (rows.saturating_sub(1)) as f32) / rows as f32)
                     .max(40.0);
 
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    for row in 0..rows {
-                        let start = row * columns;
-                        let end = (start + columns).min(total_users);
+            for row in 0..rows {
+                let start = row * columns;
+                let end = (start + columns).min(total_users);
 
-                        ui.horizontal(|ui| {
-                            for idx in start..end {
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(card_width, card_height),
-                                    egui::Layout::top_down(egui::Align::Min),
-                                    |cell_ui| {
-                                        if let Some(user) = sorted_users.get(idx) {
-                                            self.render_bento_card(
-                                                cell_ui,
-                                                user,
-                                                card_width,
-                                                card_height,
-                                            );
-                                        }
-                                    },
-                                );
-                                if idx + 1 < end {
-                                    ui.add_space(grid_x_spacing);
+                ui.horizontal(|ui| {
+                    for idx in start..end {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(card_width, card_height),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |cell_ui| {
+                                if let Some(user) = sorted_users.get(idx) {
+                                    self.render_bento_card(
+                                        cell_ui,
+                                        user,
+                                        card_width,
+                                        card_height,
+                                    );
                                 }
-                            }
-                        });
-                        if row + 1 < rows {
-                            ui.add_space(grid_y_spacing);
+                            },
+                        );
+                        if idx + 1 < end {
+                            ui.add_space(grid_x_spacing);
                         }
                     }
                 });
+                if row + 1 < rows {
+                    ui.add_space(grid_y_spacing);
+                }
+            }
         });
     }
 }
