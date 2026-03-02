@@ -78,13 +78,25 @@ impl PresenceGuiApp {
     pub async fn subscribe_to_updates(&self, shutdown_rx: &mut mpsc::Receiver<()>) {
         println!("Attempting to connect to Convex at: {}", self.convex_url);
         
-        // Try WebSocket subscription first
-        if self.try_websocket_subscription(shutdown_rx).await {
-            return;
+        // Clone the receiver for the WebSocket attempt so we can fall back to HTTP if needed
+        let mut shutdown_rx_ws = shutdown_rx.clone();
+        
+        // Try WebSocket subscription first with timeout
+        let websocket_future = self.try_websocket_subscription(&mut shutdown_rx_ws);
+        match tokio::time::timeout(Duration::from_secs(10), websocket_future).await {
+            Ok(result) => {
+                if result {
+                    return;
+                }
+                println!("WebSocket subscription failed or returned false");
+            }
+            Err(_) => {
+                println!("WebSocket connection timed out after 10 seconds");
+            }
         }
         
         // Fall back to HTTP polling if WebSocket fails
-        println!("WebSocket subscription failed, falling back to HTTP polling...");
+        println!("Falling back to HTTP polling...");
         self.run_http_fallback(shutdown_rx).await;
     }
 
@@ -177,7 +189,7 @@ impl PresenceGuiApp {
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    let url = format!("{}/api/query_ts", convex_url);
+                    let url = format!("{}/api/query", convex_url);
                     println!("Making HTTP request to: {}", url);
                     let request_body = serde_json::json!({
                         "path": "devices:getCheckedInUsers",
