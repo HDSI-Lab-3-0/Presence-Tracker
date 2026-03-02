@@ -32,6 +32,8 @@ function escapeSingleQuote(value) {
 let selectedMacForRegistration = null;
 let subscriptionInitialized = false;
 let organizationName = "Presence Tracker";
+let appConfig = null;
+let statusRefreshInterval = null;
 
 document.addEventListener("DOMContentLoaded", () => {
   fetchAndSetOrganizationName();
@@ -46,6 +48,8 @@ export async function initializeApp() {
     setupConvexSubscription();
     subscriptionInitialized = true;
   }
+  // Start periodic status refresh like PWA
+  startPeriodicStatusRefresh();
 }
 
 window.initializeApp = initializeApp;
@@ -107,6 +111,64 @@ function setupConvexSubscription() {
   convexClient.onUpdate("devices:getDevices", {}, (devices) => {
     renderDevices(devices);
   });
+}
+
+async function fetchAppConfig() {
+  try {
+    appConfig = await convexClient.query("devices:getAppLinkingConfig", {});
+  } catch (error) {
+    console.error("Failed to fetch app config:", error);
+  }
+}
+
+async function refreshAllAppStatuses() {
+  if (!convexClient || !appConfig?.apiKey) {
+    await fetchAppConfig();
+  }
+
+  if (!appConfig?.apiKey) {
+    console.warn("[Dashboard] Missing API key, skipping status refresh");
+    return;
+  }
+
+  try {
+    // Get all devices with registered emails
+    const devices = await convexClient.query("devices:getDevices", {});
+    const devicesWithEmail = devices.filter(d => d.ucsdEmail && d.pendingRegistration === false);
+
+    // Refresh app status for each device
+    for (const device of devicesWithEmail) {
+      try {
+        const status = await convexClient.query("devices:fetchAppStatusByEmail", {
+          apiKey: appConfig.apiKey,
+          email: device.ucsdEmail,
+        });
+
+        if (status?.success) {
+          // Update the device's app status locally
+          device.appStatus = status.appStatus;
+        }
+      } catch (error) {
+        console.error(`Failed to refresh app status for ${device.ucsdEmail}:`, error);
+      }
+    }
+  } catch (error) {
+    console.error("Failed to refresh app statuses:", error);
+  }
+}
+
+function startPeriodicStatusRefresh() {
+  // Initial fetch
+  fetchAppConfig();
+  
+  // Refresh app statuses every 30 seconds (like PWA)
+  if (statusRefreshInterval) {
+    clearInterval(statusRefreshInterval);
+  }
+  
+  statusRefreshInterval = setInterval(async () => {
+    await refreshAllAppStatuses();
+  }, 30000);
 }
 
 function renderDevices(devices) {
