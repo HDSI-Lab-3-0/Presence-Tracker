@@ -606,11 +606,44 @@ impl PresenceGuiApp {
             egui::Color32::from_rgb(148, 163, 184),
         );
     }
+
+    fn apply_dynamic_zoom(&self, ctx: &egui::Context) {
+        let manual_zoom = std::env::var("PRESENCE_GUI_ZOOM")
+            .ok()
+            .and_then(|value| value.trim().parse::<f32>().ok())
+            .map(|value| value.clamp(0.5, 1.5));
+
+        let desired_zoom = if let Some(zoom) = manual_zoom {
+            zoom
+        } else {
+            let (viewport_pixels, native_pixels_per_point) = ctx.input(|i| {
+                let rect = i.viewport().inner_rect.unwrap_or(i.screen_rect());
+                let pixels_per_point = i.pixels_per_point().max(0.1);
+                (
+                    rect.size() * pixels_per_point,
+                    i.viewport().native_pixels_per_point.unwrap_or(1.0),
+                )
+            });
+
+            let base_viewport = egui::vec2(1280.0, 800.0);
+            let size_scale = (viewport_pixels.x / base_viewport.x)
+                .min(viewport_pixels.y / base_viewport.y)
+                .clamp(0.65, 1.0);
+            let dpi_scale = (1.0 / native_pixels_per_point.max(1.0)).clamp(0.6, 1.0);
+
+            (size_scale * dpi_scale).clamp(0.55, 1.0)
+        };
+
+        if (ctx.zoom_factor() - desired_zoom).abs() > 0.02 {
+            ctx.set_zoom_factor(desired_zoom);
+        }
+    }
 }
 
 impl eframe::App for PresenceGuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint();
+        self.apply_dynamic_zoom(ctx);
 
         let outer_padding = 24.0;
         let grid_gap = 16.0;
@@ -858,13 +891,10 @@ impl eframe::App for PresenceGuiApp {
 pub async fn run_gui() -> Result<(), eframe::Error> {
     dotenvy::dotenv().ok();
 
-    // Fit small Raspberry Pi panels (e.g. 1024x600) with desktop chrome/panels.
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1000.0, 560.0])
-            .with_min_inner_size([800.0, 480.0])
-            .with_max_inner_size([1024.0, 600.0])
-            .with_maximized(true)
+            .with_inner_size([960.0, 540.0])
+            .with_min_inner_size([640.0, 360.0])
             .with_title("Presence Tracker")
             .with_decorations(true),
         ..Default::default()
