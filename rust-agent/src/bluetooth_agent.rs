@@ -1,20 +1,26 @@
-use crate::bluetooth_probe::{configure_adapter, get_device_name, is_valid_mac, normalize_mac, trust_device, CommandRunner};
+use crate::bluetooth_probe::{
+    configure_adapter, get_device_name, is_valid_mac, normalize_mac, trust_device, CommandRunner,
+};
 use crate::config::Config;
 use crate::convex_client::ConvexClient;
 use crate::logging;
 use anyhow::Result;
 use bluer::agent::{Agent, AgentHandle};
 use bluer::{AdapterEvent, Address};
-use tokio_stream::StreamExt;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio_stream::StreamExt;
 pub struct AgentRuntime {
     _session: bluer::Session,
     _handle: AgentHandle,
 }
 
-pub async fn start_agent(config: &Config, runner: Arc<dyn CommandRunner>, convex: Arc<ConvexClient>) -> Result<AgentRuntime> {
+pub async fn start_agent(
+    config: &Config,
+    runner: Arc<dyn CommandRunner>,
+    convex: Arc<ConvexClient>,
+) -> Result<AgentRuntime> {
     configure_adapter(runner.as_ref());
     let session = bluer::Session::new().await?;
     let adapter = session.default_adapter().await?;
@@ -50,8 +56,16 @@ pub async fn start_agent(config: &Config, runner: Arc<dyn CommandRunner>, convex
             convex_for_events,
             blocked_for_events,
             command_timeout_seconds,
-        ).await {
-            logging::warn("bluetooth_agent", "monitor_events", None, Some("error"), &e.to_string());
+        )
+        .await
+        {
+            logging::warn(
+                "bluetooth_agent",
+                "monitor_events",
+                None,
+                Some("error"),
+                &e.to_string(),
+            );
         }
     });
 
@@ -92,7 +106,15 @@ async fn monitor_device_events(
     while let Some(event) = events.next().await {
         match event {
             AdapterEvent::DeviceAdded(addr) => {
-                handle_device_added(&adapter, addr, &runner, &convex, &blocked_uuids, command_timeout_seconds).await;
+                handle_device_added(
+                    &adapter,
+                    addr,
+                    &runner,
+                    &convex,
+                    &blocked_uuids,
+                    command_timeout_seconds,
+                )
+                .await;
             }
             AdapterEvent::PropertyChanged(_) => {
                 // Adapter property changed, ignore
@@ -115,12 +137,18 @@ async fn handle_device_added(
     command_timeout_seconds: u64,
 ) {
     let mac = addr.to_string().to_ascii_uppercase();
-    
+
     // Get the device to check its properties
     let device = match adapter.device(addr) {
         Ok(d) => d,
         Err(e) => {
-            logging::warn("bluetooth_agent", "handle_device", Some(&mac), Some("error"), &format!("Failed to get device: {e}"));
+            logging::warn(
+                "bluetooth_agent",
+                "handle_device",
+                Some(&mac),
+                Some("error"),
+                &format!("Failed to get device: {e}"),
+            );
             return;
         }
     };
@@ -166,7 +194,11 @@ async fn handle_device_added(
 
     // Trust the device
     if is_valid_mac(&mac) {
-        let _ = trust_device(runner.as_ref(), &normalize_mac(&mac), command_timeout_seconds);
+        let _ = trust_device(
+            runner.as_ref(),
+            &normalize_mac(&mac),
+            command_timeout_seconds,
+        );
         logging::info(
             "bluetooth_agent",
             "device_paired",
@@ -179,8 +211,20 @@ async fn handle_device_added(
     // Register as pending device
     let name = get_device_name(runner.as_ref(), &mac, command_timeout_seconds);
     match convex.register_pending_device(&mac, name.as_deref()).await {
-        Ok(_) => logging::info("bluetooth_agent", "register_pending", Some(&mac), Some("ok"), "Registered pending device"),
-        Err(e) => logging::warn("bluetooth_agent", "register_pending", Some(&mac), Some("error"), &e.to_string()),
+        Ok(_) => logging::info(
+            "bluetooth_agent",
+            "register_pending",
+            Some(&mac),
+            Some("ok"),
+            "Registered pending device",
+        ),
+        Err(e) => logging::warn(
+            "bluetooth_agent",
+            "register_pending",
+            Some(&mac),
+            Some("error"),
+            &e.to_string(),
+        ),
     }
 }
 

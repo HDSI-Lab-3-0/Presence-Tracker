@@ -18,12 +18,10 @@ pub struct BluetoothConfig {
 
 impl Config {
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let contents = std::fs::read_to_string(&path).with_context(|| {
-            format!("Failed to read config file {}", path.as_ref().display())
-        })?;
-        let mut config: Config = toml::from_str(&contents).with_context(|| {
-            format!("Failed to parse config file {}", path.as_ref().display())
-        })?;
+        let contents = std::fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read config file {}", path.as_ref().display()))?;
+        let mut config: Config = toml::from_str(&contents)
+            .with_context(|| format!("Failed to parse config file {}", path.as_ref().display()))?;
 
         if config.bluetooth.command_timeout_seconds == 0 {
             config.bluetooth.command_timeout_seconds = default_command_timeout_seconds();

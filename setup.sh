@@ -485,7 +485,7 @@ Group=bluetooth
 WorkingDirectory=$PROJECT_DIR
 EnvironmentFile=$ENV_FILE
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$HOME/.cargo/bin:$HOME/.bun/bin"
-ExecStart=$RUST_BIN_PATH --config $AGENT_CONFIG_FILE
+ExecStart=$RUST_BIN_PATH --agent --config $AGENT_CONFIG_FILE
 Restart=always
 RestartSec=10
 StandardOutput=journal

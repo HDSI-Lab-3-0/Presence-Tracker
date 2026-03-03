@@ -8,7 +8,14 @@ pub fn warn(module: &str, event: &str, entity: Option<&str>, status: Option<&str
     log("WARN", module, event, entity, status, message);
 }
 
-fn log(level: &str, module: &str, event: &str, entity: Option<&str>, status: Option<&str>, message: &str) {
+fn log(
+    level: &str,
+    module: &str,
+    event: &str,
+    entity: Option<&str>,
+    status: Option<&str>,
+    message: &str,
+) {
     let timestamp = Utc::now().to_rfc3339();
     let entity_part = entity.unwrap_or("-");
     let status_part = status.unwrap_or("-");

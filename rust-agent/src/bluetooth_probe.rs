@@ -74,7 +74,11 @@ pub fn get_connected_devices(runner: &dyn CommandRunner, timeout_seconds: u64) -
     }
 }
 
-pub fn get_device_name(runner: &dyn CommandRunner, mac: &str, timeout_seconds: u64) -> Option<String> {
+pub fn get_device_name(
+    runner: &dyn CommandRunner,
+    mac: &str,
+    timeout_seconds: u64,
+) -> Option<String> {
     if !is_valid_mac(mac) {
         return None;
     }
@@ -89,9 +93,11 @@ pub fn get_device_name(runner: &dyn CommandRunner, mac: &str, timeout_seconds: u
     if out.code != 0 {
         return None;
     }
-    out.stdout
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("Name:").map(|s| s.trim().to_string()))
+    out.stdout.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("Name:")
+            .map(|s| s.trim().to_string())
+    })
 }
 
 pub fn is_device_paired(runner: &dyn CommandRunner, mac: &str, timeout_seconds: u64) -> bool {
@@ -151,7 +157,10 @@ pub fn configure_adapter(runner: &dyn CommandRunner) {
         ("bluetoothctl", &["--timeout", "5", "power", "on"]),
         ("bluetoothctl", &["--timeout", "5", "discoverable", "on"]),
         ("bluetoothctl", &["--timeout", "5", "pairable", "on"]),
-        ("bluetoothctl", &["--timeout", "5", "discoverable-timeout", "0"]),
+        (
+            "bluetoothctl",
+            &["--timeout", "5", "discoverable-timeout", "0"],
+        ),
         ("bluetoothctl", &["--timeout", "5", "pairable-timeout", "0"]),
         // Enable Secure Simple Pairing mode for "Just Works" auto-pairing
         ("hciconfig", &["hci0", "sspmode", "1"]),
@@ -161,7 +170,12 @@ pub fn configure_adapter(runner: &dyn CommandRunner) {
     }
 }
 
-pub fn l2ping_device(runner: &dyn CommandRunner, mac: &str, count: u32, timeout_seconds: u64) -> bool {
+pub fn l2ping_device(
+    runner: &dyn CommandRunner,
+    mac: &str,
+    count: u32,
+    timeout_seconds: u64,
+) -> bool {
     if !is_valid_mac(mac) {
         return false;
     }
@@ -171,7 +185,11 @@ pub fn l2ping_device(runner: &dyn CommandRunner, mac: &str, count: u32, timeout_
     let timeout = timeout_seconds.max(1).to_string();
     let args = ["-c", count.as_str(), "-t", timeout.as_str(), mac.as_str()];
 
-    match runner.run("l2ping", &args, Duration::from_secs(timeout_seconds.max(1) + 1)) {
+    match runner.run(
+        "l2ping",
+        &args,
+        Duration::from_secs(timeout_seconds.max(1) + 1),
+    ) {
         Ok(out) => out.code == 0 && out.stdout.to_ascii_lowercase().contains("bytes from"),
         Err(_) => false,
     }
@@ -187,7 +205,11 @@ pub fn connect_probe(runner: &dyn CommandRunner, mac: &str, timeout_seconds: u64
         &["connect", mac.as_str()],
         Duration::from_secs(timeout_seconds.max(1)),
     ) {
-        Ok(out) => out.code == 0 || out.stdout.contains("Connected: yes") || out.stdout.contains("Connection successful"),
+        Ok(out) => {
+            out.code == 0
+                || out.stdout.contains("Connected: yes")
+                || out.stdout.contains("Connection successful")
+        }
         Err(_) => false,
     }
 }

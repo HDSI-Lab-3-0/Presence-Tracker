@@ -5,17 +5,26 @@ mod convex_client;
 mod gui_simple;
 mod logging;
 
+use anyhow::{anyhow, Result};
 use clap::{Arg, Command};
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::signal;
+
+use crate::bluetooth_agent::start_agent;
+use crate::bluetooth_probe::{CommandRunner, ProcessRunner};
+use crate::config::Config;
+use crate::convex_client::ConvexClient;
 use gui_simple::run_gui;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     // Load environment variables
     dotenvy::dotenv().ok();
 
     let matches = Command::new("presence-tracker-rs")
         .version("0.1.0")
-        .about("Presence Tracker for Raspberry Pi with GUI")
+        .about("Presence Tracker for Raspberry Pi")
         .arg(
             Arg::new("gui")
                 .short('g')
@@ -30,19 +39,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .help("Run the Bluetooth agent")
                 .action(clap::ArgAction::SetTrue),
         )
+        .arg(
+            Arg::new("config")
+                .short('c')
+                .long("config")
+                .value_name("FILE")
+                .help("Path to TOML config file for agent mode")
+                .default_value("config/agent.toml"),
+        )
         .get_matches();
 
-    if matches.get_flag("gui") {
-        println!("Starting Presence Tracker GUI...");
-        run_gui().await?;
-    } else if matches.get_flag("agent") {
-        println!("Starting Bluetooth agent...");
-        // You can add the agent logic here if needed
-        todo!("Bluetooth agent integration");
-    } else {
-        println!("Please specify either --gui or --agent");
-        println!("Use --help for more information");
+    let run_gui_flag = matches.get_flag("gui");
+    let run_agent_flag = matches.get_flag("agent");
+    let config_path = matches
+        .get_one::<String>("config")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("missing config path"))?;
+
+    if run_gui_flag && run_agent_flag {
+        return Err(anyhow!("Cannot use --gui and --agent together"));
     }
 
+    if run_gui_flag {
+        println!("Starting Presence Tracker GUI...");
+        run_gui().await.map_err(|e| anyhow!(e.to_string()))?;
+    } else {
+        // Default to agent mode for systemd/background usage.
+        run_agent(config_path).await?;
+    }
+
+    Ok(())
+}
+
+async fn run_agent(config_path: PathBuf) -> Result<()> {
+    let config = match Config::load_from_file(&config_path) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!(
+                "Failed to load config from {}: {err}. Falling back to defaults.",
+                config_path.display()
+            );
+            Config::default()
+        }
+    };
+
+    println!(
+        "Starting Bluetooth agent with config path: {}",
+        config_path.display()
+    );
+
+    let runner: Arc<dyn CommandRunner> = Arc::new(ProcessRunner);
+    let convex = Arc::new(ConvexClient::new());
+    let _runtime = start_agent(&config, runner, convex).await?;
+
+    println!("Bluetooth agent is running. Press Ctrl+C to stop.");
+    signal::ctrl_c().await?;
+    println!("Shutdown signal received. Exiting.");
     Ok(())
 }
