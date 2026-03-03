@@ -600,6 +600,8 @@ restart_services() {
   generate_services
   sudo systemctl daemon-reload
   sudo systemctl enable presence-tracker.service
+  # Refresh install symlinks to avoid stale WantedBy links after unit changes.
+  sudo systemctl disable presence-tracker-gui.service >/dev/null 2>&1 || true
   sudo systemctl enable presence-tracker-gui.service
   sudo systemctl enable bluetooth-discoverable.service
   sudo systemctl restart presence-tracker.service
