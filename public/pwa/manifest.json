@@ -2,23 +2,18 @@
   "name": "Presence Tracker",
   "short_name": "Presence",
   "description": "Clock in and out with location verification",
-  "start_url": "/pwa/",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#F1F5F9",
   "theme_color": "#0284C7",
   "orientation": "portrait",
   "icons": [
     {
-      "src": "/pwa/icons/icon-192.svg",
-      "sizes": "192x192",
+      "src": "icons/logo.svg",
+      "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "/pwa/icons/icon-512.svg",
-      "sizes": "512x512",
-      "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "purpose": "any"
     }
   ],
   "categories": ["productivity", "utilities"],

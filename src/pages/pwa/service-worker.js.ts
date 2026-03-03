@@ -1,13 +1,14 @@
 export const prerender = true;
 
 const serviceWorkerSource = `
-const CACHE_NAME = 'presence-tracker-pwa-v1';
+const CACHE_NAME = 'presence-tracker-pwa-v2';
+const PWA_ROOT_PATH = new URL('./', self.location.href).pathname;
+const withPwaRoot = (relativePath) => \`\${PWA_ROOT_PATH}\${relativePath.replace(/^\\/+/, '')}\`;
 const STATIC_ASSETS = [
-  '/pwa/',
-  '/pwa/index.html',
-  '/pwa/manifest.json',
-  '/pwa/icons/icon-192.svg',
-  '/pwa/icons/icon-512.svg',
+  PWA_ROOT_PATH,
+  withPwaRoot('index.html'),
+  withPwaRoot('manifest.json'),
+  withPwaRoot('icons/logo.svg'),
 ];
 
 self.addEventListener('install', (event) => {
@@ -39,7 +40,7 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  if (STATIC_ASSETS.some((asset) => url.pathname === asset || url.pathname === asset.replace('/index.html', '/'))) {
+  if (STATIC_ASSETS.some((asset) => url.pathname === asset || url.pathname === asset.replace(/index\\.html$/, ''))) {
     event.respondWith(
       caches.match(event.request).then((cachedResponse) => {
         if (cachedResponse) {

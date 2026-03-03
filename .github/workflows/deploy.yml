@@ -38,7 +38,7 @@ jobs:
           CONVEX_DEPLOYMENT_URL: ${{ secrets.CONVEX_DEPLOYMENT_URL }}
           CONVEX_SELF_HOSTED_URL: ${{ secrets.CONVEX_SELF_HOSTED_URL }}
           ORGANIZATION_NAME: ${{ secrets.ORGANIZATION_NAME }}
-          ASTRO_BASE: "/Presence-Tracker/"
+          ASTRO_BASE: "/${{ github.event.repository.name }}/"
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
