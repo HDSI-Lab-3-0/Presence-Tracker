@@ -1,4 +1,4 @@
-use convex::{FunctionResult, Value, ConvexClient};
+use convex::{ConvexClient, FunctionResult, Value};
 use eframe::egui;
 use futures_util::StreamExt;
 use serde::{de, Deserialize, Deserializer, Serialize};
@@ -64,10 +64,7 @@ fn parse_checked_in_users(value: &serde_json::Value) -> Result<Vec<CheckedInUser
         return parse_checked_in_users(inner);
     }
 
-    Err(format!(
-        "Unexpected Convex response shape: {}",
-        value
-    ))
+    Err(format!("Unexpected Convex response shape: {}", value))
 }
 
 fn convex_value_to_json(value: &Value) -> serde_json::Value {
@@ -85,7 +82,9 @@ fn convex_value_to_json(value: &Value) -> serde_json::Value {
                 .map(|b| serde_json::Value::Number(Number::from(*b)))
                 .collect(),
         ),
-        Value::Array(values) => serde_json::Value::Array(values.iter().map(convex_value_to_json).collect()),
+        Value::Array(values) => {
+            serde_json::Value::Array(values.iter().map(convex_value_to_json).collect())
+        }
         Value::Object(map) => serde_json::Value::Object(
             map.iter()
                 .map(|(k, v)| (k.clone(), convex_value_to_json(v)))
@@ -108,7 +107,7 @@ impl PresenceGuiApp {
     pub fn new() -> Self {
         let convex_url = std::env::var("CONVEX_URL")
             .unwrap_or_else(|_| "https://greedy-moose-508.convex.cloud".to_string());
-        
+
         Self {
             convex_url,
             checked_in_users: Arc::new(Mutex::new(Vec::new())),
@@ -170,8 +169,11 @@ impl PresenceGuiApp {
         match ConvexClient::new(&self.convex_url).await {
             Ok(mut client) => {
                 *status_clone.lock().unwrap() = "Subscribing...".to_string();
-                
-                match client.subscribe("devices:getCheckedInUsers", BTreeMap::new()).await {
+
+                match client
+                    .subscribe("devices:getCheckedInUsers", BTreeMap::new())
+                    .await
+                {
                     Ok(mut subscription) => {
                         *status_clone.lock().unwrap() = "Live (WebSocket)".to_string();
                         *loading_clone.lock().unwrap() = false;
@@ -334,10 +336,10 @@ impl PresenceGuiApp {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as i64;
-        
+
         let elapsed_ms = now - timestamp_ms;
         let elapsed_secs = elapsed_ms / 1000;
-        
+
         if elapsed_secs < 60 {
             format!("{}s ago", elapsed_secs)
         } else if elapsed_secs < 3600 {
@@ -480,22 +482,22 @@ impl PresenceGuiApp {
     ) {
         let display_name = Self::display_name(user);
         let email = user.email.as_deref().unwrap_or("").trim();
-        
+
         let card_area = card_width * card_height;
         let min_dimension = card_width.min(card_height);
-        
+
         let name_size = (min_dimension * 0.14).clamp(14.0, 28.0);
         let meta_size = (min_dimension * 0.09).clamp(10.0, 14.0);
         let badge_size = (min_dimension * 0.08).clamp(9.0, 12.0);
         let rounding = (min_dimension * 0.08).clamp(12.0, 24.0);
-        
+
         let show_email = card_area > 15000.0 && !email.is_empty();
         let show_full_time = card_area > 10000.0;
         let show_badge = min_dimension > 80.0;
-        
+
         let chars_per_line = (card_width / (name_size * 0.55)).floor() as usize;
         let max_name_chars = (chars_per_line * 2).clamp(10, 50);
-        
+
         let accent_color = match user.check_in_method.as_str() {
             "app+bluetooth" => egui::Color32::from_rgb(37, 99, 235),
             "app" => egui::Color32::from_rgb(22, 163, 74),
@@ -503,62 +505,58 @@ impl PresenceGuiApp {
             _ => egui::Color32::from_rgb(100, 116, 139),
         };
 
-        let outer_rect = egui::Rect::from_min_size(
-            ui.cursor().min,
-            egui::vec2(card_width, card_height),
-        );
-        
+        let outer_rect =
+            egui::Rect::from_min_size(ui.cursor().min, egui::vec2(card_width, card_height));
+
         let response = ui.allocate_rect(outer_rect, egui::Sense::hover());
-        
+
         ui.painter().rect(
             outer_rect,
             rounding,
             egui::Color32::WHITE,
             egui::Stroke::new(1.0, egui::Color32::from_rgb(226, 232, 240)),
         );
-        
-        ui.painter().rect_filled(
-            outer_rect.shrink(0.5),
-            rounding,
-            egui::Color32::WHITE,
-        );
+
+        ui.painter()
+            .rect_filled(outer_rect.shrink(0.5), rounding, egui::Color32::WHITE);
 
         let center = outer_rect.center();
-        
+
         let name_galley = ui.painter().layout_no_wrap(
             Self::truncate_text(&display_name, max_name_chars),
             egui::FontId::proportional(name_size),
             egui::Color32::from_rgb(15, 23, 42),
         );
-        
+
         let time_text = if show_full_time {
             self.format_check_in_time(user.check_in_time)
         } else {
             self.format_check_in_time(user.check_in_time)
         };
-        
+
         let time_galley = ui.painter().layout_no_wrap(
             time_text,
             egui::FontId::proportional(meta_size),
             egui::Color32::from_rgb(148, 163, 184),
         );
-        
+
         let method_indicator_size = 8.0;
         let spacing = 8.0;
-        
+
         let mut total_height = name_galley.size().y + spacing + time_galley.size().y;
-        
+
         if show_email && !email.is_empty() {
             total_height += meta_size + 4.0;
         }
-        
+
         let start_y = center.y - total_height / 2.0;
         let mut current_y = start_y;
-        
+
         let name_pos = egui::pos2(center.x - name_galley.size().x / 2.0, current_y);
-        ui.painter().galley(name_pos, name_galley, egui::Color32::from_rgb(15, 23, 42));
+        ui.painter()
+            .galley(name_pos, name_galley, egui::Color32::from_rgb(15, 23, 42));
         current_y += name_size + spacing;
-        
+
         if show_email && !email.is_empty() {
             let email_galley = ui.painter().layout_no_wrap(
                 email.to_string(),
@@ -566,18 +564,30 @@ impl PresenceGuiApp {
                 egui::Color32::from_rgb(100, 116, 139),
             );
             let email_pos = egui::pos2(center.x - email_galley.size().x / 2.0, current_y);
-            ui.painter().galley(email_pos, email_galley, egui::Color32::from_rgb(100, 116, 139));
+            ui.painter().galley(
+                email_pos,
+                email_galley,
+                egui::Color32::from_rgb(100, 116, 139),
+            );
             current_y += meta_size + 4.0;
         }
-        
+
         let time_with_dot_width = method_indicator_size + 6.0 + time_galley.size().x;
         let time_start_x = center.x - time_with_dot_width / 2.0;
-        
-        let dot_center = egui::pos2(time_start_x + method_indicator_size / 2.0, current_y + time_galley.size().y / 2.0);
-        ui.painter().circle_filled(dot_center, method_indicator_size / 2.0, accent_color);
-        
+
+        let dot_center = egui::pos2(
+            time_start_x + method_indicator_size / 2.0,
+            current_y + time_galley.size().y / 2.0,
+        );
+        ui.painter()
+            .circle_filled(dot_center, method_indicator_size / 2.0, accent_color);
+
         let time_pos = egui::pos2(time_start_x + method_indicator_size + 6.0, current_y);
-        ui.painter().galley(time_pos, time_galley, egui::Color32::from_rgb(148, 163, 184));
+        ui.painter().galley(
+            time_pos,
+            time_galley,
+            egui::Color32::from_rgb(148, 163, 184),
+        );
     }
 }
 
@@ -589,13 +599,15 @@ impl eframe::App for PresenceGuiApp {
         let grid_gap = 16.0;
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::none()
-                .fill(egui::Color32::from_rgb(241, 245, 249))
-                .inner_margin(egui::Margin::same(outer_padding)))
+            .frame(
+                egui::Frame::none()
+                    .fill(egui::Color32::from_rgb(241, 245, 249))
+                    .inner_margin(egui::Margin::same(outer_padding)),
+            )
             .show(ctx, |ui| {
                 let checked_in_users = self.checked_in_users.lock().unwrap().clone();
                 let checked_in_count = checked_in_users.len();
-                
+
                 ui.horizontal(|ui| {
                     ui.heading(
                         egui::RichText::new(format!("Presence Tracker"))
@@ -603,9 +615,9 @@ impl eframe::App for PresenceGuiApp {
                             .strong()
                             .color(egui::Color32::from_rgb(15, 23, 42)),
                     );
-                    
+
                     ui.add_space(12.0);
-                    
+
                     egui::Frame::none()
                         .fill(egui::Color32::from_rgb(37, 99, 235))
                         .rounding(12.0)
@@ -618,30 +630,38 @@ impl eframe::App for PresenceGuiApp {
                                     .color(egui::Color32::WHITE),
                             );
                         });
-                    
+
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(
-                            egui::Button::new(
-                                egui::RichText::new("✕")
-                                    .size(14.0)
-                                    .color(egui::Color32::from_rgb(100, 116, 139))
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("✕")
+                                        .size(14.0)
+                                        .color(egui::Color32::from_rgb(100, 116, 139)),
+                                )
+                                .fill(egui::Color32::from_rgb(226, 232, 240))
+                                .rounding(8.0)
+                                .min_size(egui::vec2(32.0, 32.0)),
                             )
-                            .fill(egui::Color32::from_rgb(226, 232, 240))
-                            .rounding(8.0)
-                            .min_size(egui::vec2(32.0, 32.0))
-                        ).clicked() {
+                            .clicked()
+                        {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
-                        
+
                         ui.add_space(12.0);
-                        
+
                         let mut http_enabled = self.http_polling_enabled.load(Ordering::Relaxed);
-                        if ui.checkbox(&mut http_enabled, 
-                            egui::RichText::new("HTTP Polling")
-                                .size(12.0)
-                                .color(egui::Color32::from_rgb(71, 85, 105))
-                        ).changed() {
-                            self.http_polling_enabled.store(http_enabled, Ordering::Relaxed);
+                        if ui
+                            .checkbox(
+                                &mut http_enabled,
+                                egui::RichText::new("HTTP Polling")
+                                    .size(12.0)
+                                    .color(egui::Color32::from_rgb(71, 85, 105)),
+                            )
+                            .changed()
+                        {
+                            self.http_polling_enabled
+                                .store(http_enabled, Ordering::Relaxed);
                             if !http_enabled {
                                 let mut status = self.connection_status.lock().unwrap();
                                 if *status == "HTTP Polling" {
@@ -649,9 +669,9 @@ impl eframe::App for PresenceGuiApp {
                                 }
                             }
                         }
-                        
+
                         ui.add_space(16.0);
-                        
+
                         let status = self.connection_status.lock().unwrap().clone();
                         egui::Frame::none()
                             .fill(Self::connection_color(status.as_str()).gamma_multiply(0.15))
@@ -665,25 +685,31 @@ impl eframe::App for PresenceGuiApp {
                                         .color(Self::connection_color(status.as_str())),
                                 );
                             });
-                        
+
                         ui.add_space(12.0);
-                        
+
                         if !*self.loading.lock().unwrap() {
                             ui.label(
-                                egui::RichText::new(format!("Updated {} ago", self.get_time_since_last_update()))
-                                    .size(12.0)
-                                    .color(egui::Color32::from_rgb(148, 163, 184)),
+                                egui::RichText::new(format!(
+                                    "Updated {} ago",
+                                    self.get_time_since_last_update()
+                                ))
+                                .size(12.0)
+                                .color(egui::Color32::from_rgb(148, 163, 184)),
                             );
                         }
                     });
                 });
-                
+
                 ui.add_space(16.0);
 
                 if let Some(error) = self.error_message.lock().unwrap().as_ref() {
                     egui::Frame::none()
                         .fill(egui::Color32::from_rgb(254, 242, 242))
-                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(254, 202, 202)))
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            egui::Color32::from_rgb(254, 202, 202),
+                        ))
                         .rounding(12.0)
                         .inner_margin(12.0)
                         .show(ui, |ui| {
@@ -720,10 +746,7 @@ impl eframe::App for PresenceGuiApp {
                                                 .color(egui::Color32::from_rgb(100, 116, 139)),
                                         );
                                     } else {
-                                        ui.label(
-                                            egui::RichText::new("👋")
-                                                .size(48.0),
-                                        );
+                                        ui.label(egui::RichText::new("👋").size(48.0));
                                         ui.add_space(12.0);
                                         ui.label(
                                             egui::RichText::new("No one checked in")
@@ -758,34 +781,35 @@ impl eframe::App for PresenceGuiApp {
                 let available_width = ui.available_width();
                 let available_height = ui.available_height().max(1.0);
                 let window_aspect = (available_width / available_height).max(0.1);
-                
+
                 let (rows, columns) = Self::choose_bento_grid(total_users, window_aspect);
-                
+
                 let total_h_gaps = (columns.saturating_sub(1)) as f32 * grid_gap;
                 let total_v_gaps = (rows.saturating_sub(1)) as f32 * grid_gap;
-                
+
                 let card_width = ((available_width - total_h_gaps) / columns as f32).max(80.0);
                 let card_height = ((available_height - total_v_gaps) / rows as f32).max(60.0);
-                
+
                 let actual_grid_width = card_width * columns as f32 + total_h_gaps;
                 let actual_grid_height = card_height * rows as f32 + total_v_gaps;
-                
+
                 let h_offset = ((available_width - actual_grid_width) / 2.0).max(0.0);
                 let v_offset = ((available_height - actual_grid_height) / 2.0).max(0.0);
 
                 ui.add_space(v_offset);
-                
+
                 for row in 0..rows {
                     let start = row * columns;
                     let end = (start + columns).min(total_users);
                     let items_in_row = end - start;
-                    
-                    let row_width = card_width * items_in_row as f32 + grid_gap * (items_in_row.saturating_sub(1)) as f32;
+
+                    let row_width = card_width * items_in_row as f32
+                        + grid_gap * (items_in_row.saturating_sub(1)) as f32;
                     let row_h_offset = h_offset + ((actual_grid_width - row_width) / 2.0).max(0.0);
 
                     ui.horizontal(|ui| {
                         ui.add_space(row_h_offset);
-                        
+
                         for idx in start..end {
                             ui.allocate_ui_with_layout(
                                 egui::vec2(card_width, card_height),

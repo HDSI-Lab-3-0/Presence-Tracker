@@ -171,6 +171,17 @@ get_env_var() {
   printf '%s' "$line"
 }
 
+get_env_var_with_local_override() {
+  local key="$1"
+  local value=""
+
+  value="$(get_env_var "$ENV_LOCAL_FILE" "$key")"
+  if [[ -z "$value" ]]; then
+    value="$(get_env_var "$ENV_FILE" "$key")"
+  fi
+  printf '%s' "$value"
+}
+
 update_env_files() {
   log_step "Syncing .env and .env.local"
 
@@ -387,11 +398,11 @@ write_agent_config() {
   local convex_url=""
   local admin_key=""
 
-  convex_url="$(get_env_var "$ENV_FILE" "CONVEX_SELF_HOSTED_URL")"
+  convex_url="$(get_env_var_with_local_override "CONVEX_SELF_HOSTED_URL")"
   if [[ -z "$convex_url" ]]; then
-    convex_url="$(get_env_var "$ENV_FILE" "CONVEX_DEPLOYMENT_URL")"
+    convex_url="$(get_env_var_with_local_override "CONVEX_DEPLOYMENT_URL")"
   fi
-  admin_key="$(get_env_var "$ENV_FILE" "CONVEX_SELF_HOSTED_ADMIN_KEY")"
+  admin_key="$(get_env_var_with_local_override "CONVEX_SELF_HOSTED_ADMIN_KEY")"
 
   cat > "$AGENT_CONFIG_FILE" << CFG
 [convex]
@@ -483,7 +494,8 @@ Type=simple
 User=root
 Group=bluetooth
 WorkingDirectory=$PROJECT_DIR
-EnvironmentFile=$ENV_FILE
+EnvironmentFile=-$ENV_FILE
+EnvironmentFile=-$ENV_LOCAL_FILE
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$HOME/.cargo/bin:$HOME/.bun/bin"
 ExecStart=$RUST_BIN_PATH --agent --config $AGENT_CONFIG_FILE
 Restart=always
@@ -506,7 +518,8 @@ Type=simple
 User=$gui_user
 Group=$gui_user
 WorkingDirectory=$RUST_AGENT_DIR
-EnvironmentFile=$ENV_FILE
+EnvironmentFile=-$ENV_FILE
+EnvironmentFile=-$ENV_LOCAL_FILE
 Environment="DISPLAY=:0"
 Environment="XAUTHORITY=$gui_home/.Xauthority"
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$gui_home/.cargo/bin:$gui_home/.bun/bin"

@@ -4,6 +4,7 @@ mod config;
 mod convex_client;
 mod gui_simple;
 mod logging;
+mod presence_loop;
 
 use anyhow::{anyhow, Result};
 use clap::{Arg, Command};
@@ -15,6 +16,7 @@ use crate::bluetooth_agent::start_agent;
 use crate::bluetooth_probe::{CommandRunner, ProcessRunner};
 use crate::config::Config;
 use crate::convex_client::ConvexClient;
+use crate::presence_loop::PresenceLoop;
 use gui_simple::run_gui;
 
 #[tokio::main]
@@ -89,8 +91,32 @@ async fn run_agent(config_path: PathBuf) -> Result<()> {
     );
 
     let runner: Arc<dyn CommandRunner> = Arc::new(ProcessRunner);
-    let convex = Arc::new(ConvexClient::new());
-    let _runtime = start_agent(&config, runner, convex).await?;
+    let convex = Arc::new(ConvexClient::from_config(&config)?);
+    let _runtime = start_agent(&config, runner.clone(), convex.clone()).await?;
+
+    if convex.is_configured() {
+        let mut presence_loop =
+            PresenceLoop::new(config.clone(), convex.clone(), Arc::new(ProcessRunner));
+        tokio::spawn(async move {
+            if let Err(error) = presence_loop.run_forever().await {
+                logging::warn(
+                    "presence_loop",
+                    "run_forever",
+                    None,
+                    Some("error"),
+                    &error.to_string(),
+                );
+            }
+        });
+    } else {
+        logging::warn(
+            "main",
+            "convex_config",
+            None,
+            Some("missing"),
+            "Convex URL is not configured; presence status updates are disabled",
+        );
+    }
 
     println!("Bluetooth agent is running. Press Ctrl+C to stop.");
     signal::ctrl_c().await?;
