@@ -503,76 +503,81 @@ impl PresenceGuiApp {
             _ => egui::Color32::from_rgb(100, 116, 139),
         };
 
-        egui::Frame::none()
-            .fill(egui::Color32::WHITE)
-            .stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(226, 232, 240)))
-            .rounding(rounding)
-            .shadow(egui::epaint::Shadow {
-                offset: egui::vec2(0.0, 2.0),
-                blur: 8.0,
-                spread: 0.0,
-                color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 8),
-            })
-            .show(ui, |ui| {
-                ui.set_min_size(egui::vec2(card_width, card_height));
-                ui.set_max_size(egui::vec2(card_width, card_height));
+        let outer_rect = egui::Rect::from_min_size(
+            ui.cursor().min,
+            egui::vec2(card_width, card_height),
+        );
+        
+        let response = ui.allocate_rect(outer_rect, egui::Sense::hover());
+        
+        ui.painter().rect(
+            outer_rect,
+            rounding,
+            egui::Color32::WHITE,
+            egui::Stroke::new(1.0, egui::Color32::from_rgb(226, 232, 240)),
+        );
+        
+        ui.painter().rect_filled(
+            outer_rect.shrink(0.5),
+            rounding,
+            egui::Color32::WHITE,
+        );
 
-                ui.allocate_ui_with_layout(
-                    egui::vec2(card_width, card_height),
-                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                    |ui| {
-                        ui.vertical_centered(|ui| {
-                            ui.spacing_mut().item_spacing.y = 6.0;
-                            
-                            if show_badge {
-                                egui::Frame::none()
-                                    .fill(accent_color)
-                                    .rounding(rounding * 0.4)
-                                    .inner_margin(egui::vec2(12.0, 5.0))
-                                    .show(ui, |ui| {
-                                        ui.label(
-                                            egui::RichText::new(self.format_check_in_method(&user.check_in_method))
-                                                .size(badge_size)
-                                                .color(egui::Color32::WHITE)
-                                                .strong(),
-                                        );
-                                    });
-                                ui.add_space(8.0);
-                            }
-                            
-                            ui.label(
-                                egui::RichText::new(Self::truncate_text(&display_name, max_name_chars))
-                                    .size(name_size)
-                                    .strong()
-                                    .color(egui::Color32::from_rgb(15, 23, 42)),
-                            );
-                            
-                            if show_email {
-                                ui.add_space(2.0);
-                                ui.label(
-                                    egui::RichText::new(email)
-                                        .size(meta_size)
-                                        .color(egui::Color32::from_rgb(100, 116, 139)),
-                                );
-                            }
-                            
-                            ui.add_space(4.0);
-                            
-                            let time_text = if show_full_time {
-                                format!("Checked in {}", self.format_check_in_time(user.check_in_time))
-                            } else {
-                                self.format_check_in_time(user.check_in_time)
-                            };
-                            
-                            ui.label(
-                                egui::RichText::new(time_text)
-                                    .size(meta_size)
-                                    .color(egui::Color32::from_rgb(148, 163, 184)),
-                            );
-                        });
-                    },
-                );
-            });
+        let center = outer_rect.center();
+        
+        let name_galley = ui.painter().layout_no_wrap(
+            Self::truncate_text(&display_name, max_name_chars),
+            egui::FontId::proportional(name_size),
+            egui::Color32::from_rgb(15, 23, 42),
+        );
+        
+        let time_text = if show_full_time {
+            self.format_check_in_time(user.check_in_time)
+        } else {
+            self.format_check_in_time(user.check_in_time)
+        };
+        
+        let time_galley = ui.painter().layout_no_wrap(
+            time_text,
+            egui::FontId::proportional(meta_size),
+            egui::Color32::from_rgb(148, 163, 184),
+        );
+        
+        let method_indicator_size = 8.0;
+        let spacing = 8.0;
+        
+        let mut total_height = name_galley.size().y + spacing + time_galley.size().y;
+        
+        if show_email && !email.is_empty() {
+            total_height += meta_size + 4.0;
+        }
+        
+        let start_y = center.y - total_height / 2.0;
+        let mut current_y = start_y;
+        
+        let name_pos = egui::pos2(center.x - name_galley.size().x / 2.0, current_y);
+        ui.painter().galley(name_pos, name_galley, egui::Color32::from_rgb(15, 23, 42));
+        current_y += name_size + spacing;
+        
+        if show_email && !email.is_empty() {
+            let email_galley = ui.painter().layout_no_wrap(
+                email.to_string(),
+                egui::FontId::proportional(meta_size),
+                egui::Color32::from_rgb(100, 116, 139),
+            );
+            let email_pos = egui::pos2(center.x - email_galley.size().x / 2.0, current_y);
+            ui.painter().galley(email_pos, email_galley, egui::Color32::from_rgb(100, 116, 139));
+            current_y += meta_size + 4.0;
+        }
+        
+        let time_with_dot_width = method_indicator_size + 6.0 + time_galley.size().x;
+        let time_start_x = center.x - time_with_dot_width / 2.0;
+        
+        let dot_center = egui::pos2(time_start_x + method_indicator_size / 2.0, current_y + time_galley.size().y / 2.0);
+        ui.painter().circle_filled(dot_center, method_indicator_size / 2.0, accent_color);
+        
+        let time_pos = egui::pos2(time_start_x + method_indicator_size + 6.0, current_y);
+        ui.painter().galley(time_pos, time_galley, egui::Color32::from_rgb(148, 163, 184));
     }
 }
 
