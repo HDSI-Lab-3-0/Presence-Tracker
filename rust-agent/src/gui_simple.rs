@@ -513,20 +513,27 @@ impl PresenceGuiApp {
 
         egui::Frame::none()
             .fill(fill_color)
-            .stroke(egui::Stroke::new(1.5, border_color))
+            .stroke(egui::Stroke::new(2.0, border_color))
             .rounding(rounding)
-            .inner_margin(padding)
             .show(ui, |ui| {
-                ui.set_min_size(egui::vec2(card_width - padding * 2.0, card_height - padding * 2.0));
-                ui.centered_and_justified(|ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.spacing_mut().item_spacing.y = padding * 0.25;
+                ui.set_min_size(egui::vec2(card_width, card_height));
+                ui.set_max_size(egui::vec2(card_width, card_height));
+
+                let layout = egui::Layout::top_down(egui::Align::Center)
+                    .with_main_align(egui::Align::Center)
+                    .with_cross_align(egui::Align::Center);
+
+                ui.allocate_ui_with_layout(
+                    egui::vec2(card_width, card_height),
+                    layout,
+                    |ui| {
+                        ui.spacing_mut().item_spacing.y = padding * 0.4;
                         
                         if show_badge {
                             egui::Frame::none()
                                 .fill(accent_color)
-                                .rounding(rounding * 0.4)
-                                .inner_margin(egui::vec2(padding * 0.6, padding * 0.3))
+                                .rounding(rounding * 0.5)
+                                .inner_margin(egui::vec2(padding * 0.8, padding * 0.4))
                                 .show(ui, |ui| {
                                     ui.label(
                                         egui::RichText::new(self.format_check_in_method(&user.check_in_method))
@@ -535,7 +542,7 @@ impl PresenceGuiApp {
                                             .strong(),
                                     );
                                 });
-                            ui.add_space(padding * 0.3);
+                            ui.add_space(padding * 0.5);
                         }
                         
                         ui.label(
@@ -553,7 +560,7 @@ impl PresenceGuiApp {
                             );
                         }
                         
-                        ui.add_space(padding * 0.15);
+                        ui.add_space(padding * 0.2);
                         
                         let time_text = if show_full_time {
                             format!("Checked in {}", self.format_check_in_time(user.check_in_time))
@@ -566,8 +573,8 @@ impl PresenceGuiApp {
                                 .size(meta_size)
                                 .color(egui::Color32::from_rgb(156, 163, 175)),
                         );
-                    });
-                });
+                    },
+                );
             });
     }
 }
@@ -667,7 +674,7 @@ impl eframe::App for PresenceGuiApp {
             let grid_y_spacing = base_spacing;
             
             let (rows, columns) = Self::choose_bento_grid(total_users, window_aspect);
-            let card_width =
+            let default_card_width =
                 ((available_width - grid_x_spacing * (columns.saturating_sub(1)) as f32) / columns as f32)
                     .max(1.0);
             let card_height =
@@ -677,6 +684,14 @@ impl eframe::App for PresenceGuiApp {
             for row in 0..rows {
                 let start = row * columns;
                 let end = (start + columns).min(total_users);
+                let items_in_row = end - start;
+
+                let card_width = if items_in_row > 0 {
+                    ((available_width - grid_x_spacing * (items_in_row.saturating_sub(1)) as f32) / items_in_row as f32)
+                        .max(1.0)
+                } else {
+                    default_card_width
+                };
 
                 ui.horizontal(|ui| {
                     for idx in start..end {

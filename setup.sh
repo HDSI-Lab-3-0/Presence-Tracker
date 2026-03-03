@@ -157,6 +157,20 @@ remove_env_var() {
   sed -i "/^${key}=/d" "$file"
 }
 
+get_env_var() {
+  local file="$1"
+  local key="$2"
+  local line=""
+
+  [[ -f "$file" ]] || { printf ''; return 0; }
+
+  line="$(grep -E "^${key}=" "$file" | tail -1 || true)"
+  line="${line#*=}"
+  line="${line%\"}"
+  line="${line#\"}"
+  printf '%s' "$line"
+}
+
 update_env_files() {
   log_step "Syncing .env and .env.local"
 
@@ -373,11 +387,11 @@ write_agent_config() {
   local convex_url=""
   local admin_key=""
 
-  convex_url="$(grep -E '^CONVEX_SELF_HOSTED_URL=' "$ENV_FILE" | tail -1 | cut -d '=' -f2- | tr -d '"')"
+  convex_url="$(get_env_var "$ENV_FILE" "CONVEX_SELF_HOSTED_URL")"
   if [[ -z "$convex_url" ]]; then
-    convex_url="$(grep -E '^CONVEX_DEPLOYMENT_URL=' "$ENV_FILE" | tail -1 | cut -d '=' -f2- | tr -d '"')"
+    convex_url="$(get_env_var "$ENV_FILE" "CONVEX_DEPLOYMENT_URL")"
   fi
-  admin_key="$(grep -E '^CONVEX_SELF_HOSTED_ADMIN_KEY=' "$ENV_FILE" | tail -1 | cut -d '=' -f2- | tr -d '"')"
+  admin_key="$(get_env_var "$ENV_FILE" "CONVEX_SELF_HOSTED_ADMIN_KEY")"
 
   cat > "$AGENT_CONFIG_FILE" << CFG
 [convex]
