@@ -233,7 +233,7 @@ You can automatically deploy the web dashboard to GitHub Pages using GitHub Acti
 
     | Secret Name | Value | Required |
     |-------------|-------|----------|
-    | `CONVEX_DEPLOYMENT_URL` | Your Convex backend URL (e.g., `https://chatty-akita-508.convex.cloud`) | ✅ Yes |
+    | `CONVEX_DEPLOYMENT_URL` | Your Convex backend URL (e.g., `https://your-convex-deployment.convex.cloud`) | ✅ Yes |
     | `CONVEX_URL_MODE` | `convex` (default) or `selfhosted` | Optional |
     | `CONVEX_SELF_HOSTED_URL` | Self-hosted Convex URL | Only for self-hosted |
     | `ORGANIZATION_NAME` | Your organization name for UI customization (e.g., "My Company") | Optional |
@@ -391,7 +391,7 @@ These variables must be set in your `.env` file for the tracker to run:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `CONVEX_DEPLOYMENT_URL` | Your Convex backend deployment URL (cloud deployment) | `https://chatty-akita-508.convex.cloud` |
+| `CONVEX_DEPLOYMENT_URL` | Your Convex backend deployment URL (cloud deployment) | `https://your-convex-deployment.convex.cloud` |
 
 **Authentication Variables (Set in Convex Dashboard)**
 

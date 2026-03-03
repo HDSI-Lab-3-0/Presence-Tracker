@@ -50,3 +50,7 @@ Thumbs.db
 
 /config
 config/agent.toml
+
+# Generated runtime config
+public/config.js
+public/pwa/config.js

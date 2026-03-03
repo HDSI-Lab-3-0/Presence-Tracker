@@ -35,7 +35,9 @@ pub struct PresenceGuiApp {
 impl PresenceGuiApp {
     pub fn new() -> (Self, mpsc::Receiver<()>) {
         let convex_url = std::env::var("CONVEX_URL")
-            .unwrap_or_else(|_| "https://helpless-badger-925.convex.cloud".to_string());
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default();
+        let missing_convex_url = convex_url.is_empty();
         
         let (tx, rx) = mpsc::channel(100);
         
@@ -46,7 +48,11 @@ impl PresenceGuiApp {
             last_update: Instant::now(),
             update_interval: Duration::from_secs(30),
             loading: false,
-            error_message: None,
+            error_message: if missing_convex_url {
+                Some("CONVEX_URL is not set. Add it to your .env file before launching the GUI.".to_string())
+            } else {
+                None
+            },
             auto_refresh: true,
             status_filter: StatusFilter::All,
             refresh_sender: tx,
@@ -56,6 +62,14 @@ impl PresenceGuiApp {
     }
 
     pub async fn fetch_users(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if self.convex_url.is_empty() {
+            self.error_message = Some(
+                "CONVEX_URL is not set. Add it to your .env file before launching the GUI.".to_string(),
+            );
+            self.loading = false;
+            return Ok(());
+        }
+
         self.loading = true;
         self.error_message = None;
 

@@ -106,20 +106,43 @@ pub struct PresenceGuiApp {
 impl PresenceGuiApp {
     pub fn new() -> Self {
         let convex_url = std::env::var("CONVEX_URL")
-            .unwrap_or_else(|_| "https://greedy-moose-508.convex.cloud".to_string());
+            .map(|value| value.trim().to_string())
+            .unwrap_or_default();
+        let missing_convex_url = convex_url.is_empty();
 
         Self {
             convex_url,
             checked_in_users: Arc::new(Mutex::new(Vec::new())),
             last_update: Arc::new(Mutex::new(Instant::now())),
-            loading: Arc::new(Mutex::new(true)),
-            error_message: Arc::new(Mutex::new(None)),
-            connection_status: Arc::new(Mutex::new("Connecting...".to_string())),
+            loading: Arc::new(Mutex::new(!missing_convex_url)),
+            error_message: Arc::new(Mutex::new(if missing_convex_url {
+                Some(
+                    "CONVEX_URL is not set. Add it to your .env file before launching the GUI."
+                        .to_string(),
+                )
+            } else {
+                None
+            })),
+            connection_status: Arc::new(Mutex::new(if missing_convex_url {
+                "Missing CONVEX_URL".to_string()
+            } else {
+                "Connecting...".to_string()
+            })),
             http_polling_enabled: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub async fn subscribe_to_updates(&self, shutdown_rx: &mut mpsc::Receiver<()>) {
+        if self.convex_url.is_empty() {
+            *self.connection_status.lock().unwrap() = "Missing CONVEX_URL".to_string();
+            *self.error_message.lock().unwrap() = Some(
+                "CONVEX_URL is not set. Add it to your .env file before launching the GUI."
+                    .to_string(),
+            );
+            *self.loading.lock().unwrap() = false;
+            return;
+        }
+
         println!("Attempting to connect to Convex at: {}", self.convex_url);
 
         loop {
