@@ -1,4 +1,4 @@
-use convex::{ConvexClient, FunctionResult, Value};
+use convex::{FunctionResult, Value, ConvexClient};
 use eframe::egui;
 use futures_util::StreamExt;
 use serde::{de, Deserialize, Deserializer, Serialize};
@@ -64,7 +64,10 @@ fn parse_checked_in_users(value: &serde_json::Value) -> Result<Vec<CheckedInUser
         return parse_checked_in_users(inner);
     }
 
-    Err(format!("Unexpected Convex response shape: {}", value))
+    Err(format!(
+        "Unexpected Convex response shape: {}",
+        value
+    ))
 }
 
 fn convex_value_to_json(value: &Value) -> serde_json::Value {
@@ -82,9 +85,7 @@ fn convex_value_to_json(value: &Value) -> serde_json::Value {
                 .map(|b| serde_json::Value::Number(Number::from(*b)))
                 .collect(),
         ),
-        Value::Array(values) => {
-            serde_json::Value::Array(values.iter().map(convex_value_to_json).collect())
-        }
+        Value::Array(values) => serde_json::Value::Array(values.iter().map(convex_value_to_json).collect()),
         Value::Object(map) => serde_json::Value::Object(
             map.iter()
                 .map(|(k, v)| (k.clone(), convex_value_to_json(v)))
@@ -107,7 +108,7 @@ impl PresenceGuiApp {
     pub fn new() -> Self {
         let convex_url = std::env::var("CONVEX_URL")
             .unwrap_or_else(|_| "https://greedy-moose-508.convex.cloud".to_string());
-
+        
         Self {
             convex_url,
             checked_in_users: Arc::new(Mutex::new(Vec::new())),
@@ -169,11 +170,8 @@ impl PresenceGuiApp {
         match ConvexClient::new(&self.convex_url).await {
             Ok(mut client) => {
                 *status_clone.lock().unwrap() = "Subscribing...".to_string();
-
-                match client
-                    .subscribe("devices:getCheckedInUsers", BTreeMap::new())
-                    .await
-                {
+                
+                match client.subscribe("devices:getCheckedInUsers", BTreeMap::new()).await {
                     Ok(mut subscription) => {
                         *status_clone.lock().unwrap() = "Live (WebSocket)".to_string();
                         *loading_clone.lock().unwrap() = false;
@@ -336,10 +334,10 @@ impl PresenceGuiApp {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as i64;
-
+        
         let elapsed_ms = now - timestamp_ms;
         let elapsed_secs = elapsed_ms / 1000;
-
+        
         if elapsed_secs < 60 {
             format!("{}s ago", elapsed_secs)
         } else if elapsed_secs < 3600 {
@@ -473,56 +471,50 @@ impl PresenceGuiApp {
     ) {
         let display_name = Self::display_name(user);
         let email = user.email.as_deref().unwrap_or("").trim();
-
+        
         let card_area = card_width * card_height;
         let min_dimension = card_width.min(card_height);
-
-        let name_size = (min_dimension * 0.13).clamp(10.0, 22.0);
-        let meta_size = (min_dimension * 0.08).clamp(8.0, 13.0);
-        let badge_size = (min_dimension * 0.07).clamp(7.0, 11.0);
-        let padding = (min_dimension * 0.085).clamp(6.0, 18.0);
-        let rounding = (min_dimension * 0.08).clamp(8.0, 16.0);
-
+        
+        let name_size = (min_dimension * 0.12).clamp(9.0, 20.0);
+        let meta_size = (min_dimension * 0.08).clamp(7.0, 12.0);
+        let badge_size = (min_dimension * 0.07).clamp(6.0, 10.0);
+        let padding = (min_dimension * 0.08).clamp(4.0, 14.0);
+        let rounding = (min_dimension * 0.06).clamp(4.0, 10.0);
+        
         let show_email = card_area > 12000.0 && !email.is_empty();
         let show_full_time = card_area > 8000.0;
         let show_badge = min_dimension > 60.0;
-
+        
         let chars_per_line = (card_width / (name_size * 0.5)).floor() as usize;
         let max_name_chars = (chars_per_line * 2).clamp(8, 40);
-
-        let (fill_color, border_color, accent_color, text_color) =
-            match user.check_in_method.as_str() {
-                "app+bluetooth" => (
-                    egui::Color32::from_rgb(235, 245, 255),
-                    egui::Color32::from_rgb(172, 206, 246),
-                    egui::Color32::from_rgb(30, 103, 197),
-                    egui::Color32::from_rgb(15, 29, 48),
-                ),
-                "app" => (
-                    egui::Color32::from_rgb(234, 253, 245),
-                    egui::Color32::from_rgb(161, 238, 206),
-                    egui::Color32::from_rgb(0, 143, 101),
-                    egui::Color32::from_rgb(14, 45, 36),
-                ),
-                "bluetooth" => (
-                    egui::Color32::from_rgb(237, 242, 255),
-                    egui::Color32::from_rgb(187, 200, 248),
-                    egui::Color32::from_rgb(79, 91, 213),
-                    egui::Color32::from_rgb(28, 27, 67),
-                ),
-                _ => (
-                    egui::Color32::from_rgb(249, 250, 251),
-                    egui::Color32::from_rgb(219, 224, 232),
-                    egui::Color32::from_rgb(88, 99, 117),
-                    egui::Color32::from_rgb(29, 37, 51),
-                ),
-            };
+        
+        let (fill_color, border_color, accent_color) = match user.check_in_method.as_str() {
+            "app+bluetooth" => (
+                egui::Color32::from_rgb(237, 245, 255),
+                egui::Color32::from_rgb(191, 219, 254),
+                egui::Color32::from_rgb(59, 130, 246),
+            ),
+            "app" => (
+                egui::Color32::from_rgb(236, 253, 245),
+                egui::Color32::from_rgb(167, 243, 208),
+                egui::Color32::from_rgb(16, 185, 129),
+            ),
+            "bluetooth" => (
+                egui::Color32::from_rgb(238, 242, 255),
+                egui::Color32::from_rgb(199, 210, 254),
+                egui::Color32::from_rgb(99, 102, 241),
+            ),
+            _ => (
+                egui::Color32::from_rgb(249, 250, 251),
+                egui::Color32::from_rgb(229, 231, 235),
+                egui::Color32::from_rgb(107, 114, 128),
+            ),
+        };
 
         egui::Frame::none()
             .fill(fill_color)
-            .stroke(egui::Stroke::new(1.5, border_color))
+            .stroke(egui::Stroke::new(2.0, border_color))
             .rounding(rounding)
-            .inner_margin(egui::vec2(padding, padding))
             .show(ui, |ui| {
                 ui.set_min_size(egui::vec2(card_width, card_height));
                 ui.set_max_size(egui::vec2(card_width, card_height));
@@ -532,14 +524,11 @@ impl PresenceGuiApp {
                     .with_cross_align(egui::Align::Center);
 
                 ui.allocate_ui_with_layout(
-                    egui::vec2(
-                        (card_width - padding * 2.0).max(1.0),
-                        (card_height - padding * 2.0).max(1.0),
-                    ),
+                    egui::vec2(card_width, card_height),
                     layout,
                     |ui| {
-                        ui.spacing_mut().item_spacing = egui::vec2(0.0, padding * 0.45);
-
+                        ui.spacing_mut().item_spacing.y = padding * 0.4;
+                        
                         if show_badge {
                             egui::Frame::none()
                                 .fill(accent_color)
@@ -547,48 +536,42 @@ impl PresenceGuiApp {
                                 .inner_margin(egui::vec2(padding * 0.8, padding * 0.4))
                                 .show(ui, |ui| {
                                     ui.label(
-                                        egui::RichText::new(format!(
-                                            "● {}",
-                                            self.format_check_in_method(&user.check_in_method)
-                                        ))
-                                        .size(badge_size)
-                                        .color(egui::Color32::WHITE)
-                                        .strong(),
+                                        egui::RichText::new(self.format_check_in_method(&user.check_in_method))
+                                            .size(badge_size)
+                                            .color(egui::Color32::WHITE)
+                                            .strong(),
                                     );
                                 });
-                            ui.add_space(padding * 0.3);
+                            ui.add_space(padding * 0.5);
                         }
-
+                        
                         ui.label(
                             egui::RichText::new(Self::truncate_text(&display_name, max_name_chars))
                                 .size(name_size)
                                 .strong()
-                                .color(text_color),
+                                .color(egui::Color32::from_rgb(17, 24, 39)),
                         );
-
+                        
                         if show_email {
                             ui.label(
                                 egui::RichText::new(email)
                                     .size(meta_size)
-                                    .color(text_color.gamma_multiply(0.72)),
+                                    .color(egui::Color32::from_rgb(107, 114, 128)),
                             );
                         }
-
-                        ui.add_space(padding * 0.1);
-
+                        
+                        ui.add_space(padding * 0.2);
+                        
                         let time_text = if show_full_time {
-                            format!(
-                                "Checked in {}",
-                                self.format_check_in_time(user.check_in_time)
-                            )
+                            format!("Checked in {}", self.format_check_in_time(user.check_in_time))
                         } else {
                             self.format_check_in_time(user.check_in_time)
                         };
-
+                        
                         ui.label(
                             egui::RichText::new(time_text)
                                 .size(meta_size)
-                                .color(text_color.gamma_multiply(0.58)),
+                                .color(egui::Color32::from_rgb(156, 163, 175)),
                         );
                     },
                 );
@@ -603,9 +586,7 @@ impl eframe::App for PresenceGuiApp {
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 let checked_in_count = self.checked_in_users.lock().unwrap().len();
-                ui.heading(
-                    egui::RichText::new(format!("Presence ({})", checked_in_count)).size(18.0),
-                );
+                ui.heading(egui::RichText::new(format!("Presence ({})", checked_in_count)).size(18.0));
                 ui.add_space(4.0);
                 if ui.button("Quit").clicked() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -614,8 +595,7 @@ impl eframe::App for PresenceGuiApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let mut http_enabled = self.http_polling_enabled.load(Ordering::Relaxed);
                     if ui.checkbox(&mut http_enabled, "HTTP Polling").changed() {
-                        self.http_polling_enabled
-                            .store(http_enabled, Ordering::Relaxed);
+                        self.http_polling_enabled.store(http_enabled, Ordering::Relaxed);
                         if !http_enabled {
                             let mut status = self.connection_status.lock().unwrap();
                             if *status == "HTTP Polling" {
@@ -627,9 +607,7 @@ impl eframe::App for PresenceGuiApp {
                     let status = self.connection_status.lock().unwrap().clone();
                     ui.colored_label(
                         Self::connection_color(status.as_str()),
-                        egui::RichText::new(format!("● {}", status))
-                            .size(14.0)
-                            .strong(),
+                        egui::RichText::new(format!("● {}", status)).size(14.0).strong(),
                     );
                 });
             });
@@ -643,12 +621,9 @@ impl eframe::App for PresenceGuiApp {
                     ui.label("Loading...");
                 } else {
                     ui.label(
-                        egui::RichText::new(format!(
-                            "Updated {} ago",
-                            self.get_time_since_last_update()
-                        ))
-                        .size(12.0)
-                        .color(egui::Color32::from_rgb(73, 99, 125)),
+                        egui::RichText::new(format!("Updated {} ago", self.get_time_since_last_update()))
+                            .size(12.0)
+                            .color(egui::Color32::from_rgb(73, 99, 125)),
                     );
                 }
             });
@@ -693,27 +668,18 @@ impl eframe::App for PresenceGuiApp {
             let available_width = ui.available_width();
             let available_height = ui.available_height().max(1.0);
             let window_aspect = (available_width / available_height).max(0.1);
-
+            
             let base_spacing = (available_width * 0.012).clamp(8.0, 16.0);
             let grid_x_spacing = base_spacing;
             let grid_y_spacing = base_spacing;
-
+            
             let (rows, columns) = Self::choose_bento_grid(total_users, window_aspect);
-            let default_card_width = ((available_width
-                - grid_x_spacing * (columns.saturating_sub(1)) as f32)
-                / columns as f32)
-                .max(1.0);
-            let card_height = ((available_height
-                - grid_y_spacing * (rows.saturating_sub(1)) as f32)
-                / rows as f32)
-                .max(40.0);
-
-            let used_grid_height =
-                rows as f32 * card_height + grid_y_spacing * rows.saturating_sub(1) as f32;
-            let vertical_offset = ((available_height - used_grid_height) * 0.5).max(0.0);
-            if vertical_offset > 0.0 {
-                ui.add_space(vertical_offset);
-            }
+            let default_card_width =
+                ((available_width - grid_x_spacing * (columns.saturating_sub(1)) as f32) / columns as f32)
+                    .max(1.0);
+            let card_height =
+                ((available_height - grid_y_spacing * (rows.saturating_sub(1)) as f32) / rows as f32)
+                    .max(40.0);
 
             for row in 0..rows {
                 let start = row * columns;
@@ -721,30 +687,25 @@ impl eframe::App for PresenceGuiApp {
                 let items_in_row = end - start;
 
                 let card_width = if items_in_row > 0 {
-                    ((available_width - grid_x_spacing * (items_in_row.saturating_sub(1)) as f32)
-                        / items_in_row as f32)
+                    ((available_width - grid_x_spacing * (items_in_row.saturating_sub(1)) as f32) / items_in_row as f32)
                         .max(1.0)
                 } else {
                     default_card_width
                 };
 
-                let used_row_width = items_in_row as f32 * card_width
-                    + grid_x_spacing * items_in_row.saturating_sub(1) as f32;
-                let horizontal_offset = ((available_width - used_row_width) * 0.5).max(0.0);
-
                 ui.horizontal(|ui| {
-                    if horizontal_offset > 0.0 {
-                        ui.add_space(horizontal_offset);
-                    }
                     for idx in start..end {
                         ui.allocate_ui_with_layout(
                             egui::vec2(card_width, card_height),
-                            egui::Layout::top_down(egui::Align::Center)
-                                .with_main_align(egui::Align::Center)
-                                .with_cross_align(egui::Align::Center),
+                            egui::Layout::top_down(egui::Align::Min),
                             |cell_ui| {
                                 if let Some(user) = sorted_users.get(idx) {
-                                    self.render_bento_card(cell_ui, user, card_width, card_height);
+                                    self.render_bento_card(
+                                        cell_ui,
+                                        user,
+                                        card_width,
+                                        card_height,
+                                    );
                                 }
                             },
                         );
