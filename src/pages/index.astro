@@ -24,7 +24,6 @@ const base = import.meta.env.BASE_URL;
         integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
         crossorigin="" />
 
-    <script is:inline src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <script
         is:inline
         src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
@@ -63,9 +62,6 @@ const base = import.meta.env.BASE_URL;
             <div class="header-actions">
                 <button id="view-logs-btn" class="btn btn-secondary admin-only" onclick="showLogsView()">
                     View Logs
-                </button>
-                <button id="app-qr-btn" class="btn btn-secondary" onclick="openAppQrModal()">
-                    Scan App QR
                 </button>
                 <button class="btn btn-secondary" onclick="logout()">
                     Log Out
@@ -211,23 +207,10 @@ const base = import.meta.env.BASE_URL;
             <div class="settings-tabs">
                 <button class="settings-tab active" data-tab="discord">Discord</button>
                 <button class="settings-tab" data-tab="slack">Slack</button>
-                <button class="settings-tab" data-tab="mobile">Mobile App</button>
+                <button class="settings-tab" data-tab="boundary">Boundary</button>
             </div>
             <div class="modal-body">
                 <div id="integrations-list"></div>
-            </div>
-        </div>
-    </div>
-
-    <div id="app-qr-modal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h3>Scan App QR</h3>
-                <button class="close-btn" onclick="closeAppQrModal()">×</button>
-            </div>
-            <div class="modal-body">
-                <p class="helper-text">Scan this code in the mobile app to import your encoded linking configuration.</p>
-                <div id="app-linking-qr-standalone" class="qr-standalone"></div>
             </div>
         </div>
     </div>

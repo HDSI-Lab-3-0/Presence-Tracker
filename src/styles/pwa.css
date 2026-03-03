@@ -502,6 +502,72 @@ html, body {
     color: var(--text-muted);
 }
 
+.boundary-admin-section {
+    background: var(--bg-card);
+    border-radius: var(--radius-lg);
+    padding: 16px;
+    box-shadow: var(--shadow-sm);
+    margin-bottom: 24px;
+    border: 1px solid var(--border-light);
+}
+
+.boundary-admin-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.boundary-admin-header h3 {
+    font-size: 0.95rem;
+    color: var(--text-main);
+}
+
+.boundary-admin-state {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-secondary);
+}
+
+.boundary-admin-state.enabled {
+    color: var(--success);
+}
+
+.boundary-admin-state.disabled {
+    color: var(--danger);
+}
+
+.boundary-admin-description {
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    line-height: 1.45;
+    margin-bottom: 12px;
+}
+
+.boundary-admin-toggle {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+}
+
+.boundary-admin-toggle input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+}
+
+.boundary-admin-toggle-label {
+    font-size: 0.875rem;
+    color: var(--text-main);
+}
+
+.boundary-admin-save {
+    width: 100%;
+}
+
 /* Logs Section */
 .logs-section {
     background: var(--bg-card);

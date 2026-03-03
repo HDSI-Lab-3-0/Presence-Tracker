@@ -13,24 +13,6 @@ let pendingBoundaryPreviewRefresh = false;
 const BOUNDARY_PREVIEW_ZOOM = 17;
 const BOUNDARY_PREVIEW_REFRESH_DEBOUNCE_MS = 120;
 
-function normalizeConvexBaseUrl(url) {
-  if (typeof url !== "string") return "";
-  return url.replace("/api/query", "").replace("/api/mutation", "").replace(/\/$/, "");
-}
-
-function getConvexHttpBaseUrl() {
-  if (window.CONVEX_AUTH_URL) {
-    return normalizeConvexBaseUrl(window.CONVEX_AUTH_URL);
-  }
-  if (window.CONVEX_URL) {
-    return normalizeConvexBaseUrl(window.CONVEX_URL);
-  }
-  if (window.CONVEX_SITE_URL) {
-    return normalizeConvexBaseUrl(window.CONVEX_SITE_URL);
-  }
-  return "";
-}
-
 const DEFAULT_BOUNDARY_CENTER = { latitude: 32.8807, longitude: -117.2338 };
 
 function toFiniteNumber(value) {
@@ -139,14 +121,14 @@ function setIntegrationCardsVisibility(tabName) {
   document.querySelectorAll(".integration-card").forEach((card) => {
     const isDiscord = card.querySelector("h4")?.textContent === "Discord";
     const isSlack = card.querySelector("h4")?.textContent === "Slack";
-    const isMobile = card.querySelector("h4")?.textContent === "Mobile App Linking";
+    const isBoundary = card.querySelector("h4")?.textContent === "Boundary Controls";
     card.style.display = "none";
     if (resolvedTabName === "discord" && isDiscord) card.style.display = "flex";
     if (resolvedTabName === "slack" && isSlack) card.style.display = "flex";
-    if (resolvedTabName === "mobile" && isMobile) card.style.display = "flex";
+    if (resolvedTabName === "boundary" && isBoundary) card.style.display = "flex";
   });
 
-  if (resolvedTabName === "mobile") queueBoundaryPreviewRefresh();
+  if (resolvedTabName === "boundary") queueBoundaryPreviewRefresh();
 }
 
 function setBoundaryControlsState(isEnabled) {
@@ -362,14 +344,6 @@ function initializeBoundaryPreview() {
   });
 }
 
-function getAppRouteUrl() {
-  return `${getConvexHttpBaseUrl()}/api/change_status`;
-}
-
-function getAppFetchRouteUrl() {
-  return `${getConvexHttpBaseUrl()}/api/fetch`;
-}
-
 window.saveBoundaryConfig = async function () {
   const adminPassword = sessionStorage.getItem("ieee_presence_password");
   if (!adminPassword) {
@@ -450,66 +424,6 @@ window.saveBoundaryConfig = async function () {
   }
 };
 
-function encodeBase64Utf8(value) {
-  const bytes = new TextEncoder().encode(value);
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary);
-}
-
-function buildEncodedLinkingEnvelope() {
-  if (!appLinkingConfig?.apiKey) return null;
-
-  const payload = {
-    apiUrl: getAppRouteUrl(),
-    apiKey: appLinkingConfig.apiKey,
-  };
-
-  return {
-    encoding: "base64-json",
-    version: 1,
-    encodedPayload: encodeBase64Utf8(JSON.stringify(payload)),
-    decodeHint: "Base64 decode encodedPayload, then JSON.parse(decodedString)",
-  };
-}
-
-function renderAppLinkingQr(containerId = "app-linking-qr-container") {
-  const container = document.getElementById(containerId);
-  if (!container) return;
-
-  const encodedEnvelope = buildEncodedLinkingEnvelope();
-  if (!encodedEnvelope) {
-    container.innerHTML = '<p class="integration-muted">Rotate or fetch an API key to generate a QR code.</p>';
-    return;
-  }
-
-  if (typeof QRCode === "undefined") {
-    container.innerHTML = '<p class="integration-error">QRCode library failed to load. Refresh and try again.</p>';
-    return;
-  }
-
-  const qrData = JSON.stringify(encodedEnvelope);
-
-  container.innerHTML = "";
-  const qrNode = document.createElement("div");
-  qrNode.className = "qr-node";
-  container.appendChild(qrNode);
-
-  new QRCode(qrNode, {
-    text: qrData,
-    width: 224,
-    height: 224,
-    correctLevel: QRCode.CorrectLevel.M,
-  });
-
-  const hint = document.createElement("p");
-  hint.className = "integration-muted";
-  hint.textContent = "Scan this with the app to import encoded linking settings.";
-  container.appendChild(hint);
-}
-
 window.openIntegrationsModal = function () {
   const modal = document.getElementById("integrations-modal");
   if (!modal) return;
@@ -547,33 +461,6 @@ async function fetchAppLinkingConfig() {
   appLinkingConfig = await window.convexClient.query("devices:getAppLinkingConfig", {});
   return appLinkingConfig;
 }
-
-window.openAppQrModal = async function () {
-  const modal = document.getElementById("app-qr-modal");
-  if (!modal) return;
-
-  modal.classList.add("active");
-
-  const container = document.getElementById("app-linking-qr-standalone");
-  if (container) {
-    container.innerHTML = '<p class="integration-muted">Loading QR code...</p>';
-  }
-
-  try {
-    await fetchAppLinkingConfig();
-    renderAppLinkingQr("app-linking-qr-standalone");
-  } catch (error) {
-    if (container) {
-      container.innerHTML = '<p class="integration-error">Unable to load QR config right now.</p>';
-    }
-    console.error("Failed to load app linking config", error);
-  }
-};
-
-window.closeAppQrModal = function () {
-  const modal = document.getElementById("app-qr-modal");
-  if (modal) modal.classList.remove("active");
-};
 
 async function fetchIntegrations() {
   const list = document.getElementById("integrations-list");
@@ -696,34 +583,10 @@ function renderIntegrations() {
   const boundaryRadiusUnit = appLinkingConfig?.boundaryRadiusUnit === "miles" ? "miles" : "meters";
   const boundaryEnabled = Boolean(appLinkingConfig?.boundaryEnabled);
 
-  const mobileApiDiv = document.createElement("div");
-  mobileApiDiv.className = "integration-card";
-  mobileApiDiv.innerHTML = `
-    <h4>Mobile App Linking</h4>
-    <div class="form-group">
-      <label>API Route</label>
-      <input type="text" id="app-route" value="${getAppRouteUrl()}" readonly>
-    </div>
-    <div class="form-group">
-      <label>Fetch Route</label>
-      <input type="text" id="app-fetch-route" value="${getAppFetchRouteUrl()}" readonly>
-    </div>
-    <div class="form-group">
-      <label>API Key</label>
-      <input type="text" id="app-api-key" value="${appLinkingConfig?.apiKey || ""}" readonly>
-    </div>
-    <div class="form-group">
-      <label>Key Version</label>
-      <input type="text" id="app-key-version" value="${appLinkingConfig?.keyVersion || 1}" readonly>
-    </div>
-    <div class="form-actions integration-actions-end">
-      <button class="btn btn-secondary" onclick="downloadAppLinkingJson()">Download JSON</button>
-      <button class="btn btn-primary" onclick="rotateAppApiKey()">Rotate Key</button>
-    </div>
-    <div class="form-group integration-top-gap">
-      <label>QR Code</label>
-      <div id="app-linking-qr-container" class="integration-qr-wrapper"></div>
-    </div>
+  const boundaryDiv = document.createElement("div");
+  boundaryDiv.className = "integration-card";
+  boundaryDiv.innerHTML = `
+    <h4>Boundary Controls</h4>
     <div class="form-group boundary-section">
       <label class="boundary-section-label">Location Boundary</label>
       <div class="form-group checkbox-group boundary-checkbox-group">
@@ -767,9 +630,8 @@ function renderIntegrations() {
       </div>
     </div>
   `;
-  list.appendChild(mobileApiDiv);
+  list.appendChild(boundaryDiv);
 
-  renderAppLinkingQr("app-linking-qr-container");
   initializeBoundaryPreview();
   initializeBoundaryToggle();
   initializeIntegrationCheckboxes();
@@ -837,50 +699,6 @@ window.saveSlack = async function () {
   }
 };
 
-window.rotateAppApiKey = async function () {
-  const adminPassword = sessionStorage.getItem("ieee_presence_password");
-  if (!adminPassword) {
-    showToast("Please log in again as admin", "error");
-    return;
-  }
-
-  try {
-    appLinkingConfig = await window.convexClient.mutation("devices:rotateAppApiKey", { adminPassword });
-    renderIntegrations();
-    showToast("App API key rotated", "success");
-  } catch (error) {
-    showToast(`Error rotating app key: ${error.message}`, "error");
-  }
-};
-
-window.downloadAppLinkingJson = function () {
-  if (!appLinkingConfig?.apiKey) {
-    showToast("No API key available yet. Rotate key first.", "error");
-    return;
-  }
-
-  const encodedEnvelope = buildEncodedLinkingEnvelope();
-  if (!encodedEnvelope) {
-    showToast("No API key available yet. Rotate key first.", "error");
-    return;
-  }
-
-  const blob = new Blob([JSON.stringify(encodedEnvelope, null, 2)], { type: "application/json" });
-  const link = document.createElement("a");
-  const url = URL.createObjectURL(blob);
-
-  link.setAttribute("href", url);
-  link.setAttribute("download", `presence-app-linking-encoded-v${appLinkingConfig.keyVersion || 1}.json`);
-  link.style.visibility = "hidden";
-
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-
-  showToast("Encoded linking JSON downloaded", "success");
-};
-
 window.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
 
@@ -888,22 +706,12 @@ window.addEventListener("keydown", (event) => {
   if (integrationsModal?.classList.contains("active")) {
     window.closeIntegrationsModal?.();
   }
-
-  const appQrModal = document.getElementById("app-qr-modal");
-  if (appQrModal?.classList.contains("active")) {
-    window.closeAppQrModal?.();
-  }
 });
 
 window.addEventListener("click", (event) => {
   const integrationsModal = document.getElementById("integrations-modal");
   if (event.target === integrationsModal) {
     window.closeIntegrationsModal?.();
-  }
-
-  const appQrModal = document.getElementById("app-qr-modal");
-  if (event.target === appQrModal) {
-    window.closeAppQrModal?.();
   }
 
   if ((event.target as HTMLElement)?.classList?.contains("settings-tab")) {

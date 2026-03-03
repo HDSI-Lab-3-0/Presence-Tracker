@@ -10,6 +10,7 @@ let currentUser = null;
 let currentDevice = null;
 let currentLocation = null;
 let appConfig = null;
+let canManageBoundary = false;
 let deferredInstallPrompt = null;
 let logEntries = [];
 let logsPage = 1;
@@ -306,6 +307,7 @@ window.signOut = async function () {
 
     currentUser = null;
     currentDevice = null;
+    canManageBoundary = false;
 
     showAuthScreen();
     showToast("Signed out successfully", "success");
@@ -352,6 +354,8 @@ async function showMainScreen() {
 
   updateUserInfo();
   await fetchAppConfig();
+  await refreshBoundaryControlAccess();
+  renderBoundaryAdminSection();
   await refreshAppStatus();
   await requestLocation();
   updateStatus();
@@ -380,6 +384,51 @@ async function fetchAppConfig() {
   } catch (error) {
     console.error("Failed to fetch app config:", error);
   }
+}
+
+async function refreshBoundaryControlAccess() {
+  canManageBoundary = false;
+
+  try {
+    const access = await convexClient.query("devices:getBoundaryControlAccess", {});
+    canManageBoundary = access?.canManageBoundary === true;
+  } catch (error) {
+    console.error("Failed to load boundary access:", error);
+  }
+}
+
+function updateBoundaryAdminLabelState() {
+  const toggle = document.getElementById("boundary-admin-enabled") as HTMLInputElement | null;
+  const state = document.getElementById("boundary-admin-state");
+  const label = document.getElementById("boundary-admin-toggle-label");
+
+  if (!toggle) return;
+  const isEnabled = toggle.checked;
+
+  if (state) {
+    state.textContent = isEnabled ? "Enabled" : "Disabled";
+    state.className = `boundary-admin-state ${isEnabled ? "enabled" : "disabled"}`;
+  }
+
+  if (label) {
+    label.textContent = isEnabled ? "Boundary enabled" : "Boundary disabled";
+  }
+}
+
+function renderBoundaryAdminSection() {
+  const section = document.getElementById("boundary-admin-section");
+  const toggle = document.getElementById("boundary-admin-enabled") as HTMLInputElement | null;
+
+  if (!section || !toggle) return;
+
+  if (!canManageBoundary) {
+    section.classList.add("pwa-hidden");
+    return;
+  }
+
+  section.classList.remove("pwa-hidden");
+  toggle.checked = appConfig?.boundaryEnabled === true;
+  updateBoundaryAdminLabelState();
 }
 
 async function refreshAppStatus() {
@@ -416,6 +465,7 @@ async function refreshAppStatus() {
         boundaryRadius: status.boundaryRadius,
         boundaryRadiusUnit: status.boundaryRadiusUnit,
       };
+      renderBoundaryAdminSection();
       updateStatus();
     }
   } catch (error) {
@@ -584,6 +634,42 @@ window.toggleClockStatus = async function () {
   } finally {
     hideLoading();
     updateStatus();
+  }
+};
+
+window.saveBoundaryToggle = async function () {
+  if (!canManageBoundary) {
+    showToast("Admin email access required", "error");
+    return;
+  }
+
+  const toggle = document.getElementById("boundary-admin-enabled") as HTMLInputElement | null;
+  if (!toggle) {
+    showToast("Boundary toggle is unavailable", "error");
+    return;
+  }
+
+  showLoading("Saving boundary setting...");
+  try {
+    const nextEnabled = toggle.checked;
+    const updated = await convexClient.mutation("devices:setBoundaryEnabledForAuthenticatedAdmin", {
+      boundaryEnabled: nextEnabled,
+    });
+
+    appConfig = {
+      ...appConfig,
+      ...updated,
+    };
+    renderBoundaryAdminSection();
+    await requestLocation();
+    updateStatus();
+    showToast(nextEnabled ? "Boundary enabled" : "Boundary disabled", "success");
+  } catch (error) {
+    console.error("Failed to save boundary setting:", error);
+    showToast(error.message || "Failed to save boundary setting", "error");
+    renderBoundaryAdminSection();
+  } finally {
+    hideLoading();
   }
 };
 
@@ -840,4 +926,6 @@ function updateLogsCollapseUI() {
 document.addEventListener("DOMContentLoaded", async () => {
   await init();
   updateLogsCollapseUI();
+  const boundaryToggleInput = document.getElementById("boundary-admin-enabled");
+  boundaryToggleInput?.addEventListener("change", updateBoundaryAdminLabelState);
 });

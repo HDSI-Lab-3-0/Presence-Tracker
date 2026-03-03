@@ -33,28 +33,13 @@ declare global {
     closeIntegrationsModal?: () => void;
     saveDiscord?: () => Promise<void>;
     saveSlack?: () => Promise<void>;
-    rotateAppApiKey?: () => Promise<void>;
     saveBoundaryConfig?: () => Promise<void>;
-    downloadAppLinkingJson?: () => void;
-    openAppQrModal?: () => Promise<void>;
-    closeAppQrModal?: () => void;
+    saveBoundaryToggle?: () => Promise<void>;
 
     installPWA?: () => Promise<void>;
     signInWithGoogle?: () => Promise<void>;
     signOut?: () => Promise<void>;
     toggleClockStatus?: () => Promise<void>;
   }
-
-  interface QRCodeCtor {
-    new (el: HTMLElement, options: any): void;
-    CorrectLevel: {
-      L: number;
-      M: number;
-      Q: number;
-      H: number;
-    };
-  }
-
-  var QRCode: QRCodeCtor;
   var L: any;
 }

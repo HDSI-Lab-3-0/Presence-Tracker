@@ -145,10 +145,6 @@
     color: var(--text-secondary);
   }
 
-  .qr-standalone {
-    @apply flex min-h-[280px] flex-col items-center justify-center;
-  }
-
   .integration-muted {
     @apply mt-2 text-sm;
     color: #666;
@@ -159,21 +155,12 @@
     color: #a94442;
   }
 
-  .qr-node {
-    @apply h-60 w-60 rounded-lg border bg-white p-2;
-    border-color: #ddd;
-  }
-
   .integration-actions-end {
     @apply justify-end gap-2;
   }
 
   .integration-top-gap {
     @apply mt-4;
-  }
-
-  .integration-qr-wrapper {
-    @apply flex flex-col items-start;
   }
 
   .boundary-section-label {

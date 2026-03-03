@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import { action, mutation, query, internalMutation } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
+import { authComponent } from "./betterAuth";
 
 const GRACE_PERIOD_SECONDS = 300;
 const DEVICE_EXPIRATION_MS = GRACE_PERIOD_SECONDS * 1000;
@@ -20,12 +21,29 @@ const isValidUcsdEmail = (email: string) => {
   return normalized.endsWith(UCSD_EMAIL_DOMAIN) && normalized.length > UCSD_EMAIL_DOMAIN.length;
 };
 
+const normalizeEmail = (email?: string | null) => {
+  if (typeof email !== "string") return "";
+  return email.trim().toLowerCase();
+};
+
+const isAdminEmailMatch = (email?: string | null) => {
+  // @ts-ignore - process.env is available in Convex functions
+  const adminEmail = normalizeEmail(process.env.ADMIN_EMAIL);
+  const currentEmail = normalizeEmail(email);
+  return Boolean(adminEmail) && Boolean(currentEmail) && adminEmail === currentEmail;
+};
+
 const requireAdmin = (adminPassword: string) => {
   // @ts-ignore - process.env is available in Convex functions
   const expected = process.env.ADMIN_PASSWORD;
   if (!expected || adminPassword !== expected) {
     throw new Error("Admin access required");
   }
+};
+
+const hasBoundaryAdminAccess = async (ctx: any) => {
+  const authUser = await authComponent.getAuthUser(ctx);
+  return isAdminEmailMatch(authUser?.email);
 };
 
 const randomKey = (length: number) => {
@@ -691,6 +709,16 @@ export const getAppLinkingConfig = query({
   },
 });
 
+export const getBoundaryControlAccess = query({
+  args: {},
+  handler: async (ctx) => {
+    const canManageBoundary = await hasBoundaryAdminAccess(ctx);
+    return {
+      canManageBoundary,
+    };
+  },
+});
+
 export const saveAppBoundaryConfig = mutation({
   args: {
     adminPassword: v.string(),
@@ -729,6 +757,27 @@ export const saveAppBoundaryConfig = mutation({
       boundaryLongitude: hasLongitude ? args.boundaryLongitude : undefined,
       boundaryRadius: args.boundaryRadius,
       boundaryRadiusUnit: args.boundaryRadiusUnit,
+    });
+
+    const updated = await ctx.db.get(appConfig._id);
+    return buildAppConfigResponse(updated);
+  },
+});
+
+export const setBoundaryEnabledForAuthenticatedAdmin = mutation({
+  args: {
+    boundaryEnabled: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    const canManageBoundary = await hasBoundaryAdminAccess(ctx);
+    if (!canManageBoundary) {
+      throw new Error("Admin email required");
+    }
+
+    const appConfig = await getOrCreateAppConfig(ctx);
+
+    await ctx.db.patch(appConfig._id, {
+      boundaryEnabled: args.boundaryEnabled,
     });
 
     const updated = await ctx.db.get(appConfig._id);

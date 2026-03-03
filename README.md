@@ -433,8 +433,9 @@ Request requirements:
 
 Notes:
 
-- API key can be rotated from **Settings → Mobile App Linking** by admins.
-- Linking JSON exports `apiUrl` and `apiKey` only (no email).
+- API key is managed internally by the app configuration.
+- Boundary settings are available in **Settings → Boundary**.
+- Set `ADMIN_EMAIL` to allow that signed-in PWA user to toggle boundary enforcement.
 - If app check-out is missed, Bluetooth absence will still clear app status.
 
 ### Optional Variables
@@ -446,6 +447,7 @@ These have sensible defaults and only need to be changed if you want to customiz
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `ADMIN_PASSWORD` | Admin password - provides full access to all features | Not set (user-only access) |
+| `ADMIN_EMAIL` | Signed-in PWA email allowed to enable/disable boundary enforcement | Not set |
 
 #### Convex Configuration
 

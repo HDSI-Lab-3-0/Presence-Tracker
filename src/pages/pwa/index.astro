@@ -124,6 +124,23 @@ const pwaBasePath = `${basePath}pwa/`;
                     <p class="action-hint" id="action-hint"></p>
                 </div>
 
+                <div class="boundary-admin-section pwa-hidden" id="boundary-admin-section">
+                    <div class="boundary-admin-header">
+                        <h3>Boundary Controls</h3>
+                        <span class="boundary-admin-state" id="boundary-admin-state">--</span>
+                    </div>
+                    <p class="boundary-admin-description">
+                        Toggle location boundary enforcement for all PWA check-ins.
+                    </p>
+                    <label class="boundary-admin-toggle" for="boundary-admin-enabled">
+                        <input type="checkbox" id="boundary-admin-enabled">
+                        <span class="boundary-admin-toggle-label" id="boundary-admin-toggle-label">Boundary disabled</span>
+                    </label>
+                    <button class="btn btn-secondary btn-small boundary-admin-save" onclick="saveBoundaryToggle()">
+                        Save Boundary Setting
+                    </button>
+                </div>
+
                 <div class="logs-section">
                     <button class="logs-toggle" id="logs-toggle" onclick="toggleLogsCollapse()" aria-expanded="false">
                         <span id="logs-toggle-text">Show recent activity</span>
