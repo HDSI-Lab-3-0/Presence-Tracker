@@ -212,11 +212,11 @@ const fn default_l2ping_count() -> u32 {
 }
 
 const fn default_connect_probe_timeout_seconds() -> u64 {
-    3
+    2
 }
 
 const fn default_command_timeout_seconds() -> u64 {
-    10
+    5
 }
 
 fn default_log_file() -> PathBuf {

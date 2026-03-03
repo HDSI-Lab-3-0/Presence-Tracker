@@ -10,8 +10,8 @@ grace_period_seconds = 300
 [bluetooth]
 l2ping_timeout_seconds = 2
 l2ping_count = 1
-connect_probe_timeout_seconds = 3
-command_timeout_seconds = 10
+connect_probe_timeout_seconds = 2
+command_timeout_seconds = 5
 audio_block_uuids = [
   "00001108-0000-1000-8000-00805f9b34fb",
   "0000110a-0000-1000-8000-00805f9b34fb",

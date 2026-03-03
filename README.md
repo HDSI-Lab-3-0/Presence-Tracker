@@ -489,7 +489,7 @@ These have sensible defaults and only need to be changed if you want to customiz
 |----------|-------------|---------|
 | `L2PING_TIMEOUT_SECONDS` | Timeout for l2ping device detection | `1` |
 | `L2PING_COUNT` | Number of pings per device in each cycle | `1` |
-| `CONNECT_TIMEOUT_SECONDS` | Max wait time for bluetoothctl connect attempts | `10` |
+| `CONNECT_TIMEOUT_SECONDS` | Max wait time for bluetoothctl connect attempts | `5` |
 | `DEVICE_INFO_CACHE_SECONDS` | Cache TTL for bluetoothctl info calls | `5` |
 | `ADAPTER_WATCHDOG_INTERVAL_SECONDS` | Interval for checking adapter health (0 = disabled) | `60` |
 | `ADAPTER_RECOVERY_BACKOFF_SECONDS` | Backoff time between adapter recovery attempts | `5` |
@@ -549,7 +549,7 @@ DISCONNECT_CONNECTED_AFTER_CYCLE=true
 # Optional - Bluetooth (defaults shown)
 L2PING_TIMEOUT_SECONDS=1
 L2PING_COUNT=1
-CONNECT_TIMEOUT_SECONDS=10
+CONNECT_TIMEOUT_SECONDS=5
 DEVICE_INFO_CACHE_SECONDS=5
 ADAPTER_WATCHDOG_INTERVAL_SECONDS=60
 ADAPTER_RECOVERY_BACKOFF_SECONDS=5
