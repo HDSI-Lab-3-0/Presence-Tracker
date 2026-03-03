@@ -222,12 +222,13 @@ pub fn probe_device(
     connect_probe_timeout_seconds: u64,
     command_timeout_seconds: u64,
 ) -> bool {
-    let l2_ok = l2ping_device(runner, mac, l2ping_count, l2ping_timeout_seconds);
-    let present = if l2_ok {
-        true
-    } else {
-        connect_probe(runner, mac, connect_probe_timeout_seconds)
-    };
-    let _ = disconnect_device(runner, mac, command_timeout_seconds);
-    present
+    if l2ping_device(runner, mac, l2ping_count, l2ping_timeout_seconds) {
+        return true;
+    }
+
+    let connected = connect_probe(runner, mac, connect_probe_timeout_seconds);
+    if connected {
+        let _ = disconnect_device(runner, mac, command_timeout_seconds);
+    }
+    connected
 }
