@@ -510,8 +510,8 @@ UNIT
   sudo tee /etc/systemd/system/presence-tracker-gui.service >/dev/null << UNIT
 [Unit]
 Description=Presence Tracker GUI
-After=network-online.target display-manager.service graphical.target
-Wants=network-online.target display-manager.service graphical.target
+After=display-manager.service graphical.target
+Wants=display-manager.service graphical.target
 
 [Service]
 Type=simple
@@ -523,6 +523,7 @@ EnvironmentFile=-$ENV_LOCAL_FILE
 Environment="DISPLAY=:0"
 Environment="XAUTHORITY=$gui_home/.Xauthority"
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$gui_home/.cargo/bin:$gui_home/.bun/bin"
+ExecStartPre=/bin/bash -lc 'for i in {1..90}; do [[ -S /tmp/.X11-unix/X0 && -f $gui_home/.Xauthority ]] && exit 0; sleep 2; done; exit 1'
 ExecStart=$RUST_BIN_PATH --gui
 Restart=always
 RestartSec=5
@@ -530,7 +531,7 @@ StandardOutput=journal
 StandardError=journal
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=graphical.target
 UNIT
 
   sudo tee /etc/systemd/system/bluetooth-discoverable.service >/dev/null << UNIT
