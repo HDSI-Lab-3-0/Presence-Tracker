@@ -858,10 +858,13 @@ impl eframe::App for PresenceGuiApp {
 pub async fn run_gui() -> Result<(), eframe::Error> {
     dotenvy::dotenv().ok();
 
+    // Fit small Raspberry Pi panels (e.g. 1024x600) with desktop chrome/panels.
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([640.0, 480.0])
+            .with_inner_size([1000.0, 560.0])
+            .with_min_inner_size([800.0, 480.0])
+            .with_max_inner_size([1024.0, 600.0])
+            .with_maximized(true)
             .with_title("Presence Tracker")
             .with_decorations(true),
         ..Default::default()
