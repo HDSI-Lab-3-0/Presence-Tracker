@@ -41,9 +41,21 @@ const requireAdmin = (adminPassword: string) => {
   }
 };
 
-const hasBoundaryAdminAccess = async (ctx: any) => {
+const resolveBoundaryAdminEmailCandidate = async (ctx: any, claimedEmail?: string | null) => {
   const authUser = await authComponent.getAuthUser(ctx);
-  return isAdminEmailMatch(authUser?.email);
+  const authenticatedEmail = normalizeEmail(authUser?.email);
+  const requestedEmail = normalizeEmail(claimedEmail);
+
+  if (authenticatedEmail && requestedEmail && authenticatedEmail !== requestedEmail) {
+    throw new Error("Authenticated email does not match request");
+  }
+
+  return authenticatedEmail || requestedEmail;
+};
+
+const hasBoundaryAdminAccess = async (ctx: any, claimedEmail?: string | null) => {
+  const emailCandidate = await resolveBoundaryAdminEmailCandidate(ctx, claimedEmail);
+  return isAdminEmailMatch(emailCandidate);
 };
 
 const randomKey = (length: number) => {
@@ -710,9 +722,16 @@ export const getAppLinkingConfig = query({
 });
 
 export const getBoundaryControlAccess = query({
-  args: {},
-  handler: async (ctx) => {
-    const canManageBoundary = await hasBoundaryAdminAccess(ctx);
+  args: {
+    email: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    let canManageBoundary = false;
+    try {
+      canManageBoundary = await hasBoundaryAdminAccess(ctx, args.email);
+    } catch {
+      canManageBoundary = false;
+    }
     return {
       canManageBoundary,
     };
@@ -767,9 +786,10 @@ export const saveAppBoundaryConfig = mutation({
 export const setBoundaryEnabledForAuthenticatedAdmin = mutation({
   args: {
     boundaryEnabled: v.boolean(),
+    email: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const canManageBoundary = await hasBoundaryAdminAccess(ctx);
+    const canManageBoundary = await hasBoundaryAdminAccess(ctx, args.email);
     if (!canManageBoundary) {
       throw new Error("Admin email required");
     }

@@ -390,7 +390,9 @@ async function refreshBoundaryControlAccess() {
   canManageBoundary = false;
 
   try {
-    const access = await convexClient.query("devices:getBoundaryControlAccess", {});
+    const access = await convexClient.query("devices:getBoundaryControlAccess", {
+      email: currentUser?.email,
+    });
     canManageBoundary = access?.canManageBoundary === true;
   } catch (error) {
     console.error("Failed to load boundary access:", error);
@@ -654,6 +656,7 @@ window.saveBoundaryToggle = async function () {
     const nextEnabled = toggle.checked;
     const updated = await convexClient.mutation("devices:setBoundaryEnabledForAuthenticatedAdmin", {
       boundaryEnabled: nextEnabled,
+      email: currentUser?.email,
     });
 
     appConfig = {
