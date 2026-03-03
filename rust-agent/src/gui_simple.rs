@@ -894,7 +894,6 @@ pub async fn run_gui() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([960.0, 540.0])
-            .with_min_inner_size([640.0, 360.0])
             .with_title("Presence Tracker")
             .with_decorations(true),
         ..Default::default()
