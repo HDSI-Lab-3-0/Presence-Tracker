@@ -58,7 +58,29 @@ async function fetchLogs() {
 
   try {
     const adminPassword = sessionStorage.getItem("ieee_presence_password") || "";
-    allLogs = await window.convexClient.query("devices:getAttendanceLogs", { adminPassword });
+    let fetchedLogs = [];
+
+    try {
+      fetchedLogs = await window.convexClient.query("devices:getAttendanceLogs", { adminPassword });
+    } catch (error) {
+      console.warn("devices:getAttendanceLogs failed, falling back to logs:getAllStatusLogs", error);
+    }
+
+    if (!Array.isArray(fetchedLogs) || fetchedLogs.length === 0) {
+      const statusLogs = await window.convexClient.query("logs:getAllStatusLogs", { adminPassword });
+      fetchedLogs = Array.isArray(statusLogs)
+        ? statusLogs
+          .filter((log) => log && log.timestamp)
+          .map((log) => ({
+            userName: log.personName || "Unknown",
+            deviceId: String(log.deviceId || ""),
+            status: log.status === "present" ? "present" : "absent",
+            timestamp: Number(log.timestamp),
+          }))
+        : [];
+    }
+
+    allLogs = fetchedLogs;
     populatePersonSelect();
     renderCurrentView();
   } catch (error) {

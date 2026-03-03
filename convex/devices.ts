@@ -319,6 +319,21 @@ export const updateDeviceStatus = mutation({
           details: `Status changed from ${existingDevice.status} to ${args.status}`
         });
       }
+
+      // Keep attendanceLogs populated for the admin logs frontend view.
+      if (!existingDevice.pendingRegistration) {
+        const userName = existingDevice.firstName && existingDevice.lastName
+          ? `${existingDevice.firstName} ${existingDevice.lastName}`
+          : (existingDevice.name || existingDevice.macAddress);
+
+        await ctx.db.insert("attendanceLogs", {
+          userId: existingDevice.macAddress,
+          userName,
+          status: args.status,
+          timestamp: now,
+          deviceId: existingDevice._id,
+        });
+      }
     }
 
     await ctx.db.patch(existingDevice._id, {
