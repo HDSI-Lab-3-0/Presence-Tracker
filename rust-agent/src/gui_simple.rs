@@ -123,19 +123,13 @@ impl PresenceGuiApp {
         println!("Attempting to connect to Convex at: {}", self.convex_url);
 
         loop {
-            // Try WebSocket subscription first with timeout
-            let websocket_future = self.try_websocket_subscription(shutdown_rx);
-            match tokio::time::timeout(Duration::from_secs(10), websocket_future).await {
-                Ok(result) => {
-                    if result {
-                        return;
-                    }
-                    println!("WebSocket subscription failed or returned false");
-                }
-                Err(_) => {
-                    println!("WebSocket connection timed out after 10 seconds");
-                }
+            // Keep the websocket subscription alive for as long as it is healthy.
+            // A subscription stream is long-lived by design, so timing out this future
+            // would cancel live updates even when the connection is working.
+            if self.try_websocket_subscription(shutdown_rx).await {
+                return;
             }
+            println!("WebSocket subscription failed or returned false");
 
             if self.http_polling_enabled.load(Ordering::Relaxed) {
                 println!("HTTP polling enabled; falling back to polling mode...");
