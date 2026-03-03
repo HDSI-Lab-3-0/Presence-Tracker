@@ -401,20 +401,20 @@ impl PresenceGuiApp {
 
     fn method_color(method: &str) -> egui::Color32 {
         match method {
-            "app+bluetooth" => egui::Color32::from_rgb(26, 95, 180),
-            "app" => egui::Color32::from_rgb(54, 120, 45),
-            "bluetooth" => egui::Color32::from_rgb(0, 100, 180),
-            _ => egui::Color32::from_gray(80),
+            "app+bluetooth" => egui::Color32::from_rgb(37, 99, 235),
+            "app" => egui::Color32::from_rgb(22, 163, 74),
+            "bluetooth" => egui::Color32::from_rgb(79, 70, 229),
+            _ => egui::Color32::from_rgb(100, 116, 139),
         }
     }
 
     fn connection_color(status: &str) -> egui::Color32 {
         match status {
-            "Live (WebSocket)" => egui::Color32::from_rgb(28, 132, 64),
-            "HTTP Polling" => egui::Color32::from_rgb(21, 102, 192),
-            "WebSocket only (polling off)" => egui::Color32::from_rgb(95, 95, 95),
-            "Connecting..." | "Subscribing..." => egui::Color32::from_rgb(171, 119, 0),
-            _ => egui::Color32::from_rgb(168, 42, 50),
+            "Live (WebSocket)" => egui::Color32::from_rgb(22, 163, 74),
+            "HTTP Polling" => egui::Color32::from_rgb(37, 99, 235),
+            "WebSocket only (polling off)" => egui::Color32::from_rgb(100, 116, 139),
+            "Connecting..." | "Subscribing..." => egui::Color32::from_rgb(245, 158, 11),
+            _ => egui::Color32::from_rgb(220, 38, 38),
         }
     }
 
@@ -442,13 +442,22 @@ impl PresenceGuiApp {
         if count == 1 {
             return (1, 1);
         }
+        if count == 2 {
+            return if window_aspect > 1.2 { (1, 2) } else { (2, 1) };
+        }
+        if count == 3 {
+            return if window_aspect > 1.5 { (1, 3) } else { (2, 2) };
+        }
+        if count == 4 {
+            return (2, 2);
+        }
 
         let mut best_rows = 1usize;
         let mut best_cols = count;
         let mut best_score = f32::INFINITY;
-        let target_card_aspect = 1.5f32;
+        let target_card_aspect = 1.4f32;
 
-        for cols in 1..=count {
+        for cols in 1..=count.min(6) {
             let rows = (count as f32 / cols as f32).ceil() as usize;
             let tile_aspect = window_aspect * (rows as f32 / cols as f32);
             let score = (tile_aspect / target_card_aspect).ln().abs();
@@ -471,111 +480,96 @@ impl PresenceGuiApp {
     ) {
         let display_name = Self::display_name(user);
         let email = user.email.as_deref().unwrap_or("").trim();
-
-        let min_dim = card_width.min(card_height);
+        
         let card_area = card_width * card_height;
-
-        let name_size = (min_dim * 0.14).clamp(12.0, 26.0);
-        let meta_size = (min_dim * 0.09).clamp(9.0, 14.0);
-        let badge_size = (min_dim * 0.07).clamp(8.0, 11.0);
-        let rounding = (min_dim * 0.08).clamp(8.0, 16.0);
-        let inner_pad = (min_dim * 0.06).clamp(6.0, 16.0);
-
-        let show_email = card_area > 18000.0 && !email.is_empty();
+        let min_dimension = card_width.min(card_height);
+        
+        let name_size = (min_dimension * 0.14).clamp(14.0, 28.0);
+        let meta_size = (min_dimension * 0.09).clamp(10.0, 14.0);
+        let badge_size = (min_dimension * 0.08).clamp(9.0, 12.0);
+        let rounding = (min_dimension * 0.08).clamp(12.0, 24.0);
+        
+        let show_email = card_area > 15000.0 && !email.is_empty();
         let show_full_time = card_area > 10000.0;
-        let show_badge = min_dim > 70.0;
-
+        let show_badge = min_dimension > 80.0;
+        
         let chars_per_line = (card_width / (name_size * 0.55)).floor() as usize;
         let max_name_chars = (chars_per_line * 2).clamp(10, 50);
-
-        let (card_bg, accent, glow) = match user.check_in_method.as_str() {
-            "app+bluetooth" => (
-                egui::Color32::from_rgb(30, 35, 55),
-                egui::Color32::from_rgb(99, 102, 241),
-                egui::Color32::from_rgba_unmultiplied(99, 102, 241, 25),
-            ),
-            "app" => (
-                egui::Color32::from_rgb(28, 40, 35),
-                egui::Color32::from_rgb(52, 211, 153),
-                egui::Color32::from_rgba_unmultiplied(52, 211, 153, 25),
-            ),
-            "bluetooth" => (
-                egui::Color32::from_rgb(30, 38, 50),
-                egui::Color32::from_rgb(56, 189, 248),
-                egui::Color32::from_rgba_unmultiplied(56, 189, 248, 25),
-            ),
-            _ => (
-                egui::Color32::from_rgb(35, 35, 42),
-                egui::Color32::from_rgb(120, 120, 140),
-                egui::Color32::from_rgba_unmultiplied(120, 120, 140, 20),
-            ),
+        
+        let accent_color = match user.check_in_method.as_str() {
+            "app+bluetooth" => egui::Color32::from_rgb(37, 99, 235),
+            "app" => egui::Color32::from_rgb(22, 163, 74),
+            "bluetooth" => egui::Color32::from_rgb(79, 70, 229),
+            _ => egui::Color32::from_rgb(100, 116, 139),
         };
 
         egui::Frame::none()
-            .fill(card_bg)
-            .stroke(egui::Stroke::new(1.5, glow))
+            .fill(egui::Color32::WHITE)
+            .stroke(egui::Stroke::new(1.5, egui::Color32::from_rgb(226, 232, 240)))
             .rounding(rounding)
             .shadow(egui::epaint::Shadow {
-                offset: egui::vec2(0.0, 4.0),
-                blur: 12.0,
+                offset: egui::vec2(0.0, 2.0),
+                blur: 8.0,
                 spread: 0.0,
-                color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 60),
+                color: egui::Color32::from_rgba_unmultiplied(0, 0, 0, 8),
             })
-            .inner_margin(egui::Margin::same(inner_pad))
             .show(ui, |ui| {
-                ui.set_min_size(egui::vec2(card_width - inner_pad * 2.0, card_height - inner_pad * 2.0));
-                ui.set_max_size(egui::vec2(card_width - inner_pad * 2.0, card_height - inner_pad * 2.0));
+                ui.set_min_size(egui::vec2(card_width, card_height));
+                ui.set_max_size(egui::vec2(card_width, card_height));
 
                 ui.allocate_ui_with_layout(
-                    egui::vec2(card_width - inner_pad * 2.0, card_height - inner_pad * 2.0),
-                    egui::Layout::top_down(egui::Align::Center).with_main_align(egui::Align::Center),
+                    egui::vec2(card_width, card_height),
+                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
                     |ui| {
-                        ui.spacing_mut().item_spacing.y = 6.0;
-
-                        if show_badge {
-                            egui::Frame::none()
-                                .fill(accent.linear_multiply(0.2))
-                                .rounding(rounding * 0.4)
-                                .inner_margin(egui::vec2(10.0, 4.0))
-                                .show(ui, |ui| {
-                                    ui.label(
-                                        egui::RichText::new(self.format_check_in_method(&user.check_in_method).to_uppercase())
-                                            .size(badge_size)
-                                            .color(accent)
-                                            .strong(),
-                                    );
-                                });
-                            ui.add_space(4.0);
-                        }
-
-                        ui.label(
-                            egui::RichText::new(Self::truncate_text(&display_name, max_name_chars))
-                                .size(name_size)
-                                .strong()
-                                .color(egui::Color32::from_rgb(245, 245, 250)),
-                        );
-
-                        if show_email {
+                        ui.vertical_centered(|ui| {
+                            ui.spacing_mut().item_spacing.y = 6.0;
+                            
+                            if show_badge {
+                                egui::Frame::none()
+                                    .fill(accent_color)
+                                    .rounding(rounding * 0.4)
+                                    .inner_margin(egui::vec2(12.0, 5.0))
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            egui::RichText::new(self.format_check_in_method(&user.check_in_method))
+                                                .size(badge_size)
+                                                .color(egui::Color32::WHITE)
+                                                .strong(),
+                                        );
+                                    });
+                                ui.add_space(8.0);
+                            }
+                            
                             ui.label(
-                                egui::RichText::new(email)
-                                    .size(meta_size)
-                                    .color(egui::Color32::from_rgb(140, 140, 160)),
+                                egui::RichText::new(Self::truncate_text(&display_name, max_name_chars))
+                                    .size(name_size)
+                                    .strong()
+                                    .color(egui::Color32::from_rgb(15, 23, 42)),
                             );
-                        }
-
-                        ui.add_space(2.0);
-
-                        let time_text = if show_full_time {
-                            format!("Checked in {}", self.format_check_in_time(user.check_in_time))
-                        } else {
-                            self.format_check_in_time(user.check_in_time)
-                        };
-
-                        ui.label(
-                            egui::RichText::new(time_text)
-                                .size(meta_size)
-                                .color(egui::Color32::from_rgb(100, 100, 120)),
-                        );
+                            
+                            if show_email {
+                                ui.add_space(2.0);
+                                ui.label(
+                                    egui::RichText::new(email)
+                                        .size(meta_size)
+                                        .color(egui::Color32::from_rgb(100, 116, 139)),
+                                );
+                            }
+                            
+                            ui.add_space(4.0);
+                            
+                            let time_text = if show_full_time {
+                                format!("Checked in {}", self.format_check_in_time(user.check_in_time))
+                            } else {
+                                self.format_check_in_time(user.check_in_time)
+                            };
+                            
+                            ui.label(
+                                egui::RichText::new(time_text)
+                                    .size(meta_size)
+                                    .color(egui::Color32::from_rgb(148, 163, 184)),
+                            );
+                        });
                     },
                 );
             });
@@ -586,61 +580,62 @@ impl eframe::App for PresenceGuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint();
 
-        let bg_color = egui::Color32::from_rgb(15, 15, 20);
-        let panel_bg = egui::Color32::from_rgb(22, 22, 30);
+        let outer_padding = 24.0;
+        let grid_gap = 16.0;
 
-        egui::TopBottomPanel::top("header_panel")
-            .frame(
-                egui::Frame::none()
-                    .fill(panel_bg)
-                    .inner_margin(egui::Margin::symmetric(24.0, 16.0)),
-            )
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none()
+                .fill(egui::Color32::from_rgb(241, 245, 249))
+                .inner_margin(egui::Margin::same(outer_padding)))
             .show(ctx, |ui| {
+                let checked_in_users = self.checked_in_users.lock().unwrap().clone();
+                let checked_in_count = checked_in_users.len();
+                
                 ui.horizontal(|ui| {
-                    let checked_in_count = self.checked_in_users.lock().unwrap().len();
-                    
-                    ui.label(
-                        egui::RichText::new("PRESENCE")
-                            .size(13.0)
-                            .color(egui::Color32::from_rgb(120, 120, 140))
-                            .strong(),
+                    ui.heading(
+                        egui::RichText::new(format!("Presence Tracker"))
+                            .size(24.0)
+                            .strong()
+                            .color(egui::Color32::from_rgb(15, 23, 42)),
                     );
-                    ui.add_space(8.0);
+                    
+                    ui.add_space(12.0);
                     
                     egui::Frame::none()
-                        .fill(egui::Color32::from_rgb(99, 102, 241))
+                        .fill(egui::Color32::from_rgb(37, 99, 235))
                         .rounding(12.0)
-                        .inner_margin(egui::vec2(10.0, 4.0))
+                        .inner_margin(egui::vec2(12.0, 4.0))
                         .show(ui, |ui| {
                             ui.label(
                                 egui::RichText::new(format!("{}", checked_in_count))
-                                    .size(13.0)
-                                    .color(egui::Color32::WHITE)
-                                    .strong(),
+                                    .size(16.0)
+                                    .strong()
+                                    .color(egui::Color32::WHITE),
                             );
                         });
-
+                    
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let quit_btn = ui.add(
+                        if ui.add(
                             egui::Button::new(
                                 egui::RichText::new("✕")
                                     .size(14.0)
-                                    .color(egui::Color32::from_rgb(180, 180, 190)),
+                                    .color(egui::Color32::from_rgb(100, 116, 139))
                             )
-                            .fill(egui::Color32::TRANSPARENT)
-                            .stroke(egui::Stroke::NONE),
-                        );
-                        if quit_btn.clicked() {
+                            .fill(egui::Color32::from_rgb(226, 232, 240))
+                            .rounding(8.0)
+                            .min_size(egui::vec2(32.0, 32.0))
+                        ).clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
-
-                        ui.add_space(16.0);
-
+                        
+                        ui.add_space(12.0);
+                        
                         let mut http_enabled = self.http_polling_enabled.load(Ordering::Relaxed);
-                        let checkbox_text = egui::RichText::new("HTTP Polling")
-                            .size(12.0)
-                            .color(egui::Color32::from_rgb(140, 140, 160));
-                        if ui.checkbox(&mut http_enabled, checkbox_text).changed() {
+                        if ui.checkbox(&mut http_enabled, 
+                            egui::RichText::new("HTTP Polling")
+                                .size(12.0)
+                                .color(egui::Color32::from_rgb(71, 85, 105))
+                        ).changed() {
                             self.http_polling_enabled.store(http_enabled, Ordering::Relaxed);
                             if !http_enabled {
                                 let mut status = self.connection_status.lock().unwrap();
@@ -649,108 +644,99 @@ impl eframe::App for PresenceGuiApp {
                                 }
                             }
                         }
-
-                        ui.add_space(20.0);
-
-                        let status = self.connection_status.lock().unwrap().clone();
-                        let status_color = Self::connection_color(status.as_str());
                         
+                        ui.add_space(16.0);
+                        
+                        let status = self.connection_status.lock().unwrap().clone();
                         egui::Frame::none()
-                            .fill(status_color.linear_multiply(0.15))
-                            .rounding(6.0)
-                            .inner_margin(egui::vec2(10.0, 5.0))
+                            .fill(Self::connection_color(status.as_str()).gamma_multiply(0.15))
+                            .rounding(8.0)
+                            .inner_margin(egui::vec2(10.0, 4.0))
                             .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        egui::RichText::new("●")
-                                            .size(8.0)
-                                            .color(status_color),
-                                    );
-                                    ui.add_space(4.0);
-                                    ui.label(
-                                        egui::RichText::new(&status)
-                                            .size(11.0)
-                                            .color(status_color),
-                                    );
-                                });
+                                ui.label(
+                                    egui::RichText::new(format!("● {}", status))
+                                        .size(12.0)
+                                        .strong()
+                                        .color(Self::connection_color(status.as_str())),
+                                );
                             });
-
+                        
                         ui.add_space(12.0);
-
+                        
                         if !*self.loading.lock().unwrap() {
                             ui.label(
                                 egui::RichText::new(format!("Updated {} ago", self.get_time_since_last_update()))
-                                    .size(11.0)
-                                    .color(egui::Color32::from_rgb(90, 90, 110)),
+                                    .size(12.0)
+                                    .color(egui::Color32::from_rgb(148, 163, 184)),
                             );
                         }
                     });
                 });
-            });
-
-        egui::CentralPanel::default()
-            .frame(
-                egui::Frame::none()
-                    .fill(bg_color)
-                    .inner_margin(egui::Margin::same(20.0)),
-            )
-            .show(ctx, |ui| {
-                let checked_in_users = self.checked_in_users.lock().unwrap().clone();
+                
+                ui.add_space(16.0);
 
                 if let Some(error) = self.error_message.lock().unwrap().as_ref() {
                     egui::Frame::none()
-                        .fill(egui::Color32::from_rgb(60, 30, 35))
-                        .rounding(10.0)
-                        .inner_margin(egui::Margin::symmetric(16.0, 12.0))
+                        .fill(egui::Color32::from_rgb(254, 242, 242))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(254, 202, 202)))
+                        .rounding(12.0)
+                        .inner_margin(12.0)
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label(
                                     egui::RichText::new("⚠")
                                         .size(14.0)
-                                        .color(egui::Color32::from_rgb(248, 113, 113)),
+                                        .color(egui::Color32::from_rgb(220, 38, 38)),
                                 );
-                                ui.add_space(8.0);
                                 ui.label(
                                     egui::RichText::new(error)
                                         .size(12.0)
-                                        .color(egui::Color32::from_rgb(248, 180, 180)),
+                                        .color(egui::Color32::from_rgb(185, 28, 28)),
                                 );
                             });
                         });
-                    ui.add_space(16.0);
+                    ui.add_space(12.0);
                 }
 
                 if checked_in_users.is_empty() {
-                    let available = ui.available_size();
-                    ui.allocate_ui_with_layout(
-                        available,
-                        egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                        |ui| {
-                            ui.vertical_centered(|ui| {
-                                if *self.loading.lock().unwrap() {
-                                    ui.spinner();
-                                    ui.add_space(16.0);
-                                    ui.label(
-                                        egui::RichText::new("Connecting...")
-                                            .size(16.0)
-                                            .color(egui::Color32::from_rgb(140, 140, 160)),
-                                    );
-                                } else {
-                                    ui.label(
-                                        egui::RichText::new("◯")
-                                            .size(48.0)
-                                            .color(egui::Color32::from_rgb(60, 60, 80)),
-                                    );
-                                    ui.add_space(16.0);
-                                    ui.label(
-                                        egui::RichText::new("No one checked in")
-                                            .size(18.0)
-                                            .color(egui::Color32::from_rgb(100, 100, 120)),
-                                    );
-                                }
-                            });
-                        },
-                    );
+                    let available_rect = ui.available_rect_before_wrap();
+                    ui.allocate_ui_at_rect(available_rect, |ui| {
+                        ui.allocate_ui_with_layout(
+                            available_rect.size(),
+                            egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                            |ui| {
+                                ui.vertical_centered(|ui| {
+                                    if *self.loading.lock().unwrap() {
+                                        ui.spinner();
+                                        ui.add_space(16.0);
+                                        ui.label(
+                                            egui::RichText::new("Connecting...")
+                                                .size(18.0)
+                                                .color(egui::Color32::from_rgb(100, 116, 139)),
+                                        );
+                                    } else {
+                                        ui.label(
+                                            egui::RichText::new("👋")
+                                                .size(48.0),
+                                        );
+                                        ui.add_space(12.0);
+                                        ui.label(
+                                            egui::RichText::new("No one checked in")
+                                                .size(20.0)
+                                                .strong()
+                                                .color(egui::Color32::from_rgb(71, 85, 105)),
+                                        );
+                                        ui.add_space(4.0);
+                                        ui.label(
+                                            egui::RichText::new("Waiting for people to arrive...")
+                                                .size(14.0)
+                                                .color(egui::Color32::from_rgb(148, 163, 184)),
+                                        );
+                                    }
+                                });
+                            },
+                        );
+                    });
                     return;
                 }
 
@@ -765,47 +751,58 @@ impl eframe::App for PresenceGuiApp {
 
                 let total_users = sorted_users.len();
                 let available_width = ui.available_width();
-                let available_height = ui.available_height();
-                let window_aspect = (available_width / available_height.max(1.0)).max(0.1);
-
-                let gap = 12.0_f32;
+                let available_height = ui.available_height().max(1.0);
+                let window_aspect = (available_width / available_height).max(0.1);
+                
                 let (rows, columns) = Self::choose_bento_grid(total_users, window_aspect);
+                
+                let total_h_gaps = (columns.saturating_sub(1)) as f32 * grid_gap;
+                let total_v_gaps = (rows.saturating_sub(1)) as f32 * grid_gap;
+                
+                let card_width = ((available_width - total_h_gaps) / columns as f32).max(80.0);
+                let card_height = ((available_height - total_v_gaps) / rows as f32).max(60.0);
+                
+                let actual_grid_width = card_width * columns as f32 + total_h_gaps;
+                let actual_grid_height = card_height * rows as f32 + total_v_gaps;
+                
+                let h_offset = ((available_width - actual_grid_width) / 2.0).max(0.0);
+                let v_offset = ((available_height - actual_grid_height) / 2.0).max(0.0);
 
-                let total_gap_x = gap * (columns.saturating_sub(1)) as f32;
-                let total_gap_y = gap * (rows.saturating_sub(1)) as f32;
-                let card_width = ((available_width - total_gap_x) / columns as f32).max(80.0);
-                let card_height = ((available_height - total_gap_y) / rows as f32).max(60.0);
-
-                let grid_width = card_width * columns as f32 + total_gap_x;
-                let grid_height = card_height * rows as f32 + total_gap_y;
-                let offset_x = ((available_width - grid_width) / 2.0).max(0.0);
-                let offset_y = ((available_height - grid_height) / 2.0).max(0.0);
-
-                ui.add_space(offset_y);
-
+                ui.add_space(v_offset);
+                
                 for row in 0..rows {
                     let start = row * columns;
                     let end = (start + columns).min(total_users);
                     let items_in_row = end - start;
-
-                    let row_width = card_width * items_in_row as f32 + gap * (items_in_row.saturating_sub(1)) as f32;
-                    let row_offset = ((available_width - row_width) / 2.0).max(0.0);
+                    
+                    let row_width = card_width * items_in_row as f32 + grid_gap * (items_in_row.saturating_sub(1)) as f32;
+                    let row_h_offset = h_offset + ((actual_grid_width - row_width) / 2.0).max(0.0);
 
                     ui.horizontal(|ui| {
-                        ui.add_space(row_offset);
-
+                        ui.add_space(row_h_offset);
+                        
                         for idx in start..end {
-                            if let Some(user) = sorted_users.get(idx) {
-                                self.render_bento_card(ui, user, card_width, card_height);
-                            }
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(card_width, card_height),
+                                egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                                |cell_ui| {
+                                    if let Some(user) = sorted_users.get(idx) {
+                                        self.render_bento_card(
+                                            cell_ui,
+                                            user,
+                                            card_width,
+                                            card_height,
+                                        );
+                                    }
+                                },
+                            );
                             if idx + 1 < end {
-                                ui.add_space(gap);
+                                ui.add_space(grid_gap);
                             }
                         }
                     });
-
                     if row + 1 < rows {
-                        ui.add_space(gap);
+                        ui.add_space(grid_gap);
                     }
                 }
             });
@@ -817,9 +814,10 @@ pub async fn run_gui() -> Result<(), eframe::Error> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1400.0, 900.0])
-            .with_min_inner_size([600.0, 400.0])
-            .with_title("Presence Tracker"),
+            .with_inner_size([1280.0, 800.0])
+            .with_min_inner_size([640.0, 480.0])
+            .with_title("Presence Tracker")
+            .with_decorations(true),
         ..Default::default()
     };
 
@@ -836,21 +834,25 @@ pub async fn run_gui() -> Result<(), eframe::Error> {
         "Presence Tracker",
         options,
         Box::new(|cc| {
-            let mut visuals = egui::Visuals::dark();
-            visuals.window_fill = egui::Color32::from_rgb(15, 15, 20);
-            visuals.panel_fill = egui::Color32::from_rgb(15, 15, 20);
-            visuals.extreme_bg_color = egui::Color32::from_rgb(10, 10, 14);
-            visuals.faint_bg_color = egui::Color32::from_rgb(22, 22, 30);
-            visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(30, 30, 40);
-            visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(35, 35, 48);
-            visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(45, 45, 60);
-            visuals.widgets.active.bg_fill = egui::Color32::from_rgb(55, 55, 75);
-            visuals.selection.bg_fill = egui::Color32::from_rgb(99, 102, 241);
+            let mut visuals = egui::Visuals::light();
+            visuals.window_fill = egui::Color32::from_rgb(241, 245, 249);
+            visuals.panel_fill = egui::Color32::from_rgb(241, 245, 249);
+            visuals.extreme_bg_color = egui::Color32::from_rgb(248, 250, 252);
+            visuals.widgets.noninteractive.bg_fill = egui::Color32::WHITE;
+            visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(241, 245, 249);
+            visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(226, 232, 240);
+            visuals.widgets.active.bg_fill = egui::Color32::from_rgb(203, 213, 225);
+            visuals.selection.bg_fill = egui::Color32::from_rgb(219, 234, 254);
+            visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(37, 99, 235));
             cc.egui_ctx.set_visuals(visuals);
 
             let mut style = (*cc.egui_ctx.style()).clone();
             style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-            style.spacing.button_padding = egui::vec2(14.0, 8.0);
+            style.spacing.button_padding = egui::vec2(12.0, 8.0);
+            style.visuals.widgets.noninteractive.rounding = egui::Rounding::same(8.0);
+            style.visuals.widgets.inactive.rounding = egui::Rounding::same(8.0);
+            style.visuals.widgets.hovered.rounding = egui::Rounding::same(8.0);
+            style.visuals.widgets.active.rounding = egui::Rounding::same(8.0);
             cc.egui_ctx.set_style(style);
 
             Ok(Box::new(app))
