@@ -370,10 +370,10 @@ impl PresenceGuiApp {
 
     fn format_check_in_method(&self, method: &str) -> String {
         match method {
-            "app+bluetooth" => "App + Bluetooth".to_string(),
-            "app" => "App".to_string(),
-            "bluetooth" => "Bluetooth".to_string(),
-            _ => "Unknown".to_string(),
+            "app+bluetooth" => "app + bluetooth".to_string(),
+            "app" => "app".to_string(),
+            "bluetooth" => "bluetooth".to_string(),
+            _ => "unknown".to_string(),
         }
     }
 
@@ -420,10 +420,35 @@ impl PresenceGuiApp {
 
     fn method_color(method: &str) -> egui::Color32 {
         match method {
-            "app+bluetooth" => egui::Color32::from_rgb(37, 99, 235),
+            "app+bluetooth" => egui::Color32::from_rgb(30, 64, 175),
             "app" => egui::Color32::from_rgb(22, 163, 74),
-            "bluetooth" => egui::Color32::from_rgb(79, 70, 229),
+            "bluetooth" => egui::Color32::from_rgb(37, 99, 235),
             _ => egui::Color32::from_rgb(100, 116, 139),
+        }
+    }
+
+    fn effective_check_in_method(user: &CheckedInUser) -> &'static str {
+        let bluetooth_present = user
+            .status
+            .as_deref()
+            .map(|value| value.eq_ignore_ascii_case("present"))
+            .unwrap_or(false);
+        let app_present = user
+            .app_status
+            .as_deref()
+            .map(|value| value.eq_ignore_ascii_case("present"))
+            .unwrap_or(false);
+
+        match (app_present, bluetooth_present) {
+            (true, true) => "app+bluetooth",
+            (true, false) => "app",
+            (false, true) => "bluetooth",
+            (false, false) => match user.check_in_method.as_str() {
+                "app+bluetooth" => "app+bluetooth",
+                "app" => "app",
+                "bluetooth" => "bluetooth",
+                _ => "unknown",
+            },
         }
     }
 
@@ -510,17 +535,10 @@ impl PresenceGuiApp {
 
         let show_email = card_area > 15000.0 && !email.is_empty();
         let show_full_time = card_area > 10000.0;
-        let show_badge = min_dimension > 80.0;
-
         let chars_per_line = (card_width / (name_size * 0.55)).floor() as usize;
         let max_name_chars = (chars_per_line * 2).clamp(10, 50);
-
-        let accent_color = match user.check_in_method.as_str() {
-            "app+bluetooth" => egui::Color32::from_rgb(37, 99, 235),
-            "app" => egui::Color32::from_rgb(22, 163, 74),
-            "bluetooth" => egui::Color32::from_rgb(79, 70, 229),
-            _ => egui::Color32::from_rgb(100, 116, 139),
-        };
+        let method = Self::effective_check_in_method(user);
+        let accent_color = Self::method_color(method);
 
         let outer_rect =
             egui::Rect::from_min_size(ui.cursor().min, egui::vec2(card_width, card_height));
@@ -557,10 +575,25 @@ impl PresenceGuiApp {
             egui::Color32::from_rgb(148, 163, 184),
         );
 
-        let method_indicator_size = 8.0;
+        let method_chars_per_line = ((card_width - 24.0) / (badge_size * 0.55)).floor() as usize;
+        let method_text = self.format_check_in_method(method);
+        let method_label = Self::truncate_text(&method_text, method_chars_per_line.max(3));
+        let method_galley = ui.painter().layout_no_wrap(
+            method_label,
+            egui::FontId::proportional(badge_size),
+            accent_color,
+        );
+        let method_padding_x = (min_dimension * 0.1).clamp(8.0, 14.0);
+        let method_padding_y = (min_dimension * 0.03).clamp(3.0, 5.0);
+        let method_badge_height = method_galley.size().y + method_padding_y * 2.0;
+        let method_badge_width = (method_galley.size().x + method_padding_x * 2.0)
+            .min(card_width - 12.0)
+            .max(48.0);
+
         let spacing = 8.0;
 
-        let mut total_height = name_galley.size().y + spacing + time_galley.size().y;
+        let mut total_height =
+            name_galley.size().y + spacing + method_badge_height + 6.0 + time_galley.size().y;
 
         if show_email && !email.is_empty() {
             total_height += meta_size + 4.0;
@@ -589,17 +622,26 @@ impl PresenceGuiApp {
             current_y += meta_size + 4.0;
         }
 
-        let time_with_dot_width = method_indicator_size + 6.0 + time_galley.size().x;
-        let time_start_x = center.x - time_with_dot_width / 2.0;
-
-        let dot_center = egui::pos2(
-            time_start_x + method_indicator_size / 2.0,
-            current_y + time_galley.size().y / 2.0,
+        let method_badge_rect = egui::Rect::from_min_size(
+            egui::pos2(center.x - method_badge_width / 2.0, current_y),
+            egui::vec2(method_badge_width, method_badge_height),
         );
-        ui.painter()
-            .circle_filled(dot_center, method_indicator_size / 2.0, accent_color);
+        let method_rounding = method_badge_height / 2.0;
+        ui.painter().rect(
+            method_badge_rect,
+            method_rounding,
+            accent_color.gamma_multiply(0.14),
+            egui::Stroke::new(1.0, accent_color.gamma_multiply(0.5)),
+        );
+        let method_pos = egui::pos2(
+            center.x - method_galley.size().x / 2.0,
+            method_badge_rect.center().y - method_galley.size().y / 2.0,
+        );
+        ui.painter().galley(method_pos, method_galley, accent_color);
 
-        let time_pos = egui::pos2(time_start_x + method_indicator_size + 6.0, current_y);
+        current_y += method_badge_height + 6.0;
+
+        let time_pos = egui::pos2(center.x - time_galley.size().x / 2.0, current_y);
         ui.painter().galley(
             time_pos,
             time_galley,
@@ -820,8 +862,8 @@ impl eframe::App for PresenceGuiApp {
 
                 let mut sorted_users = checked_in_users;
                 sorted_users.sort_by(|a, b| {
-                    let ra = Self::method_rank(&a.check_in_method);
-                    let rb = Self::method_rank(&b.check_in_method);
+                    let ra = Self::method_rank(Self::effective_check_in_method(a));
+                    let rb = Self::method_rank(Self::effective_check_in_method(b));
                     ra.cmp(&rb)
                         .then_with(|| b.check_in_time.cmp(&a.check_in_time))
                         .then_with(|| Self::display_name(a).cmp(&Self::display_name(b)))
