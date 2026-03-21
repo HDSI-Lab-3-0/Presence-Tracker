@@ -17,10 +17,22 @@ if (window.CONVEX_URL) {
 
 function getPresenceSourceMessage(device) {
   const bluetoothPresent = device.status === "present";
-  const appPresent = device.appStatus === "present";
+  const attendancePresent = device.attendanceStatus === "present"
+    || (!device.attendanceStatus && (device.appStatus === "present" || bluetoothPresent));
 
-  if (appPresent && bluetoothPresent) return "✓ App + Bluetooth";
-  if (appPresent) return "✓ App";
+  if (!attendancePresent) return "";
+  if (device.attendanceOrigin === "app" && device.attendanceVerificationStatus === "verified") {
+    return "✓ Checked in via app, verified with bluetooth";
+  }
+  if (device.attendanceOrigin === "app" && device.attendanceVerificationStatus === "pending") {
+    return "✓ Checked in via app, waiting for bluetooth verification";
+  }
+  if (device.attendanceOrigin === "app" && device.attendanceVerificationStatus === "unverified") {
+    return "✓ Checked in via app, not verified with bluetooth";
+  }
+  if (device.attendanceOrigin === "system") {
+    return "✓ Attendance inferred from bluetooth history";
+  }
   if (bluetoothPresent) return "✓ Bluetooth";
   return "";
 }
@@ -116,8 +128,8 @@ function renderDevices(devices) {
 
   const residents = devices.filter((d) => d.pendingRegistration === false);
   residents.sort((a, b) => {
-    const aActive = a.status === "present";
-    const bActive = b.status === "present";
+    const aActive = a.attendanceStatus === "present" || (!a.attendanceStatus && (a.status === "present" || a.appStatus === "present"));
+    const bActive = b.attendanceStatus === "present" || (!b.attendanceStatus && (b.status === "present" || b.appStatus === "present"));
 
     if (aActive && !bActive) return -1;
     if (!aActive && bActive) return 1;
@@ -138,7 +150,8 @@ function renderDevices(devices) {
 }
 
 function createResidentCard(device) {
-  const isPresent = device.status === "present" || device.appStatus === "present";
+  const isPresent = device.attendanceStatus === "present"
+    || (!device.attendanceStatus && (device.status === "present" || device.appStatus === "present"));
   const statusClass = isPresent ? "present" : "away";
   const sourceMessage = getPresenceSourceMessage(device);
   const fullName = device.firstName && device.lastName
@@ -147,12 +160,13 @@ function createResidentCard(device) {
 
   let timeMessage = "";
   if (isPresent) {
-    if (device.connectedSince) {
-      const connectedDate = new Date(device.connectedSince);
+    const activeSince = device.attendanceChangedAt || device.connectedSince;
+    if (activeSince) {
+      const connectedDate = new Date(activeSince);
       const timeStr = connectedDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      timeMessage = `Connected at ${timeStr}`;
+      timeMessage = `Checked in at ${timeStr}`;
     } else {
-      timeMessage = "Connected";
+      timeMessage = "Checked in";
     }
   } else {
     timeMessage = `Last seen: ${formatTimeAgo(device.lastSeen)}`;
@@ -188,7 +202,8 @@ function createResidentCard(device) {
 }
 
 function updateResidentCard(card, device) {
-  const isPresent = device.status === "present" || device.appStatus === "present";
+  const isPresent = device.attendanceStatus === "present"
+    || (!device.attendanceStatus && (device.status === "present" || device.appStatus === "present"));
   const statusClass = isPresent ? "present" : "away";
   const sourceMessage = getPresenceSourceMessage(device);
 
@@ -198,12 +213,13 @@ function updateResidentCard(card, device) {
 
   let timeMessage = "";
   if (isPresent) {
-    if (device.connectedSince) {
-      const connectedDate = new Date(device.connectedSince);
+    const activeSince = device.attendanceChangedAt || device.connectedSince;
+    if (activeSince) {
+      const connectedDate = new Date(activeSince);
       const timeStr = connectedDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      timeMessage = `Connected at ${timeStr}`;
+      timeMessage = `Checked in at ${timeStr}`;
     } else {
-      timeMessage = "Connected";
+      timeMessage = "Checked in";
     }
   } else {
     timeMessage = `Last seen: ${formatTimeAgo(device.lastSeen)}`;

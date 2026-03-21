@@ -75,6 +75,14 @@ function formatSlackTimestamp(date: Date): string {
     return `${month}/${day}/${year} ${hour}:${minute}${dayPeriod}`;
 }
 
+async function getResponseBody(response: Response): Promise<string> {
+    try {
+        return await response.text();
+    } catch {
+        return "";
+    }
+}
+
 async function handleDiscord(
     ctx: any,
     integration: any,
@@ -144,6 +152,7 @@ async function handleDiscord(
     }
 
     let messageSent = false;
+    let shouldCreateReplacement = !integration.messageId;
 
     if (integration.messageId) {
         // Try to edit existing message
@@ -156,13 +165,28 @@ async function handleDiscord(
             });
             if (res.ok) {
                 messageSent = true;
+            } else {
+                const errorText = await getResponseBody(res);
+                console.error("Discord edit error:", {
+                    status: res.status,
+                    messageId: integration.messageId,
+                    body: errorText,
+                });
+
+                // Only recreate the message if Discord says the old one is gone.
+                if (res.status === 404) {
+                    shouldCreateReplacement = true;
+                } else {
+                    return;
+                }
             }
         } catch (e) {
             console.error("Discord edit error:", e);
+            return;
         }
     }
 
-    if (!messageSent) {
+    if (!messageSent && shouldCreateReplacement) {
         // Send new message, use ?wait=true to get message object back
         const res = await fetch(`${webhookUrl}?wait=true`, {
             method: "POST",

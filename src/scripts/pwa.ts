@@ -18,7 +18,6 @@ let logsTotalPages = 1;
 let logsCollapsed = true;
 
 const LOGS_PER_PAGE = 5;
-const LOG_MERGE_THRESHOLD_MS = 6 * 60 * 60 * 1000;
 const PWA_ROOT_PATH = new URL("./", window.location.href).pathname;
 
 function toPwaPath(relativePath: string) {
@@ -456,6 +455,18 @@ async function refreshAppStatus() {
         currentDevice = {
           ...currentDevice,
           appStatus: status.appStatus,
+          attendanceStatus: status.attendanceStatus,
+          attendanceChangedAt: status.attendanceChangedAt,
+          attendanceOrigin: status.attendanceOrigin,
+          attendanceVerificationStatus: status.attendanceVerificationStatus,
+          attendanceVerifiedBy: status.attendanceVerifiedBy,
+          latestAppIntent: status.latestAppIntent,
+          latestAppIntentAt: status.latestAppIntentAt,
+          pendingVerificationAction: status.pendingVerificationAction,
+          pendingVerificationExpiresAt: status.pendingVerificationExpiresAt,
+          status: status.bluetoothStatus || currentDevice.status,
+          lastBluetoothPresentAt: status.lastBluetoothPresentAt,
+          lastBluetoothAbsentAt: status.lastBluetoothAbsentAt,
         };
       }
 
@@ -561,11 +572,13 @@ function updateStatus() {
   if (!currentDevice) return;
 
   const statusValue = document.getElementById("status-value");
+  const statusSubtext = document.getElementById("status-subtext");
   const clockBtn = document.getElementById("clock-btn");
   const clockBtnText = document.getElementById("clock-btn-text");
   const actionHint = document.getElementById("action-hint");
 
-  const isCheckedIn = currentDevice.appStatus === "present";
+  const isCheckedIn = currentDevice.attendanceStatus === "present"
+    || (!currentDevice.attendanceStatus && currentDevice.appStatus === "present");
 
   if (isCheckedIn) {
     if (statusValue) {
@@ -574,7 +587,11 @@ function updateStatus() {
     }
     if (clockBtn) clockBtn.className = "clock-btn check-out";
     if (clockBtnText) clockBtnText.textContent = "Check Out";
-    if (actionHint) actionHint.textContent = "Tap to check out";
+    if (actionHint) {
+      actionHint.textContent = currentDevice.pendingVerificationAction === "check_out"
+        ? "Checkout is waiting for bluetooth disconnect verification"
+        : "Tap to check out";
+    }
   } else {
     if (statusValue) {
       statusValue.textContent = "Checked Out";
@@ -583,6 +600,10 @@ function updateStatus() {
     if (clockBtn) clockBtn.className = "clock-btn check-in";
     if (clockBtnText) clockBtnText.textContent = "Check In";
     if (actionHint) actionHint.textContent = "Tap to check in";
+  }
+
+  if (statusSubtext) {
+    statusSubtext.textContent = describeCurrentStatus(currentDevice);
   }
 
   const canClock = !appConfig?.boundaryEnabled || (currentLocation && isWithinBoundary(currentLocation));
@@ -620,12 +641,27 @@ window.toggleClockStatus = async function () {
       currentDevice = {
         ...currentDevice,
         appStatus: result.appStatus,
+        attendanceStatus: result.attendanceStatus,
+        attendanceChangedAt: result.attendanceChangedAt,
+        attendanceOrigin: result.attendanceOrigin,
+        attendanceVerificationStatus: result.attendanceVerificationStatus,
+        attendanceVerifiedBy: result.attendanceVerifiedBy,
+        latestAppIntent: result.latestAppIntent,
+        latestAppIntentAt: result.latestAppIntentAt,
+        pendingVerificationAction: result.pendingVerificationAction,
+        pendingVerificationExpiresAt: result.pendingVerificationExpiresAt,
+        status: result.bluetoothStatus || currentDevice.status,
       };
 
       updateStatus();
 
-      const action = result.appStatus === "present" ? "Checked in" : "Checked out";
-      showToast(`${action} successfully`, "success");
+      const action = result.requestedAction === "check_out" ? "Check out" : "Check in";
+      const toastMessage = result.pendingVerificationAction === "check_out"
+        ? "Checkout requested. Waiting for bluetooth disconnect verification."
+        : result.attendanceVerificationStatus === "pending"
+          ? `${action} recorded. Waiting for bluetooth verification.`
+          : `${action} successful`;
+      showToast(toastMessage, "success");
       await loadAttendanceLogs();
     } else {
       throw new Error(result.error || "Failed to update status");
@@ -707,45 +743,7 @@ async function loadAttendanceLogs() {
 
 function normalizeLogs(history = []) {
   if (!Array.isArray(history)) return [];
-
-  const normalized = [];
-
-  for (let i = 0; i < history.length; i += 1) {
-    const entry = history[i];
-    if (!entry) continue;
-
-    if (entry.source === "app+bluetooth") {
-      normalized.push(entry);
-      continue;
-    }
-
-    const nextEntry = history[i + 1];
-    if (shouldMergeAsVerified(entry, nextEntry)) {
-      normalized.push({
-        ...entry,
-        timestamp: Math.max(entry.timestamp, nextEntry.timestamp),
-        source: "app+bluetooth",
-        label: entry.status === "present"
-          ? "app check in verified with bluetooth"
-          : "app check out verified with bluetooth",
-      });
-      i += 1;
-      continue;
-    }
-
-    normalized.push(entry);
-  }
-
-  return normalized;
-}
-
-function shouldMergeAsVerified(entry, nextEntry) {
-  if (!entry || !nextEntry) return false;
-  if (entry.status !== nextEntry.status) return false;
-  const sources = new Set([entry.source, nextEntry.source].filter(Boolean));
-  if (!(sources.has("app") && sources.has("bluetooth"))) return false;
-  const diff = Math.abs(entry.timestamp - nextEntry.timestamp);
-  return diff <= LOG_MERGE_THRESHOLD_MS;
+  return history.filter(Boolean);
 }
 
 function renderLogs(emptyMessage = "No activity yet") {
@@ -811,29 +809,40 @@ function formatLogMarkup(log) {
 }
 
 function formatLogActionText(log) {
-  const base = log.status === "present" ? "Checked in" : "Checked out";
-
-  if (log.source === "app+bluetooth") {
-    return `${base} via app, verified with bluetooth`;
-  }
-
-  return base;
+  if (log.label) return sentenceCase(log.label);
+  return log.status === "present" ? "Checked in" : "Checked out";
 }
 
 function formatLogSourceInfo(log) {
-  if (log.source === "app+bluetooth") {
-    return { label: "Verified with bluetooth", cssClass: "verified" };
+  if (log.origin === "system" || log.source === "system") {
+    return { label: "Inferred from bluetooth history", cssClass: "warning" };
   }
 
-  if (log.source === "app") {
+  if (log.verificationStatus === "verified" && (log.origin === "app" || log.source === "app+bluetooth")) {
+    return { label: "Via app, verified with bluetooth", cssClass: "verified" };
+  }
+
+  if (log.verificationStatus === "pending") {
+    return { label: "Via app, waiting for bluetooth", cssClass: "warning" };
+  }
+
+  if (log.verificationStatus === "unverified") {
+    return { label: "Via app, not verified with bluetooth", cssClass: "warning" };
+  }
+
+  if (log.verificationStatus === "expired") {
+    return { label: "App checkout expired without bluetooth verification", cssClass: "error" };
+  }
+
+  if (log.origin === "app" || log.source === "app") {
     return { label: "Via app", cssClass: "" };
   }
 
-  if (log.source === "bluetooth") {
+  if (log.origin === "bluetooth" || log.source === "bluetooth") {
     return { label: "Via bluetooth", cssClass: "verified" };
   }
 
-  return { label: log.label || "", cssClass: "" };
+  return { label: "", cssClass: "" };
 }
 
 function formatTime(timestamp) {
@@ -863,6 +872,47 @@ function formatTime(timestamp) {
   });
 
   return `${dateStr} at ${timeStr}`;
+}
+
+function describeCurrentStatus(device) {
+  if (!device) return "--";
+
+  const verificationStatus = device.attendanceVerificationStatus;
+  const origin = device.attendanceOrigin;
+
+  if (device.pendingVerificationAction === "check_out") {
+    return "Checkout requested. Waiting for bluetooth disconnect.";
+  }
+
+  if (device.attendanceStatus === "present") {
+    if (origin === "app" && verificationStatus === "verified") {
+      return "Checked in via app and verified with bluetooth.";
+    }
+    if (origin === "app" && verificationStatus === "pending") {
+      return "Checked in via app. Waiting for bluetooth verification.";
+    }
+    if (origin === "app" && verificationStatus === "unverified") {
+      return "Checked in via app without bluetooth verification.";
+    }
+    if (origin === "bluetooth") {
+      return "Checked in automatically via bluetooth.";
+    }
+    if (origin === "system") {
+      return "Attendance is based on inferred bluetooth history.";
+    }
+    return "Checked in.";
+  }
+
+  if (origin === "system" && verificationStatus === "inferred") {
+    return "Previous session was closed using bluetooth history.";
+  }
+
+  return "Checked out.";
+}
+
+function sentenceCase(text) {
+  if (!text) return "";
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function showLoading(text = "Loading...") {

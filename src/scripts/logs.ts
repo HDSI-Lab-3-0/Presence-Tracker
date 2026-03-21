@@ -352,7 +352,13 @@ function renderLogEntry(log, hidePerson = false) {
   const dateStr = date.toLocaleDateString("en-US", { timeZone: "America/Los_Angeles" });
   const timeStr = date.toLocaleTimeString("en-US", { timeZone: "America/Los_Angeles" });
   const statusClass = log.status === "present" ? "present" : "absent";
-  const statusText = log.status === "present" ? "Present" : "Absent";
+  const statusText = log.action === "check_out"
+    ? "Check Out"
+    : log.action === "check_in"
+      ? "Check In"
+      : (log.status === "present" ? "Present" : "Absent");
+  const sourceText = formatSourceText(log);
+  const verificationText = formatVerificationText(log);
 
   return `
     <div class="log-entry">
@@ -362,6 +368,9 @@ function renderLogEntry(log, hidePerson = false) {
       </div>
       <div class="log-entry-details">
         <div class="log-time">${dateStr} at ${timeStr}</div>
+        ${sourceText ? `<div class="log-meta">${escapeHtml(sourceText)}</div>` : ""}
+        ${verificationText ? `<div class="log-meta">${escapeHtml(verificationText)}</div>` : ""}
+        ${log.label ? `<div class="log-meta">${escapeHtml(log.label)}</div>` : ""}
       </div>
     </div>
   `;
@@ -410,12 +419,12 @@ window.exportToCSV = function () {
   }
 
   const sortedLogs = logsToExport.sort((a, b) => b.timestamp - a.timestamp);
-  let csvContent = "Person Name,Device ID,Status,Timestamp\n";
+  let csvContent = "Person Name,Device ID,Action,Status,Source,Verification,Timestamp\n";
 
   sortedLogs.forEach((log) => {
     const date = new Date(log.timestamp);
     const pacificDateStr = date.toLocaleString("en-US", { timeZone: "America/Los_Angeles" });
-    csvContent += `"${escapeCsv(log.userName)}","${escapeCsv(log.deviceId)}","${escapeCsv(log.status)}","${escapeCsv(pacificDateStr)}"\n`;
+    csvContent += `"${escapeCsv(log.userName)}","${escapeCsv(log.deviceId)}","${escapeCsv(log.action || "")}","${escapeCsv(log.status)}","${escapeCsv(formatSourceText(log))}","${escapeCsv(formatVerificationText(log))}","${escapeCsv(pacificDateStr)}"\n`;
   });
 
   const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
@@ -443,4 +452,23 @@ function escapeHtml(text) {
 function escapeCsv(text) {
   if (text === null || text === undefined) return "";
   return String(text).replace(/"/g, '""');
+}
+
+function formatSourceText(log) {
+  if (log.origin === "system" || log.source === "system") return "Source: system";
+  if (log.origin === "app" || log.source === "app" || log.source === "app+bluetooth") return "Source: app";
+  if (log.origin === "bluetooth" || log.source === "bluetooth") return "Source: bluetooth";
+  return "";
+}
+
+function formatVerificationText(log) {
+  if (log.verificationStatus === "verified") return "Verification: verified with bluetooth";
+  if (log.verificationStatus === "pending") return "Verification: waiting for bluetooth";
+  if (log.verificationStatus === "unverified") return "Verification: not verified";
+  if (log.verificationStatus === "expired") return "Verification: expired";
+  if (log.verificationStatus === "inferred") return "Verification: inferred from bluetooth history";
+  if (log.source === "app+bluetooth") return "Verification: verified with bluetooth";
+  if (log.source === "app") return "Verification: app only";
+  if (log.source === "bluetooth") return "Verification: bluetooth";
+  return "";
 }

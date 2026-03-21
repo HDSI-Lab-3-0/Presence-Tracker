@@ -11,6 +11,34 @@ export default defineSchema({
     status: v.string(),
     appStatus: v.optional(v.union(v.literal("present"), v.literal("absent"))),
     appLastSeen: v.optional(v.number()),
+    attendanceStatus: v.optional(v.union(v.literal("present"), v.literal("absent"))),
+    attendanceChangedAt: v.optional(v.number()),
+    attendanceOrigin: v.optional(v.union(v.literal("app"), v.literal("bluetooth"), v.literal("system"))),
+    attendanceVerificationStatus: v.optional(
+      v.union(
+        v.literal("verified"),
+        v.literal("unverified"),
+        v.literal("pending"),
+        v.literal("expired"),
+        v.literal("inferred"),
+      ),
+    ),
+    attendanceVerifiedBy: v.optional(
+      v.union(
+        v.literal("bluetooth_immediate"),
+        v.literal("bluetooth_followup"),
+        v.literal("bluetooth_disconnect"),
+        v.literal("none"),
+        v.literal("system_inferred"),
+      ),
+    ),
+    latestAppIntent: v.optional(v.union(v.literal("check_in"), v.literal("check_out"))),
+    latestAppIntentAt: v.optional(v.number()),
+    pendingVerificationAction: v.optional(v.union(v.literal("check_in"), v.literal("check_out"))),
+    pendingVerificationExpiresAt: v.optional(v.number()),
+    pendingVerificationEventId: v.optional(v.id("attendanceLogs")),
+    lastBluetoothPresentAt: v.optional(v.number()),
+    lastBluetoothAbsentAt: v.optional(v.number()),
     lastSeen: v.number(),
     connectedSince: v.optional(v.number()), // Time when status became "present"
     firstSeen: v.number(),
@@ -73,5 +101,30 @@ export default defineSchema({
     status: v.union(v.literal("present"), v.literal("absent")),
     timestamp: v.number(),
     deviceId: v.string(),
-  }).index("by_timestamp", ["timestamp"]),
+    action: v.optional(v.union(v.literal("check_in"), v.literal("check_out"))),
+    origin: v.optional(v.union(v.literal("app"), v.literal("bluetooth"), v.literal("system"))),
+    verificationStatus: v.optional(
+      v.union(
+        v.literal("verified"),
+        v.literal("unverified"),
+        v.literal("pending"),
+        v.literal("expired"),
+        v.literal("inferred"),
+      ),
+    ),
+    verifiedBy: v.optional(
+      v.union(
+        v.literal("bluetooth_immediate"),
+        v.literal("bluetooth_followup"),
+        v.literal("bluetooth_disconnect"),
+        v.literal("none"),
+        v.literal("system_inferred"),
+      ),
+    ),
+    eventTimestamp: v.optional(v.number()),
+    effectiveTimestamp: v.optional(v.number()),
+    verificationDeadline: v.optional(v.number()),
+  })
+    .index("by_timestamp", ["timestamp"])
+    .index("by_deviceId_timestamp", ["deviceId", "timestamp"]),
 });

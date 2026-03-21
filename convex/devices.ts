@@ -11,10 +11,22 @@ const APP_API_KEY_LENGTH = 48;
 const METERS_PER_MILE = 1609.344;
 const DEFAULT_BOUNDARY_RADIUS_METERS = 100;
 const DEFAULT_BOUNDARY_RADIUS_UNIT = "meters" as const;
+const ATTENDANCE_VERIFY_WINDOW_MS = 5 * 60 * 1000;
+const PACIFIC_TIME_ZONE = "America/Los_Angeles";
 
 type CleanupResult = { deletedCount: number; deletedMacs: string[] };
 
 type DeleteResult = { success: boolean; macAddress?: string | null };
+type AttendanceAction = "check_in" | "check_out";
+type AttendanceOrigin = "app" | "bluetooth" | "system";
+type AttendanceStatusValue = "present" | "absent";
+type AttendanceVerificationStatus = "verified" | "unverified" | "pending" | "expired" | "inferred";
+type AttendanceVerifiedBy =
+  | "bluetooth_immediate"
+  | "bluetooth_followup"
+  | "bluetooth_disconnect"
+  | "none"
+  | "system_inferred";
 
 const isValidUcsdEmail = (email: string) => {
   const normalized = email.trim().toLowerCase();
@@ -139,6 +151,422 @@ const getOrCreateAppConfig = async (ctx: any) => {
   };
 };
 
+const STATUS_FROM_ACTION: Record<AttendanceAction, AttendanceStatusValue> = {
+  check_in: "present",
+  check_out: "absent",
+};
+
+const ACTION_FROM_STATUS: Record<AttendanceStatusValue, AttendanceAction> = {
+  present: "check_in",
+  absent: "check_out",
+};
+
+const attendanceStateFromDevice = (device: any): AttendanceStatusValue => {
+  if (device?.attendanceStatus === "present" || device?.attendanceStatus === "absent") {
+    return device.attendanceStatus;
+  }
+  if (device?.appStatus === "present" || device?.status === "present") {
+    return "present";
+  }
+  return "absent";
+};
+
+const attendanceChangedAtFromDevice = (device: any) =>
+  typeof device?.attendanceChangedAt === "number"
+    ? device.attendanceChangedAt
+    : typeof device?.appLastSeen === "number"
+      ? device.appLastSeen
+      : typeof device?.connectedSince === "number"
+        ? device.connectedSince
+        : device?.lastSeen;
+
+const deviceDisplayName = (device: any) =>
+  device?.firstName && device?.lastName
+    ? `${device.firstName} ${device.lastName}`
+    : (device?.name || device?.macAddress || "Unknown");
+
+const pacificDayKey = (timestamp: number) =>
+  new Intl.DateTimeFormat("en-CA", {
+    timeZone: PACIFIC_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(timestamp));
+
+const pendingVerificationPatch = (
+  action: AttendanceAction,
+  eventId: Id<"attendanceLogs">,
+  verificationDeadline: number,
+) => ({
+  pendingVerificationAction: action,
+  pendingVerificationEventId: eventId,
+  pendingVerificationExpiresAt: verificationDeadline,
+});
+
+const clearedPendingVerificationPatch = () => ({
+  pendingVerificationAction: undefined,
+  pendingVerificationEventId: undefined,
+  pendingVerificationExpiresAt: undefined,
+});
+
+const shouldTreatPendingAsExpired = (log: any, now: number) =>
+  log?.verificationStatus === "pending"
+  && typeof log?.verificationDeadline === "number"
+  && log.verificationDeadline <= now;
+
+const normalizeAttendanceLogForResponse = (log: any, now = Date.now()) => {
+  const status: AttendanceStatusValue =
+    log?.status === "absent" ? "absent" : "present";
+  const action: AttendanceAction =
+    log?.action === "check_out" || log?.action === "check_in"
+      ? log.action
+      : ACTION_FROM_STATUS[status];
+  const origin: AttendanceOrigin =
+    log?.origin === "app" || log?.origin === "system" ? log.origin : "bluetooth";
+  let verificationStatus: AttendanceVerificationStatus =
+    log?.verificationStatus === "verified"
+      || log?.verificationStatus === "unverified"
+      || log?.verificationStatus === "pending"
+      || log?.verificationStatus === "expired"
+      || log?.verificationStatus === "inferred"
+      ? log.verificationStatus
+      : "verified";
+
+  if (shouldTreatPendingAsExpired(log, now)) {
+    verificationStatus = action === "check_in" ? "unverified" : "expired";
+  }
+
+  const verifiedBy: AttendanceVerifiedBy =
+    log?.verifiedBy === "bluetooth_followup"
+      || log?.verifiedBy === "bluetooth_disconnect"
+      || log?.verifiedBy === "none"
+      || log?.verifiedBy === "system_inferred"
+      ? log.verifiedBy
+      : "bluetooth_immediate";
+
+  const effectiveTimestamp =
+    typeof log?.effectiveTimestamp === "number" ? log.effectiveTimestamp : log?.timestamp;
+  const eventTimestamp =
+    typeof log?.eventTimestamp === "number" ? log.eventTimestamp : effectiveTimestamp;
+
+  const source =
+    origin === "app"
+      ? verificationStatus === "verified"
+        ? "app+bluetooth"
+        : "app"
+      : origin === "system"
+        ? "system"
+        : "bluetooth";
+
+  let label = "";
+  if (action === "check_in") {
+    if (origin === "app" && verificationStatus === "verified") {
+      label = "app check in verified with bluetooth";
+    } else if (origin === "app" && verificationStatus === "pending") {
+      label = "app check in awaiting bluetooth verification";
+    } else if (origin === "app" && verificationStatus === "unverified") {
+      label = "app check in not verified with bluetooth";
+    } else if (origin === "system") {
+      label = "checked in by system";
+    } else {
+      label = "checked in with bluetooth";
+    }
+  } else if (origin === "app" && verificationStatus === "verified") {
+    label = "app check out verified with bluetooth";
+  } else if (origin === "app" && verificationStatus === "pending") {
+    label = "app check out awaiting bluetooth verification";
+  } else if (origin === "app" && verificationStatus === "expired") {
+    label = "app check out not verified with bluetooth";
+  } else if (origin === "system") {
+    label = "inferred end-of-day checkout";
+  } else {
+    label = "checked out via bluetooth";
+  }
+
+  return {
+    ...log,
+    action,
+    status,
+    origin,
+    verificationStatus,
+    verifiedBy,
+    eventTimestamp,
+    effectiveTimestamp,
+    timestamp: effectiveTimestamp,
+    source,
+    label,
+  };
+};
+
+const auditAttendance = async (ctx: any, deviceId: Id<"devices">, details: string) => {
+  await ctx.db.insert("deviceLogs", {
+    deviceId,
+    changeType: "attendance",
+    timestamp: Date.now(),
+    details,
+  });
+};
+
+const createAttendanceEvent = async (
+  ctx: any,
+  device: any,
+  args: {
+    action: AttendanceAction;
+    origin: AttendanceOrigin;
+    verificationStatus: AttendanceVerificationStatus;
+    verifiedBy: AttendanceVerifiedBy;
+    eventTimestamp: number;
+    effectiveTimestamp: number;
+    verificationDeadline?: number;
+  },
+) => {
+  const status = STATUS_FROM_ACTION[args.action];
+  const eventId = await ctx.db.insert("attendanceLogs", {
+    userId: device.macAddress,
+    userName: deviceDisplayName(device),
+    deviceId: String(device._id),
+    action: args.action,
+    status,
+    origin: args.origin,
+    verificationStatus: args.verificationStatus,
+    verifiedBy: args.verifiedBy,
+    eventTimestamp: args.eventTimestamp,
+    effectiveTimestamp: args.effectiveTimestamp,
+    verificationDeadline: args.verificationDeadline,
+    timestamp: args.effectiveTimestamp,
+  });
+  return eventId;
+};
+
+const patchAttendanceEvent = async (ctx: any, eventId: Id<"attendanceLogs">, patch: Record<string, any>) => {
+  const effectiveTimestamp =
+    typeof patch.effectiveTimestamp === "number" ? patch.effectiveTimestamp : undefined;
+  await ctx.db.patch(eventId, {
+    ...patch,
+    ...(typeof effectiveTimestamp === "number" ? { timestamp: effectiveTimestamp } : {}),
+  });
+};
+
+const refreshDevice = async (ctx: any, deviceId: Id<"devices">) => ctx.db.get(deviceId);
+
+const settleExpiredPendingVerification = async (ctx: any, device: any, now: number) => {
+  if (
+    (device?.pendingVerificationAction !== "check_in" && device?.pendingVerificationAction !== "check_out")
+    || typeof device?.pendingVerificationExpiresAt !== "number"
+    || device.pendingVerificationExpiresAt > now
+  ) {
+    return device;
+  }
+
+  const pendingEvent = device.pendingVerificationEventId
+    ? await ctx.db.get(device.pendingVerificationEventId)
+    : null;
+
+  const patch: Record<string, any> = {
+    ...clearedPendingVerificationPatch(),
+  };
+
+  if (device.pendingVerificationAction === "check_in") {
+    if (pendingEvent) {
+      await patchAttendanceEvent(ctx, pendingEvent._id, {
+        verificationStatus: "unverified",
+        verifiedBy: "none",
+      });
+    }
+    if (attendanceStateFromDevice(device) === "present" && device.attendanceOrigin === "app") {
+      patch.attendanceVerificationStatus = "unverified";
+      patch.attendanceVerifiedBy = "none";
+    }
+    await auditAttendance(ctx, device._id, "App check-in expired without bluetooth verification");
+  } else {
+    if (pendingEvent) {
+      await patchAttendanceEvent(ctx, pendingEvent._id, {
+        verificationStatus: "expired",
+        verifiedBy: "none",
+      });
+    }
+    await auditAttendance(ctx, device._id, "App check-out expired without bluetooth verification");
+  }
+
+  await ctx.db.patch(device._id, patch);
+  return {
+    ...device,
+    ...patch,
+  };
+};
+
+const markPendingCheckInUnverified = async (ctx: any, device: any) => {
+  if (device?.pendingVerificationAction !== "check_in" || !device?.pendingVerificationEventId) {
+    return device;
+  }
+
+  await patchAttendanceEvent(ctx, device.pendingVerificationEventId, {
+    verificationStatus: "unverified",
+    verifiedBy: "none",
+  });
+  const patch = {
+    ...clearedPendingVerificationPatch(),
+    attendanceVerificationStatus: "unverified",
+    attendanceVerifiedBy: "none",
+  };
+  await ctx.db.patch(device._id, patch);
+  return {
+    ...device,
+    ...patch,
+  };
+};
+
+const verifyPendingCheckInWithBluetooth = async (ctx: any, device: any) => {
+  if (device?.pendingVerificationAction !== "check_in" || !device?.pendingVerificationEventId) {
+    return device;
+  }
+
+  const pendingEvent = await ctx.db.get(device.pendingVerificationEventId);
+  if (!pendingEvent) {
+    const patch = clearedPendingVerificationPatch();
+    await ctx.db.patch(device._id, patch);
+    return { ...device, ...patch };
+  }
+
+  await patchAttendanceEvent(ctx, pendingEvent._id, {
+    verificationStatus: "verified",
+    verifiedBy: "bluetooth_followup",
+  });
+
+  const patch = {
+    ...clearedPendingVerificationPatch(),
+    attendanceVerificationStatus: "verified",
+    attendanceVerifiedBy: "bluetooth_followup",
+  };
+  await ctx.db.patch(device._id, patch);
+  await auditAttendance(ctx, device._id, "App check-in verified by bluetooth connection");
+  return {
+    ...device,
+    ...patch,
+  };
+};
+
+const verifyPendingCheckOutWithBluetooth = async (ctx: any, device: any) => {
+  if (device?.pendingVerificationAction !== "check_out" || !device?.pendingVerificationEventId) {
+    return device;
+  }
+
+  const pendingEvent = await ctx.db.get(device.pendingVerificationEventId);
+  if (!pendingEvent) {
+    const patch = clearedPendingVerificationPatch();
+    await ctx.db.patch(device._id, patch);
+    return { ...device, ...patch };
+  }
+
+  const effectiveTimestamp =
+    typeof pendingEvent?.effectiveTimestamp === "number"
+      ? pendingEvent.effectiveTimestamp
+      : pendingEvent?.timestamp;
+
+  await patchAttendanceEvent(ctx, pendingEvent._id, {
+    verificationStatus: "verified",
+    verifiedBy: "bluetooth_disconnect",
+    effectiveTimestamp,
+  });
+
+  const patch = {
+    ...clearedPendingVerificationPatch(),
+    attendanceStatus: "absent",
+    attendanceChangedAt: effectiveTimestamp,
+    attendanceOrigin: "app",
+    attendanceVerificationStatus: "verified",
+    attendanceVerifiedBy: "bluetooth_disconnect",
+    appStatus: "absent",
+  };
+  await ctx.db.patch(device._id, patch);
+  await auditAttendance(ctx, device._id, "App check-out verified by bluetooth disconnect");
+  return {
+    ...device,
+    ...patch,
+  };
+};
+
+const inferMissingPriorDayCheckout = async (ctx: any, device: any, now: number) => {
+  if (attendanceStateFromDevice(device) !== "present") {
+    return device;
+  }
+
+  const previousChangeAt = attendanceChangedAtFromDevice(device);
+  if (typeof previousChangeAt !== "number" || pacificDayKey(previousChangeAt) === pacificDayKey(now)) {
+    return device;
+  }
+
+  const lastBluetoothAbsentAt =
+    typeof device?.lastBluetoothAbsentAt === "number" ? device.lastBluetoothAbsentAt : undefined;
+  if (
+    typeof lastBluetoothAbsentAt !== "number"
+    || lastBluetoothAbsentAt <= previousChangeAt
+    || lastBluetoothAbsentAt >= now
+  ) {
+    return device;
+  }
+
+  await createAttendanceEvent(ctx, device, {
+    action: "check_out",
+    origin: "system",
+    verificationStatus: "inferred",
+    verifiedBy: "system_inferred",
+    eventTimestamp: lastBluetoothAbsentAt,
+    effectiveTimestamp: lastBluetoothAbsentAt,
+  });
+
+  const patch = {
+    attendanceStatus: "absent",
+    attendanceChangedAt: lastBluetoothAbsentAt,
+    attendanceOrigin: "system",
+    attendanceVerificationStatus: "inferred",
+    attendanceVerifiedBy: "system_inferred",
+    appStatus: "absent",
+    ...clearedPendingVerificationPatch(),
+  };
+  await ctx.db.patch(device._id, patch);
+  await auditAttendance(ctx, device._id, "Inferred prior-day bluetooth checkout before next bluetooth check-in");
+  return {
+    ...device,
+    ...patch,
+  };
+};
+
+const buildAttendanceStatePayload = (device: any, email?: string) => ({
+  success: true,
+  email,
+  attendanceStatus: attendanceStateFromDevice(device),
+  attendanceChangedAt: attendanceChangedAtFromDevice(device),
+  attendanceOrigin:
+    device?.attendanceOrigin === "app" || device?.attendanceOrigin === "system"
+      ? device.attendanceOrigin
+      : "bluetooth",
+  attendanceVerificationStatus:
+    device?.attendanceVerificationStatus === "verified"
+    || device?.attendanceVerificationStatus === "unverified"
+    || device?.attendanceVerificationStatus === "pending"
+    || device?.attendanceVerificationStatus === "expired"
+    || device?.attendanceVerificationStatus === "inferred"
+      ? device.attendanceVerificationStatus
+      : (device?.status === "present" ? "verified" : "unverified"),
+  attendanceVerifiedBy:
+    device?.attendanceVerifiedBy === "bluetooth_followup"
+    || device?.attendanceVerifiedBy === "bluetooth_disconnect"
+    || device?.attendanceVerifiedBy === "none"
+    || device?.attendanceVerifiedBy === "system_inferred"
+      ? device.attendanceVerifiedBy
+      : "bluetooth_immediate",
+  latestAppIntent: device?.latestAppIntent || null,
+  latestAppIntentAt: device?.latestAppIntentAt ?? null,
+  pendingVerificationAction: device?.pendingVerificationAction || null,
+  pendingVerificationExpiresAt: device?.pendingVerificationExpiresAt ?? null,
+  bluetoothStatus: device?.status === "present" ? "present" : "absent",
+  appStatus: device?.appStatus === "present" ? "present" : "absent",
+  appLastSeen: device?.appLastSeen ?? null,
+  lastBluetoothPresentAt: device?.lastBluetoothPresentAt ?? null,
+  lastBluetoothAbsentAt: device?.lastBluetoothAbsentAt ?? null,
+});
+
 const deleteDeviceAndLogs = async (
   ctx: any,
   deviceId: Id<"devices">
@@ -228,6 +656,17 @@ export const getDevices = query({
         status: device.status,
         appStatus: device.appStatus,
         appLastSeen: device.appLastSeen,
+        attendanceStatus: attendanceStateFromDevice(device),
+        attendanceChangedAt: attendanceChangedAtFromDevice(device),
+        attendanceOrigin: device.attendanceOrigin,
+        attendanceVerificationStatus: device.attendanceVerificationStatus,
+        attendanceVerifiedBy: device.attendanceVerifiedBy,
+        latestAppIntent: device.latestAppIntent,
+        latestAppIntentAt: device.latestAppIntentAt,
+        pendingVerificationAction: device.pendingVerificationAction,
+        pendingVerificationExpiresAt: device.pendingVerificationExpiresAt,
+        lastBluetoothPresentAt: device.lastBluetoothPresentAt,
+        lastBluetoothAbsentAt: device.lastBluetoothAbsentAt,
         lastSeen: device.lastSeen,
         connectedSince: device.connectedSince,
         pendingRegistration: device.pendingRegistration,
@@ -271,6 +710,13 @@ export const upsertDevice = mutation({
         macAddress: args.macAddress,
         name: args.name,
         status: args.status,
+        appStatus: args.status === "present" ? "present" : "absent",
+        attendanceStatus: args.status === "present" ? "present" : "absent",
+        attendanceChangedAt: now,
+        attendanceOrigin: "bluetooth",
+        attendanceVerificationStatus: args.status === "present" ? "verified" : "unverified",
+        attendanceVerifiedBy: args.status === "present" ? "bluetooth_immediate" : "none",
+        lastBluetoothPresentAt: args.status === "present" ? now : undefined,
         lastSeen: now,
         firstSeen: now,
         gracePeriodEnd,
@@ -312,38 +758,24 @@ export const updateDeviceStatus = mutation({
     }
 
     const now = Date.now();
+    let device = await settleExpiredPendingVerification(ctx, existingDevice, now);
 
-    // Note: We no longer delete pending devices when they go absent
-    // They will remain in the database for manual review
-
-    // Logic for connectedSince
-    let connectedSince = existingDevice.connectedSince;
-    if (args.status === "present" && existingDevice.status !== "present") {
-      // Just connected
-      connectedSince = now;
-    }
-    // If staying present, keep connectedSince. 
-    // If absent, we can keep it or clear it. Usually we keep it for "Connected at X", but if absent "Last Seen Y".
-    // When showing "Connected at", we use connectedSince.
-
-    // Log status change if meaningful (e.g. absent <-> present)
-    // Check for duplicate status change logs within the last 10 seconds to prevent race conditions
-    if (existingDevice.status !== args.status) {
+    if (device.status !== args.status) {
       const tenSecondsAgo = now - 10000;
       const recentLogs = await ctx.db
         .query("deviceLogs")
         .withIndex("by_deviceId", (q: any) => q.eq("deviceId", existingDevice._id))
-        .filter((q: any) => 
+        .filter((q: any) =>
           q.and(
             q.eq(q.field("changeType"), "status_change"),
-            q.gte(q.field("timestamp"), tenSecondsAgo)
+            q.gte(q.field("timestamp"), tenSecondsAgo),
           )
         )
         .collect();
 
-      const isDuplicate = recentLogs.some((log: any) => 
-        log.details.includes(`from ${existingDevice.status} to ${args.status}`) ||
-        log.details.includes(`from ${args.status} to ${existingDevice.status}`)
+      const isDuplicate = recentLogs.some((log: any) =>
+        log.details.includes(`from ${existingDevice.status} to ${args.status}`)
+        || log.details.includes(`from ${args.status} to ${existingDevice.status}`),
       );
 
       if (!isDuplicate) {
@@ -351,38 +783,115 @@ export const updateDeviceStatus = mutation({
           deviceId: existingDevice._id,
           changeType: "status_change",
           timestamp: now,
-          details: `Status changed from ${existingDevice.status} to ${args.status}`
-        });
-      }
-
-      // Keep attendanceLogs populated for the admin logs frontend view.
-      if (!existingDevice.pendingRegistration) {
-        const userName = existingDevice.firstName && existingDevice.lastName
-          ? `${existingDevice.firstName} ${existingDevice.lastName}`
-          : (existingDevice.name || existingDevice.macAddress);
-
-        await ctx.db.insert("attendanceLogs", {
-          userId: existingDevice.macAddress,
-          userName,
-          status: args.status,
-          timestamp: now,
-          deviceId: existingDevice._id,
+          details: `Status changed from ${existingDevice.status} to ${args.status}`,
         });
       }
     }
 
-    await ctx.db.patch(existingDevice._id, {
-      status: args.status,
+    if (args.status === device.status) {
+      await ctx.db.patch(device._id, {
+        lastSeen: now,
+      });
+      return {
+        ...device,
+        lastSeen: now,
+      };
+    }
+
+    if (args.status === "present") {
+      device = await inferMissingPriorDayCheckout(ctx, device, now);
+
+      if (
+        device.pendingVerificationAction === "check_in"
+        && typeof device.pendingVerificationExpiresAt === "number"
+        && device.pendingVerificationExpiresAt >= now
+      ) {
+        device = await verifyPendingCheckInWithBluetooth(ctx, device);
+      } else if (attendanceStateFromDevice(device) === "absent" && !device.pendingRegistration) {
+        await createAttendanceEvent(ctx, device, {
+          action: "check_in",
+          origin: "bluetooth",
+          verificationStatus: "verified",
+          verifiedBy: "bluetooth_immediate",
+          eventTimestamp: now,
+          effectiveTimestamp: now,
+        });
+        await auditAttendance(ctx, device._id, "Automatically checked in via bluetooth");
+        device = {
+          ...device,
+          attendanceStatus: "present",
+          attendanceChangedAt: now,
+          attendanceOrigin: "bluetooth",
+          attendanceVerificationStatus: "verified",
+          attendanceVerifiedBy: "bluetooth_immediate",
+        };
+      }
+
+      await ctx.db.patch(device._id, {
+        status: "present",
+        lastSeen: now,
+        connectedSince: now,
+        lastBluetoothPresentAt: now,
+        attendanceStatus: attendanceStateFromDevice(device),
+        attendanceChangedAt: attendanceChangedAtFromDevice(device),
+        attendanceOrigin: device.attendanceOrigin,
+        attendanceVerificationStatus: device.attendanceVerificationStatus,
+        attendanceVerifiedBy: device.attendanceVerifiedBy,
+      });
+
+      return {
+        ...device,
+        status: "present",
+        lastSeen: now,
+        connectedSince: now,
+        lastBluetoothPresentAt: now,
+      };
+    }
+
+    if (
+      device.pendingVerificationAction === "check_out"
+      && typeof device.pendingVerificationExpiresAt === "number"
+      && device.pendingVerificationExpiresAt >= now
+    ) {
+      device = await verifyPendingCheckOutWithBluetooth(ctx, device);
+    } else if (attendanceStateFromDevice(device) === "present" && !device.pendingRegistration) {
+      await createAttendanceEvent(ctx, device, {
+        action: "check_out",
+        origin: "bluetooth",
+        verificationStatus: "verified",
+        verifiedBy: "bluetooth_disconnect",
+        eventTimestamp: now,
+        effectiveTimestamp: now,
+      });
+      await auditAttendance(ctx, device._id, "Automatically checked out via bluetooth disconnect");
+      device = {
+        ...device,
+        attendanceStatus: "absent",
+        attendanceChangedAt: now,
+        attendanceOrigin: "bluetooth",
+        attendanceVerificationStatus: "verified",
+        attendanceVerifiedBy: "bluetooth_disconnect",
+        appStatus: "absent",
+      };
+    }
+
+    await ctx.db.patch(device._id, {
+      status: "absent",
       lastSeen: now,
-      connectedSince: connectedSince,
-      appStatus: args.status === "absent" ? "absent" : existingDevice.appStatus,
+      lastBluetoothAbsentAt: now,
+      appStatus: device.appStatus === "present" ? "present" : "absent",
+      attendanceStatus: attendanceStateFromDevice(device),
+      attendanceChangedAt: attendanceChangedAtFromDevice(device),
+      attendanceOrigin: device.attendanceOrigin,
+      attendanceVerificationStatus: device.attendanceVerificationStatus,
+      attendanceVerifiedBy: device.attendanceVerifiedBy,
     });
 
     return {
-      ...existingDevice,
-      status: args.status,
+      ...device,
+      status: "absent",
       lastSeen: now,
-      connectedSince: connectedSince,
+      lastBluetoothAbsentAt: now,
     };
   },
 });
@@ -407,6 +916,12 @@ export const registerDevice = mutation({
       macAddress: args.macAddress,
       name: args.name,
       status: "absent",
+      appStatus: "absent",
+      attendanceStatus: "absent",
+      attendanceChangedAt: now,
+      attendanceOrigin: "bluetooth",
+      attendanceVerificationStatus: "unverified",
+      attendanceVerifiedBy: "none",
       lastSeen: now,
       firstSeen: now,
       gracePeriodEnd: now,
@@ -456,6 +971,13 @@ export const registerPendingDevice = mutation({
       macAddress: args.macAddress,
       name: deviceName,
       status: "present",
+      appStatus: "absent",
+      attendanceStatus: "present",
+      attendanceChangedAt: now,
+      attendanceOrigin: "bluetooth",
+      attendanceVerificationStatus: "verified",
+      attendanceVerifiedBy: "bluetooth_immediate",
+      lastBluetoothPresentAt: now,
       lastSeen: now,
       firstSeen: now,
       gracePeriodEnd,
@@ -519,7 +1041,16 @@ export const completeDeviceRegistration = mutation({
       ucsdEmail: normalizedEmail,
       pendingRegistration: false,
       lastSeen: now,
-      connectedSince: now,
+      connectedSince: existingDevice.connectedSince ?? now,
+      attendanceStatus: attendanceStateFromDevice(existingDevice),
+      attendanceChangedAt: attendanceChangedAtFromDevice(existingDevice) ?? now,
+      attendanceOrigin: existingDevice.attendanceOrigin ?? (existingDevice.status === "present" ? "bluetooth" : "app"),
+      attendanceVerificationStatus:
+        existingDevice.attendanceVerificationStatus
+        ?? (existingDevice.status === "present" ? "verified" : "unverified"),
+      attendanceVerifiedBy:
+        existingDevice.attendanceVerifiedBy
+        ?? (existingDevice.status === "present" ? "bluetooth_immediate" : "none"),
     });
 
     // Log creation
@@ -623,13 +1154,10 @@ export const cleanupExpiredGracePeriodsInternal = internalMutation({
 export const getPresentUsers = query({
   args: {},
   handler: async (ctx) => {
-    const devices = await ctx.db
-      .query("devices")
-      .withIndex("by_status", (q) => q.eq("status", "present"))
-      .collect();
+    const devices = await ctx.db.query("devices").collect();
 
     return devices
-      .filter((d) => !d.pendingRegistration)
+      .filter((d) => !d.pendingRegistration && attendanceStateFromDevice(d) === "present")
       .map((d) => ({
         firstName: d.firstName,
         lastName: d.lastName,
@@ -641,13 +1169,10 @@ export const getPresentUsers = query({
 export const getAbsentUsers = query({
   args: {},
   handler: async (ctx) => {
-    const devices = await ctx.db
-      .query("devices")
-      .withIndex("by_status", (q) => q.eq("status", "absent"))
-      .collect();
+    const devices = await ctx.db.query("devices").collect();
 
     return devices
-      .filter((d) => !d.pendingRegistration)
+      .filter((d) => !d.pendingRegistration && attendanceStateFromDevice(d) === "absent")
       .map((d) => ({
         firstName: d.firstName,
         lastName: d.lastName,
@@ -669,6 +1194,12 @@ export const logAttendance = mutation({
       userId: args.userId,
       userName: args.userName,
       status: args.status,
+      action: ACTION_FROM_STATUS[args.status],
+      origin: "bluetooth",
+      verificationStatus: "verified",
+      verifiedBy: args.status === "present" ? "bluetooth_immediate" : "bluetooth_disconnect",
+      eventTimestamp: now,
+      effectiveTimestamp: now,
       timestamp: now,
       deviceId: args.deviceId,
     });
@@ -695,7 +1226,7 @@ export const getAttendanceLogs = query({
       .order("desc")
       .collect();
 
-    return logs;
+    return logs.map((log: any) => normalizeAttendanceLogForResponse(log));
   },
 });
 
@@ -713,6 +1244,28 @@ export const cleanupOldLogs = internalMutation({
     }
 
     return { deletedCount: oldLogs.length };
+  },
+});
+
+export const expirePendingAttendanceVerifications = internalMutation({
+  args: {},
+  handler: async (ctx: any) => {
+    const now = Date.now();
+    const devices = await ctx.db.query("devices").collect();
+    let updatedCount = 0;
+
+    for (const device of devices) {
+      if (
+        (device.pendingVerificationAction === "check_in" || device.pendingVerificationAction === "check_out")
+        && typeof device.pendingVerificationExpiresAt === "number"
+        && device.pendingVerificationExpiresAt <= now
+      ) {
+        await settleExpiredPendingVerification(ctx, device, now);
+        updatedCount += 1;
+      }
+    }
+
+    return { updatedCount };
   },
 });
 
@@ -836,6 +1389,21 @@ export const getDeviceByEmail = query({
       ucsdEmail: device.ucsdEmail,
       status: device.status,
       appStatus: device.appStatus || "absent",
+      attendanceStatus: attendanceStateFromDevice(device),
+      attendanceChangedAt: attendanceChangedAtFromDevice(device),
+      attendanceOrigin: device.attendanceOrigin ?? "bluetooth",
+      attendanceVerificationStatus:
+        device.attendanceVerificationStatus
+        ?? (device.status === "present" ? "verified" : "unverified"),
+      attendanceVerifiedBy:
+        device.attendanceVerifiedBy
+        ?? (device.status === "present" ? "bluetooth_immediate" : "none"),
+      latestAppIntent: device.latestAppIntent ?? null,
+      latestAppIntentAt: device.latestAppIntentAt ?? null,
+      pendingVerificationAction: device.pendingVerificationAction ?? null,
+      pendingVerificationExpiresAt: device.pendingVerificationExpiresAt ?? null,
+      lastBluetoothPresentAt: device.lastBluetoothPresentAt ?? null,
+      lastBluetoothAbsentAt: device.lastBluetoothAbsentAt ?? null,
     };
   },
 });
@@ -868,9 +1436,7 @@ export const fetchAppStatusByEmail = query({
     const configResponse = buildAppConfigResponse(appConfig);
 
     return {
-      success: true,
-      email: normalizedEmail,
-      appStatus: device.appStatus === "present" ? "present" : "absent",
+      ...buildAttendanceStatePayload(device, normalizedEmail),
       keyVersion: configResponse.keyVersion,
       boundaryEnabled: configResponse.boundaryEnabled,
       boundaryLatitude: configResponse.boundaryLatitude,
@@ -975,26 +1541,135 @@ export const flipAppStatusByEmail = mutation({
     }
 
     const now = Date.now();
-    const nextAppStatus = device.appStatus === "present" ? "absent" : "present";
+    let currentDevice = await settleExpiredPendingVerification(ctx, device, now);
+    const desiredAction: AttendanceAction =
+      attendanceStateFromDevice(currentDevice) === "present" ? "check_out" : "check_in";
 
-    await ctx.db.patch(device._id, {
-      appStatus: nextAppStatus,
-      appLastSeen: now,
-    });
+    if (
+      desiredAction === "check_out"
+      && currentDevice.pendingVerificationAction === "check_out"
+      && typeof currentDevice.pendingVerificationExpiresAt === "number"
+      && currentDevice.pendingVerificationExpiresAt > now
+    ) {
+      return {
+        ...buildAttendanceStatePayload(currentDevice, normalizedEmail),
+        keyVersion: appConfig.keyVersion,
+        boundaryEnforced: boundaryEnabled,
+        requestedAction: desiredAction,
+        requestedStatus: "absent",
+      };
+    }
 
-    await ctx.db.insert("deviceLogs", {
-      deviceId: device._id,
-      changeType: "update",
-      timestamp: now,
-      details: `App status toggled to ${nextAppStatus} for ${normalizedEmail}`,
-    });
+    if (desiredAction === "check_out" && currentDevice.pendingVerificationAction === "check_in") {
+      currentDevice = await markPendingCheckInUnverified(ctx, currentDevice);
+    }
+
+    const verificationDeadline = now + ATTENDANCE_VERIFY_WINDOW_MS;
+    let devicePatch: Record<string, any>;
+    let requestedStatus: AttendanceStatusValue;
+
+    if (desiredAction === "check_in") {
+      requestedStatus = "present";
+      if (currentDevice.status === "present") {
+        await createAttendanceEvent(ctx, currentDevice, {
+          action: "check_in",
+          origin: "app",
+          verificationStatus: "verified",
+          verifiedBy: "bluetooth_immediate",
+          eventTimestamp: now,
+          effectiveTimestamp: now,
+        });
+        await auditAttendance(ctx, currentDevice._id, "Checked in via app and verified immediately with bluetooth");
+        devicePatch = {
+          appStatus: "present",
+          appLastSeen: now,
+          latestAppIntent: "check_in",
+          latestAppIntentAt: now,
+          attendanceStatus: "present",
+          attendanceChangedAt: now,
+          attendanceOrigin: "app",
+          attendanceVerificationStatus: "verified",
+          attendanceVerifiedBy: "bluetooth_immediate",
+          ...clearedPendingVerificationPatch(),
+        };
+      } else {
+        const attendanceEventId = await createAttendanceEvent(ctx, currentDevice, {
+          action: "check_in",
+          origin: "app",
+          verificationStatus: "pending",
+          verifiedBy: "none",
+          eventTimestamp: now,
+          effectiveTimestamp: now,
+          verificationDeadline,
+        });
+        await auditAttendance(ctx, currentDevice._id, "Checked in via app and waiting for bluetooth verification");
+        devicePatch = {
+          appStatus: "present",
+          appLastSeen: now,
+          latestAppIntent: "check_in",
+          latestAppIntentAt: now,
+          attendanceStatus: "present",
+          attendanceChangedAt: now,
+          attendanceOrigin: "app",
+          attendanceVerificationStatus: "pending",
+          attendanceVerifiedBy: "none",
+          ...pendingVerificationPatch("check_in", attendanceEventId, verificationDeadline),
+        };
+      }
+    } else {
+      requestedStatus = "absent";
+      if (currentDevice.status === "absent") {
+        await createAttendanceEvent(ctx, currentDevice, {
+          action: "check_out",
+          origin: "app",
+          verificationStatus: "verified",
+          verifiedBy: "bluetooth_immediate",
+          eventTimestamp: now,
+          effectiveTimestamp: now,
+        });
+        await auditAttendance(ctx, currentDevice._id, "Checked out via app and verified immediately with bluetooth");
+        devicePatch = {
+          appStatus: "absent",
+          appLastSeen: now,
+          latestAppIntent: "check_out",
+          latestAppIntentAt: now,
+          attendanceStatus: "absent",
+          attendanceChangedAt: now,
+          attendanceOrigin: "app",
+          attendanceVerificationStatus: "verified",
+          attendanceVerifiedBy: "bluetooth_immediate",
+          ...clearedPendingVerificationPatch(),
+        };
+      } else {
+        const attendanceEventId = await createAttendanceEvent(ctx, currentDevice, {
+          action: "check_out",
+          origin: "app",
+          verificationStatus: "pending",
+          verifiedBy: "none",
+          eventTimestamp: now,
+          effectiveTimestamp: now,
+          verificationDeadline,
+        });
+        await auditAttendance(ctx, currentDevice._id, "Requested app check-out and waiting for bluetooth disconnect verification");
+        devicePatch = {
+          appStatus: "absent",
+          appLastSeen: now,
+          latestAppIntent: "check_out",
+          latestAppIntentAt: now,
+          ...pendingVerificationPatch("check_out", attendanceEventId, verificationDeadline),
+        };
+      }
+    }
+
+    await ctx.db.patch(currentDevice._id, devicePatch);
+    const updatedDevice = await refreshDevice(ctx, currentDevice._id);
 
     return {
-      success: true,
-      appStatus: nextAppStatus,
-      email: normalizedEmail,
+      ...buildAttendanceStatePayload(updatedDevice, normalizedEmail),
       keyVersion: appConfig.keyVersion,
       boundaryEnforced: boundaryEnabled,
+      requestedAction: desiredAction,
+      requestedStatus,
     };
   },
 });
@@ -1024,149 +1699,13 @@ export const getAttendanceHistory = query({
       throw new Error("No registered device found for this UCSD email");
     }
 
-    const logs = await ctx.db
-      .query("deviceLogs")
-      .withIndex("by_deviceId", (q: any) => q.eq("deviceId", device._id))
-      .filter((q: any) =>
-        q.or(
-          q.eq(q.field("changeType"), "status_change"),
-          q.eq(q.field("changeType"), "update"),
-        )
-      )
+    const rawLogs = await ctx.db
+      .query("attendanceLogs")
+      .withIndex("by_deviceId_timestamp", (q: any) => q.eq("deviceId", String(device._id)))
       .order("desc")
       .take(200);
 
-    const FIVE_MINUTES_MS = 5 * 60 * 1000;
-
-    const bluetoothStatusEvents = logs
-      .filter((log: any) => log.changeType === "status_change" && typeof log.details === "string")
-      .map((log: any) => {
-        const match = log.details.match(/Status changed from (present|absent) to (present|absent)/i);
-        const nextStatus = match?.[2]?.toLowerCase();
-        if (nextStatus === "present" || nextStatus === "absent") {
-          return { timestamp: log.timestamp, status: nextStatus };
-        }
-        return null;
-      })
-      .filter(Boolean)
-      .map((entry: any) => entry)
-      .sort((a: any, b: any) => a.timestamp - b.timestamp);
-
-    const bluetoothCheckIns = bluetoothStatusEvents.filter((event: any) => event.status === "present");
-    const bluetoothCheckOuts = bluetoothStatusEvents.filter((event: any) => event.status === "absent");
-
-    const appStatusLogs = logs.filter((log: any) => typeof log.details === "string" && log.details.includes("App status"));
-
-    const appStatusEvents = appStatusLogs
-      .map((log: any) => {
-        const match = log.details.match(/App status toggled to (present|absent)/i);
-        const nextStatus = match?.[1]?.toLowerCase();
-        if (nextStatus === "present" || nextStatus === "absent") {
-          return { timestamp: log.timestamp, status: nextStatus };
-        }
-        return null;
-      })
-      .filter(Boolean)
-      .map((entry: any) => entry)
-      .sort((a: any, b: any) => a.timestamp - b.timestamp);
-
-    const appCheckIns = appStatusEvents.filter((event: any) => event.status === "present");
-    const appCheckOuts = appStatusEvents.filter((event: any) => event.status === "absent");
-
-    const mergeEvents = (
-      primaryEvents: { timestamp: number }[],
-      secondaryEvents: { timestamp: number }[],
-      options: {
-        status: "present" | "absent";
-        bothLabel: string;
-        primaryLabel: string;
-        secondaryLabel: string;
-        bothSource: string;
-        primarySource: string;
-        secondarySource: string;
-      },
-    ) => {
-      const merged: any[] = [];
-      let primaryIndex = 0;
-      let secondaryIndex = 0;
-
-      while (primaryIndex < primaryEvents.length && secondaryIndex < secondaryEvents.length) {
-        const primaryEvent = primaryEvents[primaryIndex];
-        const secondaryEvent = secondaryEvents[secondaryIndex];
-        const diff = Math.abs(primaryEvent.timestamp - secondaryEvent.timestamp);
-
-        if (diff <= FIVE_MINUTES_MS) {
-          merged.push({
-            timestamp: Math.min(primaryEvent.timestamp, secondaryEvent.timestamp),
-            status: options.status,
-            source: options.bothSource,
-            label: options.bothLabel,
-          });
-          primaryIndex += 1;
-          secondaryIndex += 1;
-        } else if (primaryEvent.timestamp < secondaryEvent.timestamp) {
-          merged.push({
-            timestamp: primaryEvent.timestamp,
-            status: options.status,
-            source: options.primarySource,
-            label: options.primaryLabel,
-          });
-          primaryIndex += 1;
-        } else {
-          merged.push({
-            timestamp: secondaryEvent.timestamp,
-            status: options.status,
-            source: options.secondarySource,
-            label: options.secondaryLabel,
-          });
-          secondaryIndex += 1;
-        }
-      }
-
-      while (primaryIndex < primaryEvents.length) {
-        merged.push({
-          timestamp: primaryEvents[primaryIndex].timestamp,
-          status: options.status,
-          source: options.primarySource,
-          label: options.primaryLabel,
-        });
-        primaryIndex += 1;
-      }
-
-      while (secondaryIndex < secondaryEvents.length) {
-        merged.push({
-          timestamp: secondaryEvents[secondaryIndex].timestamp,
-          status: options.status,
-          source: options.secondarySource,
-          label: options.secondaryLabel,
-        });
-        secondaryIndex += 1;
-      }
-
-      return merged;
-    };
-
-    const combinedCheckIns = mergeEvents(appCheckIns, bluetoothCheckIns, {
-      status: "present",
-      bothLabel: "app check in verified with bluetooth",
-      primaryLabel: "checked in with app",
-      secondaryLabel: "checked in with bluetooth",
-      bothSource: "app+bluetooth",
-      primarySource: "app",
-      secondarySource: "bluetooth",
-    });
-
-    const combinedCheckOuts = mergeEvents(appCheckOuts, bluetoothCheckOuts, {
-      status: "absent",
-      bothLabel: "app check out verified with bluetooth",
-      primaryLabel: "checked out via app",
-      secondaryLabel: "checked out via bluetooth",
-      bothSource: "app+bluetooth",
-      primarySource: "app",
-      secondarySource: "bluetooth",
-    });
-
-    const records = [...combinedCheckIns, ...combinedCheckOuts].sort((a, b) => b.timestamp - a.timestamp);
+    const records = rawLogs.map((log: any) => normalizeAttendanceLogForResponse(log));
 
     return {
       success: true,
@@ -1181,112 +1720,44 @@ export const getCheckedInUsers = query({
   handler: async (ctx: any) => {
     try {
       const devices = await ctx.db.query("devices").collect();
-      
       const checkedInUsers: any[] = [];
-      
+
       for (const device of devices) {
-        // Skip pending registration devices
-        if (device.pendingRegistration) {
+        if (device.pendingRegistration || attendanceStateFromDevice(device) !== "present") {
           continue;
         }
-        
-        // Check if device is checked in (via app or bluetooth)
-        const isCheckedIn = device.status === "present" || device.appStatus === "present";
-        
-        if (!isCheckedIn) {
-          continue;
-        }
-        
-        // Default values
-        let checkInTime = device.connectedSince || device.lastSeen || Date.now();
-        let checkInMethod = "unknown";
-        
-        try {
-          // Get recent logs for this device
-          const logs = await ctx.db
-            .query("deviceLogs")
-            .withIndex("by_deviceId", (q: any) => q.eq("deviceId", device._id))
-            .filter((q: any) =>
-              q.or(
-                q.eq(q.field("changeType"), "status_change"),
-                q.eq(q.field("changeType"), "update"),
-              )
-            )
-            .order("desc")
-            .take(50);
-          
-          // Find recent check-in events
-          const recentStatusChange = logs.find((log: any) => 
-            log.changeType === "status_change" && 
-            typeof log.details === "string" &&
-            log.details.includes("to present")
-          );
-          
-          const recentAppToggle = logs.find((log: any) => 
-            log.changeType === "update" && 
-            typeof log.details === "string" &&
-            log.details.includes("App status toggled to present")
-          );
-          
-          // Determine check-in time and method
-          if (recentStatusChange && recentAppToggle) {
-            const timeDiff = Math.abs(recentStatusChange.timestamp - recentAppToggle.timestamp);
-            if (timeDiff <= 5 * 60 * 1000) {
-              checkInTime = Math.min(recentStatusChange.timestamp, recentAppToggle.timestamp);
-              checkInMethod = "app+bluetooth";
-            } else if (recentStatusChange.timestamp > recentAppToggle.timestamp) {
-              checkInTime = recentStatusChange.timestamp;
-              checkInMethod = "bluetooth";
-            } else {
-              checkInTime = recentAppToggle.timestamp;
-              checkInMethod = "app";
-            }
-          } else if (recentStatusChange) {
-            checkInTime = recentStatusChange.timestamp;
-            checkInMethod = "bluetooth";
-          } else if (recentAppToggle) {
-            checkInTime = recentAppToggle.timestamp;
-            checkInMethod = "app";
-          } else if (device.status === "present") {
-            checkInMethod = "bluetooth";
-          } else if (device.appStatus === "present") {
-            checkInMethod = "app";
-          }
-        } catch (logError) {
-          // If log query fails, use device defaults
-          console.error("Error fetching logs for device", device._id, logError);
-          if (device.status === "present") {
-            checkInMethod = "bluetooth";
-          } else if (device.appStatus === "present") {
-            checkInMethod = "app";
-          }
-        }
-        
-        // Build display name
-        const displayName = (device.firstName && device.lastName) 
-          ? `${device.firstName} ${device.lastName}` 
-          : (device.name || "Unknown");
-        
+
+        const checkInMethod =
+          device.attendanceOrigin === "app"
+            ? device.attendanceVerificationStatus === "verified"
+              ? "app+bluetooth"
+              : "app"
+            : "bluetooth";
+
         checkedInUsers.push({
           _id: device._id,
-          name: displayName,
+          name: deviceDisplayName(device),
           firstName: device.firstName,
           lastName: device.lastName,
           email: device.ucsdEmail,
-          checkInTime,
+          checkInTime: attendanceChangedAtFromDevice(device) || device.lastSeen || Date.now(),
           checkInMethod,
           status: device.status,
           appStatus: device.appStatus,
+          attendanceStatus: attendanceStateFromDevice(device),
+          attendanceOrigin: device.attendanceOrigin ?? "bluetooth",
+          attendanceVerificationStatus:
+            device.attendanceVerificationStatus
+            ?? (device.status === "present" ? "verified" : "unverified"),
+          pendingVerificationAction: device.pendingVerificationAction ?? null,
         });
       }
-      
-      // Sort by check-in time, most recent first
+
       checkedInUsers.sort((a, b) => b.checkInTime - a.checkInTime);
-      
+
       return checkedInUsers;
     } catch (error) {
       console.error("Error in getCheckedInUsers:", error);
-      // Return empty array on error rather than crashing
       return [];
     }
   },
@@ -1304,151 +1775,12 @@ export const getAttendanceHistoryByDeviceId = query({
     }
 
     const maxRecords = args.limit || 20;
-
     const logs = await ctx.db
-      .query("deviceLogs")
-      .withIndex("by_deviceId", (q: any) => q.eq("deviceId", args.deviceId))
-      .filter((q: any) =>
-        q.or(
-          q.eq(q.field("changeType"), "status_change"),
-          q.eq(q.field("changeType"), "update"),
-        )
-      )
+      .query("attendanceLogs")
+      .withIndex("by_deviceId_timestamp", (q: any) => q.eq("deviceId", String(args.deviceId)))
       .order("desc")
-      .take(200);
+      .take(maxRecords);
 
-    const FIVE_MINUTES_MS = 5 * 60 * 1000;
-
-    const bluetoothStatusEvents = logs
-      .filter((log: any) => log.changeType === "status_change" && typeof log.details === "string")
-      .map((log: any) => {
-        const match = log.details.match(/Status changed from (present|absent) to (present|absent)/i);
-        const nextStatus = match?.[2]?.toLowerCase();
-        if (nextStatus === "present" || nextStatus === "absent") {
-          return { timestamp: log.timestamp, status: nextStatus };
-        }
-        return null;
-      })
-      .filter(Boolean)
-      .sort((a: any, b: any) => a.timestamp - b.timestamp);
-
-    const bluetoothCheckIns = bluetoothStatusEvents.filter((event: any) => event.status === "present");
-    const bluetoothCheckOuts = bluetoothStatusEvents.filter((event: any) => event.status === "absent");
-
-    const appStatusLogs = logs.filter((log: any) => typeof log.details === "string" && log.details.includes("App status"));
-
-    const appStatusEvents = appStatusLogs
-      .map((log: any) => {
-        const match = log.details.match(/App status toggled to (present|absent)/i);
-        const nextStatus = match?.[1]?.toLowerCase();
-        if (nextStatus === "present" || nextStatus === "absent") {
-          return { timestamp: log.timestamp, status: nextStatus };
-        }
-        return null;
-      })
-      .filter(Boolean)
-      .sort((a: any, b: any) => a.timestamp - b.timestamp);
-
-    const appCheckIns = appStatusEvents.filter((event: any) => event.status === "present");
-    const appCheckOuts = appStatusEvents.filter((event: any) => event.status === "absent");
-
-    const mergeEvents = (
-      primaryEvents: { timestamp: number }[],
-      secondaryEvents: { timestamp: number }[],
-      options: {
-        status: "present" | "absent";
-        bothLabel: string;
-        primaryLabel: string;
-        secondaryLabel: string;
-        bothSource: string;
-        primarySource: string;
-        secondarySource: string;
-      },
-    ) => {
-      const merged: any[] = [];
-      let primaryIndex = 0;
-      let secondaryIndex = 0;
-
-      while (primaryIndex < primaryEvents.length && secondaryIndex < secondaryEvents.length) {
-        const primaryEvent = primaryEvents[primaryIndex];
-        const secondaryEvent = secondaryEvents[secondaryIndex];
-        const diff = Math.abs(primaryEvent.timestamp - secondaryEvent.timestamp);
-
-        if (diff <= FIVE_MINUTES_MS) {
-          merged.push({
-            timestamp: Math.min(primaryEvent.timestamp, secondaryEvent.timestamp),
-            status: options.status,
-            source: options.bothSource,
-            label: options.bothLabel,
-          });
-          primaryIndex += 1;
-          secondaryIndex += 1;
-        } else if (primaryEvent.timestamp < secondaryEvent.timestamp) {
-          merged.push({
-            timestamp: primaryEvent.timestamp,
-            status: options.status,
-            source: options.primarySource,
-            label: options.primaryLabel,
-          });
-          primaryIndex += 1;
-        } else {
-          merged.push({
-            timestamp: secondaryEvent.timestamp,
-            status: options.status,
-            source: options.secondarySource,
-            label: options.secondaryLabel,
-          });
-          secondaryIndex += 1;
-        }
-      }
-
-      while (primaryIndex < primaryEvents.length) {
-        merged.push({
-          timestamp: primaryEvents[primaryIndex].timestamp,
-          status: options.status,
-          source: options.primarySource,
-          label: options.primaryLabel,
-        });
-        primaryIndex += 1;
-      }
-
-      while (secondaryIndex < secondaryEvents.length) {
-        merged.push({
-          timestamp: secondaryEvents[secondaryIndex].timestamp,
-          status: options.status,
-          source: options.secondarySource,
-          label: options.secondaryLabel,
-        });
-        secondaryIndex += 1;
-      }
-
-      return merged;
-    };
-
-    const combinedCheckIns = mergeEvents(appCheckIns, bluetoothCheckIns, {
-      status: "present",
-      bothLabel: "app check in verified with bluetooth",
-      primaryLabel: "checked in with app",
-      secondaryLabel: "checked in with bluetooth",
-      bothSource: "app+bluetooth",
-      primarySource: "app",
-      secondarySource: "bluetooth",
-    });
-
-    const combinedCheckOuts = mergeEvents(appCheckOuts, bluetoothCheckOuts, {
-      status: "absent",
-      bothLabel: "app check out verified with bluetooth",
-      primaryLabel: "checked out via app",
-      secondaryLabel: "checked out via bluetooth",
-      bothSource: "app+bluetooth",
-      primarySource: "app",
-      secondarySource: "bluetooth",
-    });
-
-    const records = [...combinedCheckIns, ...combinedCheckOuts]
-      .sort((a, b) => b.timestamp - a.timestamp)
-      .slice(0, maxRecords);
-
-    return records;
+    return logs.map((log: any) => normalizeAttendanceLogForResponse(log));
   },
 });

@@ -1291,6 +1291,7 @@ body:not(.role-admin) .admin-only {
     display: flex;
     justify-content: flex-start;
     align-items: center;
+    flex-wrap: wrap;
     gap: 1rem;
     font-size: 0.75rem;
     color: var(--text-secondary);
@@ -1298,6 +1299,10 @@ body:not(.role-admin) .admin-only {
 
 .log-time {
     font-family: var(--font-mono);
+}
+
+.log-meta {
+    color: var(--text-secondary);
 }
 
 .log-device {

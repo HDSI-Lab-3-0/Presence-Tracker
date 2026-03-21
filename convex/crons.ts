@@ -17,6 +17,13 @@ crons.interval(
   {},
 );
 
+crons.interval(
+  "expirePendingAttendanceVerifications",
+  { minutes: 1 },
+  internal.devices.expirePendingAttendanceVerifications,
+  {},
+);
+
 crons.cron(
   "cleanupOldLogs",
   "0 0 * * *",

@@ -404,6 +404,11 @@ html, body {
     color: var(--text-secondary);
 }
 
+.status-subtext {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+}
+
 /* Location Section */
 .location-section {
     margin-bottom: 16px;
@@ -671,6 +676,14 @@ html, body {
 
 .log-source.verified {
     color: var(--success);
+}
+
+.log-source.warning {
+    color: var(--warning);
+}
+
+.log-source.error {
+    color: var(--danger);
 }
 
 .log-time {
