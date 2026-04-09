@@ -6,7 +6,7 @@
     "dev:full": "bun run dev:backend & bun run dev:frontend",
     "dev:backend": "convex dev",
     "dev:frontend": "bun run generate:config && astro dev --host 0.0.0.0 --port 3132",
-    "build:frontend": "bun run generate:config && astro build",
+    "build:frontend": "bun run generate:config && astro build && node scripts/relativize-astro-assets.mjs",
     "preview:frontend": "bun run generate:config && astro preview --host 0.0.0.0 --port 3132",
     "deploy": "convex deploy"
   },

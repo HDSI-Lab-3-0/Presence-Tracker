@@ -2,8 +2,7 @@
 import { defineConfig } from "astro/config";
 import tailwindcss from "@tailwindcss/vite";
 
-// Set ASTRO_BASE at build time: "/" for custom-domain root, "/repo-name/" for github.io project Pages.
-// CI sets this; local default "/" matches dev.
+// Build-time base (asset URLs are rewritten to be HTML-relative in scripts/relativize-astro-assets.mjs).
 const base = process.env.ASTRO_BASE?.trim() || "/";
 
 export default defineConfig({
