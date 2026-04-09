@@ -31,9 +31,7 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      # Astro `base` must match how Pages serves the site:
-      # - github.io project URL: /repo-name/
-      # - Custom domain (apex or www): /  — set repo variable ASTRO_BASE to /
+      # "/" for custom domain (Pages serves at site root). Default: /repository-name/ for github.io project URL.
       - name: Build Astro site
         run: bun run build:frontend
         env:

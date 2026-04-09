@@ -8,7 +8,7 @@ const STATIC_ASSETS = [
   PWA_ROOT_PATH,
   withPwaRoot('index.html'),
   withPwaRoot('manifest.json'),
-  withPwaRoot('icons/logo.svg'),
+  withPwaRoot('icons/icon-192.svg'),
 ];
 
 self.addEventListener('install', (event) => {
