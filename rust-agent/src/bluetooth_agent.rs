@@ -1,5 +1,6 @@
 use crate::bluetooth_probe::{
-    configure_adapter, get_device_name, is_valid_mac, normalize_mac, trust_device, CommandRunner,
+    configure_adapter, connect_probe, get_device_name, is_valid_mac, normalize_mac, trust_device,
+    CommandRunner,
 };
 use crate::config::Config;
 use crate::convex_client::ConvexClient;
@@ -161,9 +162,6 @@ async fn handle_device_added(
 
     // Check if device is already trusted
     let is_trusted = device.is_trusted().await.unwrap_or(false);
-    if is_trusted {
-        return;
-    }
 
     logging::info(
         "bluetooth_agent",
@@ -192,8 +190,8 @@ async fn handle_device_added(
         }
     }
 
-    // Trust the device
-    if is_valid_mac(&mac) {
+    // Trust the device if needed.
+    if !is_trusted && is_valid_mac(&mac) {
         let _ = trust_device(
             runner.as_ref(),
             &normalize_mac(&mac),
@@ -225,6 +223,28 @@ async fn handle_device_added(
             Some("error"),
             &e.to_string(),
         ),
+    }
+
+    // Best-effort immediate connect so unknown devices can remain "active" during onboarding.
+    if is_valid_mac(&mac) {
+        let connected = connect_probe(runner.as_ref(), &normalize_mac(&mac), command_timeout_seconds);
+        if connected {
+            logging::info(
+                "bluetooth_agent",
+                "device_connect_after_pair",
+                Some(&mac),
+                Some("ok"),
+                "Connected device after pairing",
+            );
+        } else {
+            logging::warn(
+                "bluetooth_agent",
+                "device_connect_after_pair",
+                Some(&mac),
+                Some("failed"),
+                "Pair succeeded but connect attempt did not persist",
+            );
+        }
     }
 }
 

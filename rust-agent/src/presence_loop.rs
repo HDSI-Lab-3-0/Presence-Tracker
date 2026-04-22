@@ -1,5 +1,5 @@
 use crate::bluetooth_probe::{
-    get_connected_devices, is_valid_mac, normalize_mac, probe_device, CommandRunner,
+    get_connected_devices, get_paired_devices, is_valid_mac, normalize_mac, probe_device, CommandRunner,
 };
 use crate::config::Config;
 use crate::convex_client::{ConvexClient, DeviceRecord};
@@ -58,6 +58,56 @@ impl PresenceLoop {
         .into_iter()
         .map(|mac| normalize_mac(&mac))
         .collect();
+        let paired: HashSet<String> = get_paired_devices(
+            self.runner.as_ref(),
+            self.config.bluetooth.command_timeout_seconds,
+        )
+        .into_iter()
+        .map(|mac| normalize_mac(&mac))
+        .collect();
+        let known_macs: HashSet<String> = devices
+            .iter()
+            .map(|device| normalize_mac(&device.mac_address))
+            .collect();
+
+        for mac in connected.iter().filter(|mac| !known_macs.contains(*mac)) {
+            if let Err(error) = self.convex.register_pending_device(mac, None).await {
+                logging::warn(
+                    "presence_loop",
+                    "register_pending_fallback",
+                    Some(mac),
+                    Some("error"),
+                    &error.to_string(),
+                );
+            } else {
+                logging::info(
+                    "presence_loop",
+                    "register_pending_fallback",
+                    Some(mac),
+                    Some("ok"),
+                    "Registered unknown connected device as pending",
+                );
+            }
+        }
+        for mac in paired.iter().filter(|mac| !known_macs.contains(*mac)) {
+            if let Err(error) = self.convex.register_pending_device(mac, None).await {
+                logging::warn(
+                    "presence_loop",
+                    "register_pending_paired_fallback",
+                    Some(mac),
+                    Some("error"),
+                    &error.to_string(),
+                );
+            } else {
+                logging::info(
+                    "presence_loop",
+                    "register_pending_paired_fallback",
+                    Some(mac),
+                    Some("ok"),
+                    "Registered unknown paired device as pending",
+                );
+            }
+        }
 
         let absent_threshold = self.config.presence.absent_threshold.max(1);
         let mut known = HashSet::new();
