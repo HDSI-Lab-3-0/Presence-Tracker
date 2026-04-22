@@ -1,14 +1,15 @@
 export const prerender = true;
 
 const serviceWorkerSource = `
-const CACHE_NAME = 'presence-tracker-pwa-v2';
+const CACHE_NAME = 'presence-tracker-pwa-v3';
 const PWA_ROOT_PATH = new URL('./', self.location.href).pathname;
 const withPwaRoot = (relativePath) => \`\${PWA_ROOT_PATH}\${relativePath.replace(/^\\/+/, '')}\`;
+const FAVICON_PATH = new URL('../favicon.svg', self.location.href).pathname;
 const STATIC_ASSETS = [
   PWA_ROOT_PATH,
   withPwaRoot('index.html'),
   withPwaRoot('manifest.json'),
-  withPwaRoot('icons/icon-192.svg'),
+  FAVICON_PATH,
 ];
 
 self.addEventListener('install', (event) => {
