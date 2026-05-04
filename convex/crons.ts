@@ -31,4 +31,19 @@ crons.cron(
   {},
 );
 
+// Pacific midnight is 07:00 UTC (PDT) or 08:00 UTC (PST); run shortly after both so one hits each night.
+crons.cron(
+  "pacificMidnightCheckout-utc7",
+  "5 7 * * *",
+  internal.devices.pacificMidnightCheckoutIfDue,
+  {},
+);
+
+crons.cron(
+  "pacificMidnightCheckout-utc8",
+  "5 8 * * *",
+  internal.devices.pacificMidnightCheckoutIfDue,
+  {},
+);
+
 export default crons;

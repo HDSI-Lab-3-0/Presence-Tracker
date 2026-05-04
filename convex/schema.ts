@@ -63,6 +63,8 @@ export default defineSchema({
     boundaryLongitude: v.optional(v.number()),
     boundaryRadius: v.optional(v.number()),
     boundaryRadiusUnit: v.optional(v.union(v.literal("meters"), v.literal("miles"))),
+    /** YYYY-MM-DD (America/Los_Angeles) — last day pacificMidnightCheckoutIfDue ran */
+    lastPacificMidnightCheckoutDay: v.optional(v.string()),
   }),
 
   deviceLogs: defineTable({

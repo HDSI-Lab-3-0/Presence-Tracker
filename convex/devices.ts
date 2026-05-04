@@ -203,6 +203,19 @@ const pacificDayKey = (timestamp: number) =>
     day: "2-digit",
   }).format(new Date(timestamp));
 
+/** True during the first `windowMinutes` of the calendar day in America/Los_Angeles. */
+const isWithinPacificMidnightWindow = (timestamp: number, windowMinutes: number) => {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: PACIFIC_TIME_ZONE,
+    hour: "numeric",
+    minute: "numeric",
+    hourCycle: "h23",
+  }).formatToParts(new Date(timestamp));
+  const hour = Number.parseInt(parts.find((p) => p.type === "hour")?.value ?? "-1", 10);
+  const minute = Number.parseInt(parts.find((p) => p.type === "minute")?.value ?? "-1", 10);
+  return hour === 0 && minute >= 0 && minute < windowMinutes;
+};
+
 const pendingVerificationPatch = (
   action: AttendanceAction,
   eventId: Id<"attendanceLogs">,
@@ -1336,6 +1349,57 @@ export const expirePendingAttendanceVerifications = internalMutation({
     }
 
     return { updatedCount };
+  },
+});
+
+/** Runs from cron at 07:05 and 08:05 UTC; only acts in the first 25 minutes after Pacific midnight. */
+export const pacificMidnightCheckoutIfDue = internalMutation({
+  args: {},
+  handler: async (ctx: any) => {
+    const now = Date.now();
+    if (!isWithinPacificMidnightWindow(now, 25)) {
+      return { ran: false, reason: "outside_pacific_midnight_window" };
+    }
+
+    const appConfig = await getOrCreateAppConfig(ctx);
+    const dayKey = pacificDayKey(now);
+    if (appConfig.lastPacificMidnightCheckoutDay === dayKey) {
+      return { ran: false, reason: "already_ran_for_pacific_day", dayKey };
+    }
+
+    const devices = await ctx.db.query("devices").collect();
+    let checkedOutCount = 0;
+
+    for (const device of devices) {
+      if (device.pendingRegistration) continue;
+      if (attendanceStateFromDevice(device) !== "present") continue;
+
+      await createAttendanceEvent(ctx, device, {
+        action: "check_out",
+        origin: "system",
+        verificationStatus: "inferred",
+        verifiedBy: "system_inferred",
+        eventTimestamp: now,
+        effectiveTimestamp: now,
+      });
+      await auditAttendance(ctx, device._id, "Automatic checkout at Pacific midnight");
+      await ctx.db.patch(device._id, {
+        appStatus: "absent",
+        attendanceStatus: "absent",
+        attendanceChangedAt: now,
+        attendanceOrigin: "system",
+        attendanceVerificationStatus: "inferred",
+        attendanceVerifiedBy: "system_inferred",
+        ...clearedPendingVerificationPatch(),
+      });
+      checkedOutCount += 1;
+    }
+
+    await ctx.db.patch(appConfig._id, {
+      lastPacificMidnightCheckoutDay: dayKey,
+    });
+
+    return { ran: true, dayKey, checkedOutCount };
   },
 });
 

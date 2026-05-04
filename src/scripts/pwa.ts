@@ -17,7 +17,10 @@ let logsPage = 1;
 let logsTotalPages = 1;
 let logsCollapsed = true;
 
-const LOGS_PER_PAGE = 5;
+const ACTIVITY_TIMEZONE = "America/Los_Angeles";
+const ACTIVITY_FETCH_LIMIT = 100;
+const ACTIVITY_DAYS_PER_PAGE = 6;
+const BURST_MERGE_MS = 2 * 60 * 1000;
 const PWA_ROOT_PATH = new URL("./", window.location.href).pathname;
 
 function toPwaPath(relativePath: string) {
@@ -736,7 +739,7 @@ async function loadAttendanceLogs() {
   try {
     const history = await convexClient.query("devices:getAttendanceHistoryByDeviceId", {
       deviceId: currentDevice._id,
-      limit: 20,
+      limit: ACTIVITY_FETCH_LIMIT,
     });
 
     logEntries = normalizeLogs(history || []);
@@ -752,6 +755,136 @@ async function loadAttendanceLogs() {
 function normalizeLogs(history = []) {
   if (!Array.isArray(history)) return [];
   return history.filter(Boolean);
+}
+
+function pacificDateKey(timestamp) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: ACTIVITY_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(timestamp));
+}
+
+function pacificYesterdayKey(nowMs) {
+  const todayK = pacificDateKey(nowMs);
+  let t = nowMs;
+  while (pacificDateKey(t) === todayK) {
+    t -= 3600000;
+    if (nowMs - t > 72 * 3600000) return pacificDateKey(nowMs - 86400000);
+  }
+  return pacificDateKey(t);
+}
+
+function formatPacificWeekdayDate(ts) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: ACTIVITY_TIMEZONE,
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  }).format(new Date(ts));
+}
+
+function formatPacificTimeShort(ts) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: ACTIVITY_TIMEZONE,
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(new Date(ts))
+    .replace(" AM", "am")
+    .replace(" PM", "pm");
+}
+
+function dayHeadingLabel(dateKey, nowMs, anchorTs) {
+  if (dateKey === pacificDateKey(nowMs)) return "Today";
+  if (dateKey === pacificYesterdayKey(nowMs)) return "Yesterday";
+  return formatPacificWeekdayDate(anchorTs);
+}
+
+/** Collapse consecutive same-direction events within `windowMs` (manual + BT follow-up). */
+function mergeBurstLogs(asc, windowMs) {
+  if (!asc.length) return [];
+  const out = [];
+  for (const log of asc) {
+    const action = log.action === "check_out" ? "check_out" : "check_in";
+    const ts = typeof log.timestamp === "number" ? log.timestamp : 0;
+    const last = out[out.length - 1];
+    if (
+      last
+      && last.action === action
+      && Math.abs(ts - last.timestamp) <= windowMs
+    ) {
+      if (action === "check_in" && ts < last.timestamp) last.timestamp = ts;
+      if (action === "check_out" && ts > last.timestamp) last.timestamp = ts;
+      continue;
+    }
+    out.push({ ...log, action, timestamp: ts });
+  }
+  return out;
+}
+
+/**
+ * Pair check_in → following check_out. Skip orphan check_out rows (data gaps).
+ */
+function pairSessions(mergedAsc) {
+  const sessions = [];
+  let i = 0;
+  while (i < mergedAsc.length) {
+    while (i < mergedAsc.length && mergedAsc[i].action === "check_out") {
+      i++;
+    }
+    if (i >= mergedAsc.length) break;
+    const checkIn = mergedAsc[i];
+    i++;
+    if (i >= mergedAsc.length || mergedAsc[i].action === "check_in") {
+      sessions.push({ checkIn, checkOut: null });
+      continue;
+    }
+    const checkOut = mergedAsc[i];
+    i++;
+    sessions.push({ checkIn, checkOut });
+  }
+  return sessions;
+}
+
+function buildActivityDayGroupsFromLogs(logs) {
+  if (!logs.length) return [];
+  const asc = [...logs].sort((a, b) => a.timestamp - b.timestamp);
+  const merged = mergeBurstLogs(asc, BURST_MERGE_MS);
+  const sessions = pairSessions(merged);
+  const byDay = new Map();
+  for (const s of sessions) {
+    const dk = pacificDateKey(s.checkIn.timestamp);
+    if (!byDay.has(dk)) byDay.set(dk, []);
+    byDay.get(dk).push(s);
+  }
+  const keys = [...byDay.keys()].sort((a, b) => b.localeCompare(a));
+  const nowMs = Date.now();
+  return keys.map((dateKey) => {
+    const daySessions = byDay.get(dateKey);
+    daySessions.sort((a, b) => b.checkIn.timestamp - a.checkIn.timestamp);
+    const anchorTs = daySessions[0].checkIn.timestamp;
+    return {
+      dateKey,
+      heading: dayHeadingLabel(dateKey, nowMs, anchorTs),
+      sessions: daySessions,
+    };
+  });
+}
+
+function formatActivitySessionMarkup(session) {
+  const inStr = formatPacificTimeShort(session.checkIn.timestamp);
+  if (!session.checkOut) {
+    return `<div class="activity-session"><span class="activity-time activity-in">${inStr}</span><span class="activity-sep" aria-hidden="true">–</span><span class="activity-open">Open</span></div>`;
+  }
+  const outStr = formatPacificTimeShort(session.checkOut.timestamp);
+  return `<div class="activity-session"><span class="activity-time activity-in">${inStr}</span><span class="activity-sep" aria-hidden="true">–</span><span class="activity-time activity-out">${outStr}</span></div>`;
+}
+
+function formatActivityDayMarkup(day) {
+  const rows = day.sessions.map(formatActivitySessionMarkup).join("");
+  return `<div class="activity-day" data-date="${day.dateKey}"><div class="activity-day-title">${day.heading}</div><div class="activity-day-sessions">${rows}</div></div>`;
 }
 
 function renderLogs(emptyMessage = "No activity yet") {
@@ -774,117 +907,31 @@ function renderLogs(emptyMessage = "No activity yet") {
     return;
   }
 
-  logsTotalPages = Math.max(1, Math.ceil(logEntries.length / LOGS_PER_PAGE));
+  const dayGroups = buildActivityDayGroupsFromLogs(logEntries);
+
+  if (dayGroups.length === 0) {
+    logsTotalPages = 1;
+    logsPage = 1;
+    logsList.innerHTML = `<div class="logs-empty">${emptyMessage}</div>`;
+    if (pagination) pagination.style.display = "none";
+    if (pageIndicator) pageIndicator.textContent = "Page 1 of 1";
+    if (prevBtn) prevBtn.disabled = true;
+    if (nextBtn) nextBtn.disabled = true;
+    return;
+  }
+
+  logsTotalPages = Math.max(1, Math.ceil(dayGroups.length / ACTIVITY_DAYS_PER_PAGE));
   logsPage = Math.min(Math.max(logsPage, 1), logsTotalPages);
 
-  const start = (logsPage - 1) * LOGS_PER_PAGE;
-  const visibleEntries = logEntries.slice(start, start + LOGS_PER_PAGE);
+  const start = (logsPage - 1) * ACTIVITY_DAYS_PER_PAGE;
+  const visibleDays = dayGroups.slice(start, start + ACTIVITY_DAYS_PER_PAGE);
 
-  logsList.innerHTML = visibleEntries.map((log) => formatLogMarkup(log)).join("");
+  logsList.innerHTML = visibleDays.map(formatActivityDayMarkup).join("");
 
   if (pagination) pagination.style.display = logsTotalPages > 1 ? "flex" : "none";
   if (pageIndicator) pageIndicator.textContent = `Page ${logsPage} of ${logsTotalPages}`;
   if (prevBtn) prevBtn.disabled = logsPage === 1;
   if (nextBtn) nextBtn.disabled = logsPage === logsTotalPages;
-}
-
-function formatLogMarkup(log) {
-  const isCheckIn = log.status === "present";
-  const iconClass = isCheckIn ? "check-in" : "check-out";
-  const actionText = formatLogActionText(log);
-  const { label, cssClass } = formatLogSourceInfo(log);
-  const time = formatTime(log.timestamp);
-  const sourceMarkup = label
-    ? `<div class="log-source ${cssClass}">${label}</div>`
-    : "";
-
-  return `
-    <div class="log-item">
-      <div class="log-icon ${iconClass}">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2">
-          ${isCheckIn
-            ? '<polyline points="20 6 9 17 4 12"/>'
-            : '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>'}
-        </svg>
-      </div>
-      <div class="log-content">
-        <div class="log-action">${actionText}</div>
-        ${sourceMarkup}
-        <div class="log-time">${time}</div>
-      </div>
-    </div>
-  `;
-}
-
-function formatLogActionText(log) {
-  if (log.label) return sentenceCase(log.label);
-  return log.status === "present" ? "Checked in" : "Checked out";
-}
-
-function formatLogSourceInfo(log) {
-  if (log.origin === "system" || log.source === "system") {
-    return { label: "Inferred from bluetooth history", cssClass: "warning" };
-  }
-
-  if (log.verifiedBy === "manual"
-    || (log.verificationStatus === "verified" && log.origin === "app" && log.source === "app")) {
-    return { label: "Via app (manual)", cssClass: "verified" };
-  }
-
-  if (log.verificationStatus === "verified" && (log.origin === "app" || log.source === "app+bluetooth")) {
-    return { label: "Via app, verified with bluetooth", cssClass: "verified" };
-  }
-
-  if (log.verificationStatus === "pending") {
-    return { label: "Via app (legacy pending)", cssClass: "warning" };
-  }
-
-  if (log.verificationStatus === "unverified") {
-    return { label: "Via app (legacy, not completed)", cssClass: "warning" };
-  }
-
-  if (log.verificationStatus === "expired") {
-    return { label: "Via app (legacy session)", cssClass: "error" };
-  }
-
-  if (log.origin === "app" || log.source === "app") {
-    return { label: "Via app", cssClass: "" };
-  }
-
-  if (log.origin === "bluetooth" || log.source === "bluetooth") {
-    return { label: "Via bluetooth", cssClass: "verified" };
-  }
-
-  return { label: "", cssClass: "" };
-}
-
-function formatTime(timestamp) {
-  const date = new Date(timestamp);
-  const now = new Date();
-  const isToday = date.toDateString() === now.toDateString();
-
-  const timeStr = date.toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  });
-
-  if (isToday) {
-    return `Today at ${timeStr}`;
-  }
-
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-  if (date.toDateString() === yesterday.toDateString()) {
-    return `Yesterday at ${timeStr}`;
-  }
-
-  const dateStr = date.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-  });
-
-  return `${dateStr} at ${timeStr}`;
 }
 
 function describeCurrentStatus(device) {
@@ -931,11 +978,6 @@ function describeCurrentStatus(device) {
   }
 
   return "Checked out.";
-}
-
-function sentenceCase(text) {
-  if (!text) return "";
-  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function showLoading(text = "Loading...") {

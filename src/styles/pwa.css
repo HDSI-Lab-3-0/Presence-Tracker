@@ -617,7 +617,7 @@ html, body {
 .logs-list {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 10px;
 }
 
 .logs-loading {
@@ -627,69 +627,63 @@ html, body {
     font-size: 0.875rem;
 }
 
-.log-item {
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-    padding: 12px;
+.activity-day {
+    padding: 10px 12px;
     background: var(--bg-app);
     border-radius: var(--radius);
 }
 
-.log-icon {
-    width: 32px;
-    height: 32px;
-    border-radius: 50%;
+.activity-day-title {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+}
+
+.activity-day-sessions {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.activity-session {
     display: flex;
     align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-}
-
-.log-icon.check-in {
-    background: var(--success-light);
-    color: var(--success);
-}
-
-.log-icon.check-out {
-    background: var(--danger-bg);
-    color: var(--danger);
-}
-
-.log-content {
-    flex: 1;
-    min-width: 0;
-}
-
-.log-action {
-    font-size: 0.875rem;
-    font-weight: 500;
-    color: var(--text-main);
-    margin-bottom: 2px;
-}
-
-.log-source {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    margin-bottom: 4px;
-}
-
-.log-source.verified {
-    color: var(--success);
-}
-
-.log-source.warning {
-    color: var(--warning);
-}
-
-.log-source.error {
-    color: var(--danger);
-}
-
-.log-time {
-    font-size: 0.75rem;
-    color: var(--text-secondary);
+    flex-wrap: wrap;
+    gap: 6px 8px;
+    font-size: 0.8125rem;
     font-family: var(--font-mono);
+    line-height: 1.3;
+}
+
+.activity-time {
+    font-variant-numeric: tabular-nums;
+}
+
+.activity-time.activity-in {
+    color: var(--success);
+    font-weight: 600;
+}
+
+.activity-time.activity-out {
+    color: var(--text-main);
+    font-weight: 500;
+}
+
+.activity-sep {
+    color: var(--text-muted);
+    font-weight: 400;
+    user-select: none;
+}
+
+.activity-open {
+    font-size: 0.75rem;
+    font-weight: 500;
+    font-style: italic;
+    color: var(--text-muted);
+    font-family: var(--font-main);
 }
 
 .logs-empty {
