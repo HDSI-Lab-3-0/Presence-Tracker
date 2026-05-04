@@ -398,6 +398,12 @@ async function refreshBoundaryControlAccess() {
   }
 }
 
+function deviceIsManualDriver(device) {
+  if (!device) return false;
+  return device.attendanceDriver === "manual"
+    || (device.attendanceDriver !== "bluetooth" && typeof device.latestAppIntentAt === "number");
+}
+
 function updateBoundaryAdminLabelState() {
   const toggle = document.getElementById("boundary-admin-enabled") as HTMLInputElement | null;
   const state = document.getElementById("boundary-admin-state");
@@ -464,6 +470,7 @@ async function refreshAppStatus() {
           latestAppIntentAt: status.latestAppIntentAt,
           pendingVerificationAction: status.pendingVerificationAction,
           pendingVerificationExpiresAt: status.pendingVerificationExpiresAt,
+          attendanceDriver: status.attendanceDriver,
           status: status.bluetoothStatus || currentDevice.status,
           lastBluetoothPresentAt: status.lastBluetoothPresentAt,
           lastBluetoothAbsentAt: status.lastBluetoothAbsentAt,
@@ -577,8 +584,12 @@ function updateStatus() {
   const clockBtnText = document.getElementById("clock-btn-text");
   const actionHint = document.getElementById("action-hint");
 
+  const manual = deviceIsManualDriver(currentDevice);
   const isCheckedIn = currentDevice.attendanceStatus === "present"
-    || (!currentDevice.attendanceStatus && currentDevice.appStatus === "present");
+    || (!currentDevice.attendanceStatus && (
+      currentDevice.appStatus === "present"
+      || (!manual && currentDevice.status === "present")
+    ));
 
   if (isCheckedIn) {
     if (statusValue) {
@@ -588,8 +599,8 @@ function updateStatus() {
     if (clockBtn) clockBtn.className = "clock-btn check-out";
     if (clockBtnText) clockBtnText.textContent = "Check Out";
     if (actionHint) {
-      actionHint.textContent = currentDevice.pendingVerificationAction === "check_out"
-        ? "Checkout is waiting for bluetooth disconnect verification"
+      actionHint.textContent = manual && currentDevice.status === "present"
+        ? "Tap to check out (Bluetooth still in range)"
         : "Tap to check out";
     }
   } else {
@@ -650,17 +661,14 @@ window.toggleClockStatus = async function () {
         latestAppIntentAt: result.latestAppIntentAt,
         pendingVerificationAction: result.pendingVerificationAction,
         pendingVerificationExpiresAt: result.pendingVerificationExpiresAt,
+        attendanceDriver: result.attendanceDriver,
         status: result.bluetoothStatus || currentDevice.status,
       };
 
       updateStatus();
 
       const action = result.requestedAction === "check_out" ? "Check out" : "Check in";
-      const toastMessage = result.pendingVerificationAction === "check_out"
-        ? "Checkout requested. Waiting for bluetooth disconnect verification."
-        : result.attendanceVerificationStatus === "pending"
-          ? `${action} recorded. Waiting for bluetooth verification.`
-          : `${action} successful`;
+      const toastMessage = `${action} successful`;
       showToast(toastMessage, "success");
       await loadAttendanceLogs();
     } else {
@@ -818,20 +826,25 @@ function formatLogSourceInfo(log) {
     return { label: "Inferred from bluetooth history", cssClass: "warning" };
   }
 
+  if (log.verifiedBy === "manual"
+    || (log.verificationStatus === "verified" && log.origin === "app" && log.source === "app")) {
+    return { label: "Via app (manual)", cssClass: "verified" };
+  }
+
   if (log.verificationStatus === "verified" && (log.origin === "app" || log.source === "app+bluetooth")) {
     return { label: "Via app, verified with bluetooth", cssClass: "verified" };
   }
 
   if (log.verificationStatus === "pending") {
-    return { label: "Via app, waiting for bluetooth", cssClass: "warning" };
+    return { label: "Via app (legacy pending)", cssClass: "warning" };
   }
 
   if (log.verificationStatus === "unverified") {
-    return { label: "Via app, not verified with bluetooth", cssClass: "warning" };
+    return { label: "Via app (legacy, not completed)", cssClass: "warning" };
   }
 
   if (log.verificationStatus === "expired") {
-    return { label: "App checkout expired without bluetooth verification", cssClass: "error" };
+    return { label: "Via app (legacy session)", cssClass: "error" };
   }
 
   if (log.origin === "app" || log.source === "app") {
@@ -879,20 +892,23 @@ function describeCurrentStatus(device) {
 
   const verificationStatus = device.attendanceVerificationStatus;
   const origin = device.attendanceOrigin;
-
-  if (device.pendingVerificationAction === "check_out") {
-    return "Checkout requested. Waiting for bluetooth disconnect.";
-  }
+  const manual = deviceIsManualDriver(device);
+  const btHere = device.status === "present";
 
   if (device.attendanceStatus === "present") {
+    if (manual) {
+      return btHere
+        ? "Checked in manually. Bluetooth: in range."
+        : "Checked in manually. Bluetooth: away.";
+    }
     if (origin === "app" && verificationStatus === "verified") {
       return "Checked in via app and verified with bluetooth.";
     }
     if (origin === "app" && verificationStatus === "pending") {
-      return "Checked in via app. Waiting for bluetooth verification.";
+      return "Checked in via app (legacy pending).";
     }
     if (origin === "app" && verificationStatus === "unverified") {
-      return "Checked in via app without bluetooth verification.";
+      return "Checked in via app (legacy, not completed).";
     }
     if (origin === "bluetooth") {
       return "Checked in automatically via bluetooth.";
@@ -901,6 +917,13 @@ function describeCurrentStatus(device) {
       return "Attendance is based on inferred bluetooth history.";
     }
     return "Checked in.";
+  }
+
+  if (manual && !btHere) {
+    return "Checked out manually. Bluetooth: away.";
+  }
+  if (manual && btHere) {
+    return "Checked out manually. Bluetooth: still in range.";
   }
 
   if (origin === "system" && verificationStatus === "inferred") {

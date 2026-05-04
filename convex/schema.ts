@@ -7,6 +7,8 @@ export default defineSchema({
     firstName: v.optional(v.string()),
     lastName: v.optional(v.string()),
     ucsdEmail: v.optional(v.string()),
+    /** "manual" once user clocks via PWA; omit or "bluetooth" for BT-only roster */
+    attendanceDriver: v.optional(v.union(v.literal("bluetooth"), v.literal("manual"))),
     // specific fields
     status: v.string(),
     appStatus: v.optional(v.union(v.literal("present"), v.literal("absent"))),
@@ -29,6 +31,7 @@ export default defineSchema({
         v.literal("bluetooth_followup"),
         v.literal("bluetooth_disconnect"),
         v.literal("none"),
+        v.literal("manual"),
         v.literal("system_inferred"),
       ),
     ),
@@ -118,6 +121,7 @@ export default defineSchema({
         v.literal("bluetooth_followup"),
         v.literal("bluetooth_disconnect"),
         v.literal("none"),
+        v.literal("manual"),
         v.literal("system_inferred"),
       ),
     ),

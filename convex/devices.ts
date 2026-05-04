@@ -11,7 +11,6 @@ const APP_API_KEY_LENGTH = 48;
 const METERS_PER_MILE = 1609.344;
 const DEFAULT_BOUNDARY_RADIUS_METERS = 100;
 const DEFAULT_BOUNDARY_RADIUS_UNIT = "meters" as const;
-const ATTENDANCE_VERIFY_WINDOW_MS = 5 * 60 * 1000;
 const PACIFIC_TIME_ZONE = "America/Los_Angeles";
 
 type CleanupResult = { deletedCount: number; deletedMacs: string[] };
@@ -26,6 +25,7 @@ type AttendanceVerifiedBy =
   | "bluetooth_followup"
   | "bluetooth_disconnect"
   | "none"
+  | "manual"
   | "system_inferred";
 
 const isValidUcsdEmail = (email: string) => {
@@ -161,7 +161,17 @@ const ACTION_FROM_STATUS: Record<AttendanceStatusValue, AttendanceAction> = {
   absent: "check_out",
 };
 
+const isManualAttendanceDriver = (device: any): boolean =>
+  device?.attendanceDriver === "manual"
+  || (device?.attendanceDriver !== "bluetooth" && typeof device?.latestAppIntentAt === "number");
+
 const attendanceStateFromDevice = (device: any): AttendanceStatusValue => {
+  if (isManualAttendanceDriver(device)) {
+    if (device?.attendanceStatus === "present" || device?.attendanceStatus === "absent") {
+      return device.attendanceStatus;
+    }
+    return device?.appStatus === "present" ? "present" : "absent";
+  }
   if (device?.attendanceStatus === "present" || device?.attendanceStatus === "absent") {
     return device.attendanceStatus;
   }
@@ -240,6 +250,7 @@ const normalizeAttendanceLogForResponse = (log: any, now = Date.now()) => {
     log?.verifiedBy === "bluetooth_followup"
       || log?.verifiedBy === "bluetooth_disconnect"
       || log?.verifiedBy === "none"
+      || log?.verifiedBy === "manual"
       || log?.verifiedBy === "system_inferred"
       ? log.verifiedBy
       : "bluetooth_immediate";
@@ -249,9 +260,14 @@ const normalizeAttendanceLogForResponse = (log: any, now = Date.now()) => {
   const eventTimestamp =
     typeof log?.eventTimestamp === "number" ? log.eventTimestamp : effectiveTimestamp;
 
+  const verifiedByBluetooth =
+    verifiedBy === "bluetooth_immediate"
+    || verifiedBy === "bluetooth_followup"
+    || verifiedBy === "bluetooth_disconnect";
+
   const source =
     origin === "app"
-      ? verificationStatus === "verified"
+      ? verificationStatus === "verified" && verifiedByBluetooth
         ? "app+bluetooth"
         : "app"
       : origin === "system"
@@ -260,7 +276,9 @@ const normalizeAttendanceLogForResponse = (log: any, now = Date.now()) => {
 
   let label = "";
   if (action === "check_in") {
-    if (origin === "app" && verificationStatus === "verified") {
+    if (origin === "app" && verificationStatus === "verified" && verifiedBy === "manual") {
+      label = "checked in via app (manual)";
+    } else if (origin === "app" && verificationStatus === "verified" && verifiedByBluetooth) {
       label = "app check in verified with bluetooth";
     } else if (origin === "app" && verificationStatus === "pending") {
       label = "app check in awaiting bluetooth verification";
@@ -271,7 +289,9 @@ const normalizeAttendanceLogForResponse = (log: any, now = Date.now()) => {
     } else {
       label = "checked in with bluetooth";
     }
-  } else if (origin === "app" && verificationStatus === "verified") {
+  } else if (origin === "app" && verificationStatus === "verified" && verifiedBy === "manual") {
+    label = "checked out via app (manual)";
+  } else if (origin === "app" && verificationStatus === "verified" && verifiedByBluetooth) {
     label = "app check out verified with bluetooth";
   } else if (origin === "app" && verificationStatus === "pending") {
     label = "app check out awaiting bluetooth verification";
@@ -395,25 +415,32 @@ const settleExpiredPendingVerification = async (ctx: any, device: any, now: numb
   };
 };
 
-const markPendingCheckInUnverified = async (ctx: any, device: any) => {
-  if (device?.pendingVerificationAction !== "check_in" || !device?.pendingVerificationEventId) {
+/** PWA clock is immediate; clear any legacy pending rows without bluetooth-themed audits. */
+const clearPendingVerificationForAppFlip = async (ctx: any, device: any) => {
+  if (device.pendingVerificationAction !== "check_in" && device.pendingVerificationAction !== "check_out") {
     return device;
   }
 
-  await patchAttendanceEvent(ctx, device.pendingVerificationEventId, {
-    verificationStatus: "unverified",
-    verifiedBy: "none",
-  });
-  const patch = {
-    ...clearedPendingVerificationPatch(),
-    attendanceVerificationStatus: "unverified",
-    attendanceVerifiedBy: "none",
-  };
+  if (device.pendingVerificationEventId) {
+    const pendingEvent = await ctx.db.get(device.pendingVerificationEventId);
+    if (pendingEvent) {
+      if (device.pendingVerificationAction === "check_in") {
+        await patchAttendanceEvent(ctx, pendingEvent._id, {
+          verificationStatus: "unverified",
+          verifiedBy: "none",
+        });
+      } else {
+        await patchAttendanceEvent(ctx, pendingEvent._id, {
+          verificationStatus: "expired",
+          verifiedBy: "none",
+        });
+      }
+    }
+  }
+
+  const patch = { ...clearedPendingVerificationPatch() };
   await ctx.db.patch(device._id, patch);
-  return {
-    ...device,
-    ...patch,
-  };
+  return { ...device, ...patch };
 };
 
 const verifyPendingCheckInWithBluetooth = async (ctx: any, device: any) => {
@@ -487,6 +514,9 @@ const verifyPendingCheckOutWithBluetooth = async (ctx: any, device: any) => {
 };
 
 const inferMissingPriorDayCheckout = async (ctx: any, device: any, now: number) => {
+  if (isManualAttendanceDriver(device)) {
+    return device;
+  }
   if (attendanceStateFromDevice(device) !== "present") {
     return device;
   }
@@ -553,13 +583,19 @@ const buildAttendanceStatePayload = (device: any, email?: string) => ({
     device?.attendanceVerifiedBy === "bluetooth_followup"
     || device?.attendanceVerifiedBy === "bluetooth_disconnect"
     || device?.attendanceVerifiedBy === "none"
+    || device?.attendanceVerifiedBy === "manual"
     || device?.attendanceVerifiedBy === "system_inferred"
       ? device.attendanceVerifiedBy
       : "bluetooth_immediate",
   latestAppIntent: device?.latestAppIntent || null,
   latestAppIntentAt: device?.latestAppIntentAt ?? null,
-  pendingVerificationAction: device?.pendingVerificationAction || null,
-  pendingVerificationExpiresAt: device?.pendingVerificationExpiresAt ?? null,
+  pendingVerificationAction: isManualAttendanceDriver(device)
+    ? null
+    : (device?.pendingVerificationAction || null),
+  pendingVerificationExpiresAt: isManualAttendanceDriver(device)
+    ? null
+    : (device?.pendingVerificationExpiresAt ?? null),
+  attendanceDriver: isManualAttendanceDriver(device) ? "manual" : "bluetooth",
   bluetoothStatus: device?.status === "present" ? "present" : "absent",
   appStatus: device?.appStatus === "present" ? "present" : "absent",
   appLastSeen: device?.appLastSeen ?? null,
@@ -663,8 +699,13 @@ export const getDevices = query({
         attendanceVerifiedBy: device.attendanceVerifiedBy,
         latestAppIntent: device.latestAppIntent,
         latestAppIntentAt: device.latestAppIntentAt,
-        pendingVerificationAction: device.pendingVerificationAction,
-        pendingVerificationExpiresAt: device.pendingVerificationExpiresAt,
+        pendingVerificationAction: isManualAttendanceDriver(device)
+          ? null
+          : device.pendingVerificationAction,
+        pendingVerificationExpiresAt: isManualAttendanceDriver(device)
+          ? null
+          : device.pendingVerificationExpiresAt,
+        attendanceDriver: isManualAttendanceDriver(device) ? "manual" : "bluetooth",
         lastBluetoothPresentAt: device.lastBluetoothPresentAt,
         lastBluetoothAbsentAt: device.lastBluetoothAbsentAt,
         lastSeen: device.lastSeen,
@@ -795,6 +836,35 @@ export const updateDeviceStatus = mutation({
       return {
         ...device,
         lastSeen: now,
+      };
+    }
+
+    if (isManualAttendanceDriver(device)) {
+      if (args.status === "present") {
+        await ctx.db.patch(device._id, {
+          status: "present",
+          lastSeen: now,
+          connectedSince: now,
+          lastBluetoothPresentAt: now,
+        });
+        return {
+          ...device,
+          status: "present",
+          lastSeen: now,
+          connectedSince: now,
+          lastBluetoothPresentAt: now,
+        };
+      }
+      await ctx.db.patch(device._id, {
+        status: "absent",
+        lastSeen: now,
+        lastBluetoothAbsentAt: now,
+      });
+      return {
+        ...device,
+        status: "absent",
+        lastSeen: now,
+        lastBluetoothAbsentAt: now,
       };
     }
 
@@ -1044,7 +1114,7 @@ export const completeDeviceRegistration = mutation({
       connectedSince: existingDevice.connectedSince ?? now,
       attendanceStatus: attendanceStateFromDevice(existingDevice),
       attendanceChangedAt: attendanceChangedAtFromDevice(existingDevice) ?? now,
-      attendanceOrigin: existingDevice.attendanceOrigin ?? (existingDevice.status === "present" ? "bluetooth" : "app"),
+      attendanceOrigin: existingDevice.attendanceOrigin ?? "bluetooth",
       attendanceVerificationStatus:
         existingDevice.attendanceVerificationStatus
         ?? (existingDevice.status === "present" ? "verified" : "unverified"),
@@ -1400,8 +1470,13 @@ export const getDeviceByEmail = query({
         ?? (device.status === "present" ? "bluetooth_immediate" : "none"),
       latestAppIntent: device.latestAppIntent ?? null,
       latestAppIntentAt: device.latestAppIntentAt ?? null,
-      pendingVerificationAction: device.pendingVerificationAction ?? null,
-      pendingVerificationExpiresAt: device.pendingVerificationExpiresAt ?? null,
+      pendingVerificationAction: isManualAttendanceDriver(device)
+        ? null
+        : (device.pendingVerificationAction ?? null),
+      pendingVerificationExpiresAt: isManualAttendanceDriver(device)
+        ? null
+        : (device.pendingVerificationExpiresAt ?? null),
+      attendanceDriver: isManualAttendanceDriver(device) ? "manual" : "bluetooth",
       lastBluetoothPresentAt: device.lastBluetoothPresentAt ?? null,
       lastBluetoothAbsentAt: device.lastBluetoothAbsentAt ?? null,
     };
@@ -1541,124 +1616,61 @@ export const flipAppStatusByEmail = mutation({
     }
 
     const now = Date.now();
-    let currentDevice = await settleExpiredPendingVerification(ctx, device, now);
+    let currentDevice = await clearPendingVerificationForAppFlip(ctx, device);
     const desiredAction: AttendanceAction =
       attendanceStateFromDevice(currentDevice) === "present" ? "check_out" : "check_in";
 
-    if (
-      desiredAction === "check_out"
-      && currentDevice.pendingVerificationAction === "check_out"
-      && typeof currentDevice.pendingVerificationExpiresAt === "number"
-      && currentDevice.pendingVerificationExpiresAt > now
-    ) {
-      return {
-        ...buildAttendanceStatePayload(currentDevice, normalizedEmail),
-        keyVersion: appConfig.keyVersion,
-        boundaryEnforced: boundaryEnabled,
-        requestedAction: desiredAction,
-        requestedStatus: "absent",
-      };
-    }
-
-    if (desiredAction === "check_out" && currentDevice.pendingVerificationAction === "check_in") {
-      currentDevice = await markPendingCheckInUnverified(ctx, currentDevice);
-    }
-
-    const verificationDeadline = now + ATTENDANCE_VERIFY_WINDOW_MS;
     let devicePatch: Record<string, any>;
     let requestedStatus: AttendanceStatusValue;
 
     if (desiredAction === "check_in") {
       requestedStatus = "present";
-      if (currentDevice.status === "present") {
-        await createAttendanceEvent(ctx, currentDevice, {
-          action: "check_in",
-          origin: "app",
-          verificationStatus: "verified",
-          verifiedBy: "bluetooth_immediate",
-          eventTimestamp: now,
-          effectiveTimestamp: now,
-        });
-        await auditAttendance(ctx, currentDevice._id, "Checked in via app and verified immediately with bluetooth");
-        devicePatch = {
-          appStatus: "present",
-          appLastSeen: now,
-          latestAppIntent: "check_in",
-          latestAppIntentAt: now,
-          attendanceStatus: "present",
-          attendanceChangedAt: now,
-          attendanceOrigin: "app",
-          attendanceVerificationStatus: "verified",
-          attendanceVerifiedBy: "bluetooth_immediate",
-          ...clearedPendingVerificationPatch(),
-        };
-      } else {
-        const attendanceEventId = await createAttendanceEvent(ctx, currentDevice, {
-          action: "check_in",
-          origin: "app",
-          verificationStatus: "pending",
-          verifiedBy: "none",
-          eventTimestamp: now,
-          effectiveTimestamp: now,
-          verificationDeadline,
-        });
-        await auditAttendance(ctx, currentDevice._id, "Checked in via app and waiting for bluetooth verification");
-        devicePatch = {
-          appStatus: "present",
-          appLastSeen: now,
-          latestAppIntent: "check_in",
-          latestAppIntentAt: now,
-          attendanceStatus: "present",
-          attendanceChangedAt: now,
-          attendanceOrigin: "app",
-          attendanceVerificationStatus: "pending",
-          attendanceVerifiedBy: "none",
-          ...pendingVerificationPatch("check_in", attendanceEventId, verificationDeadline),
-        };
-      }
+      await createAttendanceEvent(ctx, currentDevice, {
+        action: "check_in",
+        origin: "app",
+        verificationStatus: "verified",
+        verifiedBy: "manual",
+        eventTimestamp: now,
+        effectiveTimestamp: now,
+      });
+      await auditAttendance(ctx, currentDevice._id, "Checked in via app (manual, independent of bluetooth)");
+      devicePatch = {
+        appStatus: "present",
+        appLastSeen: now,
+        latestAppIntent: "check_in",
+        latestAppIntentAt: now,
+        attendanceStatus: "present",
+        attendanceChangedAt: now,
+        attendanceOrigin: "app",
+        attendanceVerificationStatus: "verified",
+        attendanceVerifiedBy: "manual",
+        attendanceDriver: "manual",
+        ...clearedPendingVerificationPatch(),
+      };
     } else {
       requestedStatus = "absent";
-      if (currentDevice.status === "absent") {
-        await createAttendanceEvent(ctx, currentDevice, {
-          action: "check_out",
-          origin: "app",
-          verificationStatus: "verified",
-          verifiedBy: "bluetooth_immediate",
-          eventTimestamp: now,
-          effectiveTimestamp: now,
-        });
-        await auditAttendance(ctx, currentDevice._id, "Checked out via app and verified immediately with bluetooth");
-        devicePatch = {
-          appStatus: "absent",
-          appLastSeen: now,
-          latestAppIntent: "check_out",
-          latestAppIntentAt: now,
-          attendanceStatus: "absent",
-          attendanceChangedAt: now,
-          attendanceOrigin: "app",
-          attendanceVerificationStatus: "verified",
-          attendanceVerifiedBy: "bluetooth_immediate",
-          ...clearedPendingVerificationPatch(),
-        };
-      } else {
-        const attendanceEventId = await createAttendanceEvent(ctx, currentDevice, {
-          action: "check_out",
-          origin: "app",
-          verificationStatus: "pending",
-          verifiedBy: "none",
-          eventTimestamp: now,
-          effectiveTimestamp: now,
-          verificationDeadline,
-        });
-        await auditAttendance(ctx, currentDevice._id, "Requested app check-out and waiting for bluetooth disconnect verification");
-        devicePatch = {
-          appStatus: "absent",
-          appLastSeen: now,
-          latestAppIntent: "check_out",
-          latestAppIntentAt: now,
-          ...pendingVerificationPatch("check_out", attendanceEventId, verificationDeadline),
-        };
-      }
+      await createAttendanceEvent(ctx, currentDevice, {
+        action: "check_out",
+        origin: "app",
+        verificationStatus: "verified",
+        verifiedBy: "manual",
+        eventTimestamp: now,
+        effectiveTimestamp: now,
+      });
+      await auditAttendance(ctx, currentDevice._id, "Checked out via app (manual, independent of bluetooth)");
+      devicePatch = {
+        appStatus: "absent",
+        appLastSeen: now,
+        latestAppIntent: "check_out",
+        latestAppIntentAt: now,
+        attendanceStatus: "absent",
+        attendanceChangedAt: now,
+        attendanceOrigin: "app",
+        attendanceVerificationStatus: "verified",
+        attendanceVerifiedBy: "manual",
+        attendanceDriver: "manual",
+        ...clearedPendingVerificationPatch(),
+      };
     }
 
     await ctx.db.patch(currentDevice._id, devicePatch);
@@ -1727,8 +1739,10 @@ export const getCheckedInUsers = query({
           continue;
         }
 
-        const checkInMethod =
-          device.attendanceOrigin === "app"
+        const manualDriver = isManualAttendanceDriver(device);
+        const checkInMethod = manualDriver
+          ? "manual"
+          : device.attendanceOrigin === "app"
             ? device.attendanceVerificationStatus === "verified"
               ? "app+bluetooth"
               : "app"
@@ -1742,6 +1756,7 @@ export const getCheckedInUsers = query({
           email: device.ucsdEmail,
           checkInTime: attendanceChangedAtFromDevice(device) || device.lastSeen || Date.now(),
           checkInMethod,
+          bluetoothStatus: device.status === "present" ? "present" : "absent",
           status: device.status,
           appStatus: device.appStatus,
           attendanceStatus: attendanceStateFromDevice(device),
@@ -1749,7 +1764,8 @@ export const getCheckedInUsers = query({
           attendanceVerificationStatus:
             device.attendanceVerificationStatus
             ?? (device.status === "present" ? "verified" : "unverified"),
-          pendingVerificationAction: device.pendingVerificationAction ?? null,
+          pendingVerificationAction: manualDriver ? null : (device.pendingVerificationAction ?? null),
+          attendanceDriver: manualDriver ? "manual" : "bluetooth",
         });
       }
 

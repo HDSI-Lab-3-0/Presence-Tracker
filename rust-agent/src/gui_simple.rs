@@ -371,6 +371,7 @@ impl PresenceGuiApp {
     fn format_check_in_method(&self, method: &str) -> String {
         match method {
             "app+bluetooth" => "app + bluetooth".to_string(),
+            "manual" => "manual (app)".to_string(),
             "app" => "app".to_string(),
             "bluetooth" => "bluetooth".to_string(),
             _ => "unknown".to_string(),
@@ -421,6 +422,7 @@ impl PresenceGuiApp {
     fn method_color(method: &str) -> egui::Color32 {
         match method {
             "app+bluetooth" => egui::Color32::from_rgb(30, 64, 175),
+            "manual" => egui::Color32::from_rgb(124, 58, 237),
             "app" => egui::Color32::from_rgb(22, 163, 74),
             "bluetooth" => egui::Color32::from_rgb(37, 99, 235),
             _ => egui::Color32::from_rgb(100, 116, 139),
@@ -428,6 +430,9 @@ impl PresenceGuiApp {
     }
 
     fn effective_check_in_method(user: &CheckedInUser) -> &'static str {
+        if user.check_in_method.eq_ignore_ascii_case("manual") {
+            return "manual";
+        }
         let bluetooth_present = user
             .status
             .as_deref()
@@ -445,6 +450,7 @@ impl PresenceGuiApp {
             (false, true) => "bluetooth",
             (false, false) => match user.check_in_method.as_str() {
                 "app+bluetooth" => "app+bluetooth",
+                "manual" => "manual",
                 "app" => "app",
                 "bluetooth" => "bluetooth",
                 _ => "unknown",
@@ -465,9 +471,10 @@ impl PresenceGuiApp {
     fn method_rank(method: &str) -> u8 {
         match method {
             "app+bluetooth" => 0,
-            "app" => 1,
-            "bluetooth" => 2,
-            _ => 3,
+            "manual" => 1,
+            "app" => 2,
+            "bluetooth" => 3,
+            _ => 4,
         }
     }
 

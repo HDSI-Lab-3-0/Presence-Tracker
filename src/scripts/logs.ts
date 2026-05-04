@@ -462,7 +462,12 @@ function formatSourceText(log) {
 }
 
 function formatVerificationText(log) {
-  if (log.verificationStatus === "verified") return "Verification: verified with bluetooth";
+  if (log.verifiedBy === "manual") return "Verification: manual (app)";
+  if (log.verificationStatus === "verified") {
+    if (log.source === "app+bluetooth") return "Verification: verified with bluetooth";
+    if (log.origin === "app" || log.source === "app") return "Verification: verified (app)";
+    return "Verification: verified";
+  }
   if (log.verificationStatus === "pending") return "Verification: waiting for bluetooth";
   if (log.verificationStatus === "unverified") return "Verification: not verified";
   if (log.verificationStatus === "expired") return "Verification: expired";

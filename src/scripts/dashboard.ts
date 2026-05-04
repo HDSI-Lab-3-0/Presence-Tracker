@@ -15,12 +15,35 @@ if (window.CONVEX_URL) {
   }
 }
 
+function deviceManualDriver(device) {
+  if (!device) return false;
+  return device.attendanceDriver === "manual"
+    || (device.attendanceDriver !== "bluetooth" && typeof device.latestAppIntentAt === "number");
+}
+
 function getPresenceSourceMessage(device) {
   const bluetoothPresent = device.status === "present";
-  const attendancePresent = device.attendanceStatus === "present"
-    || (!device.attendanceStatus && (device.appStatus === "present" || bluetoothPresent));
+  const manualDriver = deviceManualDriver(device);
 
-  if (!attendancePresent) return "";
+  const rosterPresent =
+    device.attendanceStatus === "present"
+    || (!device.attendanceStatus && (
+      device.appStatus === "present"
+      || (!manualDriver && bluetoothPresent)
+    ));
+
+  if (manualDriver) {
+    if (rosterPresent) {
+      const bt = bluetoothPresent ? "Bluetooth: in range" : "Bluetooth: away";
+      return `✓ Checked in manually · ${bt}`;
+    }
+    if (bluetoothPresent) {
+      return "✓ Checked out (manual) · Bluetooth: in range";
+    }
+    return "";
+  }
+
+  if (!rosterPresent) return "";
   if (device.attendanceOrigin === "app" && device.attendanceVerificationStatus === "verified") {
     return "✓ Checked in via app, verified with bluetooth";
   }
@@ -150,8 +173,13 @@ function renderDevices(devices) {
 }
 
 function createResidentCard(device) {
-  const isPresent = device.attendanceStatus === "present"
-    || (!device.attendanceStatus && (device.status === "present" || device.appStatus === "present"));
+  const manualDriver = deviceManualDriver(device);
+  const isPresent =
+    device.attendanceStatus === "present"
+    || (!device.attendanceStatus && (
+      device.appStatus === "present"
+      || (!manualDriver && device.status === "present")
+    ));
   const statusClass = isPresent ? "present" : "away";
   const sourceMessage = getPresenceSourceMessage(device);
   const fullName = device.firstName && device.lastName
@@ -202,8 +230,13 @@ function createResidentCard(device) {
 }
 
 function updateResidentCard(card, device) {
-  const isPresent = device.attendanceStatus === "present"
-    || (!device.attendanceStatus && (device.status === "present" || device.appStatus === "present"));
+  const manualDriver = deviceManualDriver(device);
+  const isPresent =
+    device.attendanceStatus === "present"
+    || (!device.attendanceStatus && (
+      device.appStatus === "present"
+      || (!manualDriver && device.status === "present")
+    ));
   const statusClass = isPresent ? "present" : "away";
   const sourceMessage = getPresenceSourceMessage(device);
 
