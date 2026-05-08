@@ -21,6 +21,7 @@ const ACTIVITY_TIMEZONE = "America/Los_Angeles";
 const ACTIVITY_FETCH_LIMIT = 100;
 const ACTIVITY_DAYS_PER_PAGE = 6;
 const BURST_MERGE_MS = 2 * 60 * 1000;
+const BLUETOOTH_ALTERNATION_WINDOW_MS = 5 * 60 * 1000;
 const PWA_ROOT_PATH = new URL("./", window.location.href).pathname;
 
 function toPwaPath(relativePath: string) {
@@ -825,6 +826,36 @@ function mergeBurstLogs(asc, windowMs) {
 }
 
 /**
+ * Remove rapid bluetooth check_out → check_in alternations within `windowMs`.
+ * A check_out immediately followed by check_in (both bluetooth-origin) within the
+ * window cancels out — the device likely flapped due to signal fluctuation.
+ * Returns a new array with those pairs removed.
+ */
+function filterBluetoothAlternations(asc, windowMs) {
+  if (!asc.length) return [];
+  const out = [];
+  let i = 0;
+  while (i < asc.length) {
+    const cur = asc[i];
+    const next = asc[i + 1];
+    if (
+      next
+      && cur.action === "check_out"
+      && next.action === "check_in"
+      && cur.origin === "bluetooth"
+      && next.origin === "bluetooth"
+      && (next.timestamp - cur.timestamp) <= windowMs
+    ) {
+      i += 2;
+      continue;
+    }
+    out.push(cur);
+    i++;
+  }
+  return out;
+}
+
+/**
  * Pair check_in → following check_out. Skip orphan check_out rows (data gaps).
  */
 function pairSessions(mergedAsc) {
@@ -852,7 +883,8 @@ function buildActivityDayGroupsFromLogs(logs) {
   if (!logs.length) return [];
   const asc = [...logs].sort((a, b) => a.timestamp - b.timestamp);
   const merged = mergeBurstLogs(asc, BURST_MERGE_MS);
-  const sessions = pairSessions(merged);
+  const cleaned = filterBluetoothAlternations(merged, BLUETOOTH_ALTERNATION_WINDOW_MS);
+  const sessions = pairSessions(cleaned);
   const byDay = new Map();
   for (const s of sessions) {
     const dk = pacificDateKey(s.checkIn.timestamp);
