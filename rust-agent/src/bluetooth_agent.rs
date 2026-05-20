@@ -208,7 +208,10 @@ async fn handle_device_added(
 
     // Register as pending device
     let name = get_device_name(runner.as_ref(), &mac, command_timeout_seconds);
-    match convex.register_pending_device(&mac, name.as_deref()).await {
+    match convex
+        .register_pending_device(&mac, name.as_deref(), Some("pairing"))
+        .await
+    {
         Ok(_) => logging::info(
             "bluetooth_agent",
             "register_pending",

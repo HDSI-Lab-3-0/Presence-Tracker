@@ -6,6 +6,20 @@ import { authComponent } from "./betterAuth";
 
 const GRACE_PERIOD_SECONDS = 300;
 const DEVICE_EXPIRATION_MS = GRACE_PERIOD_SECONDS * 1000;
+/** After auto-deleting an unknown device, block probe re-registration for 1 hour */
+const PENDING_PROBE_SUPPRESSION_MS = 60 * 60 * 1000;
+
+const normalizeMacAddress = (mac: string) => mac.trim().toUpperCase();
+
+const isUnregisteredUnknown = (device: Doc<"devices">) =>
+  !device.firstName && !device.lastName;
+
+const gracePeriodEndFor = (device: Doc<"devices">) =>
+  device.gracePeriodEnd ?? device.firstSeen + DEVICE_EXPIRATION_MS;
+
+const isExpiredUnregisteredUnknown = (device: Doc<"devices">, now: number) =>
+  isUnregisteredUnknown(device) && gracePeriodEndFor(device) <= now;
+
 const UCSD_EMAIL_DOMAIN = "@ucsd.edu";
 const APP_API_KEY_LENGTH = 48;
 const METERS_PER_MILE = 1609.344;
@@ -639,18 +653,39 @@ const deleteDeviceAndLogs = async (
   return { success: true, macAddress: device.macAddress };
 };
 
+const recordPendingProbeSuppression = async (ctx: any, macAddress: string, now: number) => {
+  const mac = normalizeMacAddress(macAddress);
+  const suppressUntil = now + PENDING_PROBE_SUPPRESSION_MS;
+  const existing = await ctx.db
+    .query("pendingDeviceSuppressions")
+    .withIndex("by_macAddress", (q: any) => q.eq("macAddress", mac))
+    .first();
+
+  if (existing) {
+    await ctx.db.patch(existing._id, { suppressUntil });
+    return;
+  }
+
+  await ctx.db.insert("pendingDeviceSuppressions", { macAddress: mac, suppressUntil });
+};
+
+const isPendingProbeSuppressed = async (ctx: any, macAddress: string, now: number) => {
+  const mac = normalizeMacAddress(macAddress);
+  const row = await ctx.db
+    .query("pendingDeviceSuppressions")
+    .withIndex("by_macAddress", (q: any) => q.eq("macAddress", mac))
+    .first();
+
+  return Boolean(row && row.suppressUntil > now);
+};
+
 const cleanupExpiredDevicesCore = async (ctx: any): Promise<CleanupResult> => {
   const now = Date.now();
 
   const devices = await ctx.db.query("devices").collect();
-  const expiredDevices = devices.filter((device: Doc<"devices">) => {
-    if (!device.pendingRegistration) {
-      return false;
-    }
-
-    const gracePeriodEnd = device.gracePeriodEnd ?? device.firstSeen + DEVICE_EXPIRATION_MS;
-    return gracePeriodEnd <= now;
-  });
+  const expiredDevices = devices.filter((device: Doc<"devices">) =>
+    isExpiredUnregisteredUnknown(device, now),
+  );
 
   const deletedMacs: string[] = [];
 
@@ -659,6 +694,7 @@ const cleanupExpiredDevicesCore = async (ctx: any): Promise<CleanupResult> => {
       const result = await deleteDeviceAndLogs(ctx, device._id);
       if (result.success && result.macAddress) {
         deletedMacs.push(result.macAddress);
+        await recordPendingProbeSuppression(ctx, result.macAddress, now);
       }
     } catch (error) {
       console.error("Failed to delete expired device", {
@@ -1034,24 +1070,40 @@ export const registerPendingDevice = mutation({
   args: {
     macAddress: v.string(),
     name: v.optional(v.string()),
+    source: v.optional(v.union(v.literal("pairing"), v.literal("probe"))),
   },
   handler: async (ctx, args) => {
+    const now = Date.now();
+    const macAddress = normalizeMacAddress(args.macAddress);
+    const source = args.source ?? "probe";
+
+    if (source !== "pairing" && await isPendingProbeSuppressed(ctx, macAddress, now)) {
+      return null;
+    }
+
     const existingDevice = await ctx.db
       .query("devices")
-      .withIndex("by_macAddress", (q) => q.eq("macAddress", args.macAddress))
+      .withIndex("by_macAddress", (q) => q.eq("macAddress", macAddress))
       .first();
 
     if (existingDevice) {
-      return existingDevice;
+      if (isExpiredUnregisteredUnknown(existingDevice, now)) {
+        await deleteDeviceAndLogs(ctx, existingDevice._id);
+        if (source !== "pairing") {
+          await recordPendingProbeSuppression(ctx, macAddress, now);
+          return null;
+        }
+      } else {
+        return existingDevice;
+      }
     }
 
-    const now = Date.now();
     const gracePeriodEnd = now + GRACE_PERIOD_SECONDS * 1000;
 
     const deviceName = args.name || "";
 
     const deviceId = await ctx.db.insert("devices", {
-      macAddress: args.macAddress,
+      macAddress,
       name: deviceName,
       status: "present",
       appStatus: "absent",
@@ -1070,12 +1122,12 @@ export const registerPendingDevice = mutation({
       deviceId,
       changeType: "create",
       timestamp: now,
-      details: `Pending device created: ${deviceName || args.macAddress}`
+      details: `Pending device created: ${deviceName || macAddress}`
     });
 
     return {
       _id: deviceId,
-      macAddress: args.macAddress,
+      macAddress,
       name: deviceName,
       status: "present",
       lastSeen: now,

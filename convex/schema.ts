@@ -100,6 +100,12 @@ export default defineSchema({
     lastUpdateTimestamp: v.number(),
   }).index("by_platform", ["platform"]),
 
+  /** Blocks probe-driven re-registration after an unknown device grace period expires */
+  pendingDeviceSuppressions: defineTable({
+    macAddress: v.string(),
+    suppressUntil: v.number(),
+  }).index("by_macAddress", ["macAddress"]),
+
   attendanceLogs: defineTable({
     userId: v.string(),
     userName: v.string(),

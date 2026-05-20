@@ -1,5 +1,5 @@
 use crate::bluetooth_probe::{
-    get_connected_devices, get_paired_devices, is_valid_mac, normalize_mac, probe_device, CommandRunner,
+    get_connected_devices, is_valid_mac, normalize_mac, probe_device, CommandRunner,
 };
 use crate::config::Config;
 use crate::convex_client::{ConvexClient, DeviceRecord};
@@ -13,6 +13,7 @@ pub struct PresenceLoop {
     convex: Arc<ConvexClient>,
     runner: Arc<dyn CommandRunner>,
     misses: HashMap<String, u32>,
+    hits: HashMap<String, u32>,
 }
 
 impl PresenceLoop {
@@ -22,6 +23,7 @@ impl PresenceLoop {
             convex,
             runner,
             misses: HashMap::new(),
+            hits: HashMap::new(),
         }
     }
 
@@ -58,20 +60,13 @@ impl PresenceLoop {
         .into_iter()
         .map(|mac| normalize_mac(&mac))
         .collect();
-        let paired: HashSet<String> = get_paired_devices(
-            self.runner.as_ref(),
-            self.config.bluetooth.command_timeout_seconds,
-        )
-        .into_iter()
-        .map(|mac| normalize_mac(&mac))
-        .collect();
         let known_macs: HashSet<String> = devices
             .iter()
             .map(|device| normalize_mac(&device.mac_address))
             .collect();
 
         for mac in connected.iter().filter(|mac| !known_macs.contains(*mac)) {
-            if let Err(error) = self.convex.register_pending_device(mac, None).await {
+            if let Err(error) = self.convex.register_pending_device(mac, None, None).await {
                 logging::warn(
                     "presence_loop",
                     "register_pending_fallback",
@@ -89,27 +84,9 @@ impl PresenceLoop {
                 );
             }
         }
-        for mac in paired.iter().filter(|mac| !known_macs.contains(*mac)) {
-            if let Err(error) = self.convex.register_pending_device(mac, None).await {
-                logging::warn(
-                    "presence_loop",
-                    "register_pending_paired_fallback",
-                    Some(mac),
-                    Some("error"),
-                    &error.to_string(),
-                );
-            } else {
-                logging::info(
-                    "presence_loop",
-                    "register_pending_paired_fallback",
-                    Some(mac),
-                    Some("ok"),
-                    "Registered unknown paired device as pending",
-                );
-            }
-        }
 
         let absent_threshold = self.config.presence.absent_threshold.max(1);
+        let present_threshold = self.config.presence.present_threshold.max(1);
         let mut known = HashSet::new();
 
         for device in devices {
@@ -122,7 +99,7 @@ impl PresenceLoop {
 
             let mac = normalize_mac(&device.mac_address);
             known.insert(mac.clone());
-            let present = if connected.contains(&mac) {
+            let probed = if connected.contains(&mac) {
                 true
             } else {
                 probe_device(
@@ -130,17 +107,21 @@ impl PresenceLoop {
                     &mac,
                     self.config.bluetooth.l2ping_count,
                     self.config.bluetooth.l2ping_timeout_seconds,
-                    self.config.bluetooth.connect_probe_timeout_seconds,
-                    self.config.bluetooth.command_timeout_seconds,
                 )
             };
 
-            if present {
+            if probed {
                 self.misses.remove(&mac);
                 if device.status != "present" {
-                    self.transition_status(&device, "present").await;
+                    let hits = self.hits.entry(mac.clone()).or_insert(0);
+                    *hits += 1;
+                    if *hits >= present_threshold {
+                        self.hits.remove(&mac);
+                        self.transition_status(&device, "present").await;
+                    }
                 }
             } else {
+                self.hits.remove(&mac);
                 let misses = self.misses.entry(mac.clone()).or_insert(0);
                 *misses += 1;
                 if *misses >= absent_threshold && device.status != "absent" {
@@ -150,6 +131,7 @@ impl PresenceLoop {
         }
 
         self.misses.retain(|mac, _| known.contains(mac));
+        self.hits.retain(|mac, _| known.contains(mac));
         Ok(())
     }
 

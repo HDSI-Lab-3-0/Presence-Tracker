@@ -29,6 +29,8 @@ pub struct PresenceConfig {
     pub polling_interval_seconds: u64,
     #[serde(default = "default_absent_threshold")]
     pub absent_threshold: u32,
+    #[serde(default = "default_present_threshold")]
+    pub present_threshold: u32,
     #[serde(default = "default_grace_period_seconds")]
     pub grace_period_seconds: u64,
 }
@@ -96,6 +98,7 @@ impl Config {
 
         self.presence.polling_interval_seconds = self.presence.polling_interval_seconds.max(1);
         self.presence.absent_threshold = self.presence.absent_threshold.max(1);
+        self.presence.present_threshold = self.presence.present_threshold.max(1);
         self.bluetooth.l2ping_timeout_seconds = self.bluetooth.l2ping_timeout_seconds.max(1);
         self.bluetooth.l2ping_count = self.bluetooth.l2ping_count.max(1);
         self.bluetooth.connect_probe_timeout_seconds =
@@ -131,6 +134,7 @@ impl Default for PresenceConfig {
         Self {
             polling_interval_seconds: default_polling_interval_seconds(),
             absent_threshold: default_absent_threshold(),
+            present_threshold: default_present_threshold(),
             grace_period_seconds: default_grace_period_seconds(),
         }
     }
@@ -199,6 +203,10 @@ const fn default_absent_threshold() -> u32 {
     3
 }
 
+const fn default_present_threshold() -> u32 {
+    2
+}
+
 const fn default_grace_period_seconds() -> u64 {
     300
 }
@@ -208,7 +216,7 @@ const fn default_l2ping_timeout_seconds() -> u64 {
 }
 
 const fn default_l2ping_count() -> u32 {
-    1
+    3
 }
 
 const fn default_connect_probe_timeout_seconds() -> u64 {

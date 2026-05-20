@@ -20,7 +20,7 @@ This system monitors Bluetooth device presence and updates a Convex backend data
 
 ## Features
 
-- **Bluetooth Presence Tracking** - Polls device status every 60 seconds
+- **Bluetooth Presence Tracking** - Rust agent polls device status every 15 seconds (configurable)
 - **Cross-Platform Support** - Works with iOS (iPhone) and Android devices
 - **No Mobile App Required** - Uses native Bluetooth pairing
 - **Web Dashboard** - Real-time monitoring and device management interface
@@ -459,44 +459,26 @@ These have sensible defaults and only need to be changed if you want to customiz
 | `DEPLOYMENT_MODE` | Deployment mode (same as CONVEX_URL_MODE) | `convex` |
 | `ORGANIZATION_NAME` | Display name for your organization | `Presence Tracker` |
 
-#### Presence Tracking
+#### Pi agent (`config/agent.toml`)
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `GRACE_PERIOD_SECONDS` | Time new devices have to be registered before auto-deletion | `300` |
-| `PRESENT_TTL_SECONDS` | How long a device is considered present after last seen | `45` |
-| `REGISTRATION_RETRY_SECONDS` | How frequently the tracker retries publishing a newly seen device | `5` |
-| `UNPUBLISHED_DEVICE_TTL_SECONDS` | How long to keep retrying to publish a device after it disconnects | `600` |
-| `ENABLE_DEVICE_DIAGNOSTICS` | Enable detailed device diagnostic logging | `false` |
-| `ENABLE_ADAPTIVE_HYSTERESIS` | Enable adaptive hysteresis for presence smoothing | `true` |
-| `ABSENCE_HOLD_SECONDS` | Hold time before allowing absence transition | `120` |
-| `ABSENCE_CONSECUTIVE_MISS_THRESHOLD` | Number of consecutive misses before marking absent | `3` |
-| `FLAP_MONITOR_WINDOW_SECONDS` | Time window for detecting status flapping | `3600` |
-| `FLAP_ALERT_THRESHOLD` | Number of transitions in window to trigger flap alert | `4` |
-| `ENABLE_AUTO_FREEZE_ON_FLAP` | Auto-freeze device status when flapping detected | `true` |
-| `AUTO_FREEZE_DURATION_SECONDS` | How long to freeze device status when flapping | `300` |
-| `DEVICE_OVERRIDE_FILE` | Path to JSON file with device overrides | `config/device_overrides.json` |
-| `DEVICE_OVERRIDE_REFRESH_SECONDS` | How often to reload device override file | `30` |
-| `FAST_PATH_QUEUE_ENABLED` | Enable fast-path queue for rapid presence events | `true` |
-| `FAST_PATH_EVENT_SUPPRESSION_SECONDS` | Suppress duplicate fast-path events within this window | `3` |
-| `FAST_PATH_QUEUE_HOST` | Fast-path queue server host | `127.0.0.1` |
-| `FAST_PATH_QUEUE_PORT` | Fast-path queue server port | `51975` |
-| `FAST_PATH_QUEUE_AUTH_KEY` | Fast-path queue authentication key | `presence-fast-path` |
-| `FAST_PATH_QUEUE_RETRY_SECONDS` | Retry delay for fast-path queue connection | `5` |
-| `DISCONNECT_CONNECTED_AFTER_CYCLE` | Disconnect devices after each polling cycle | `true` |
+The Rust presence agent reads **`config/agent.toml`**, not the legacy Python `.env` presence variables below.
 
-#### Bluetooth
+| Setting | Section | Description | Default |
+|---------|---------|-------------|---------|
+| `polling_interval_seconds` | `[presence]` | Seconds between poll cycles | `15` |
+| `present_threshold` | `[presence]` | Consecutive successful probes before marking present | `2` |
+| `absent_threshold` | `[presence]` | Consecutive failed probes before marking absent | `3` |
+| `grace_period_seconds` | `[presence]` | Pending-device expiry (Convex only) | `300` |
+| `l2ping_count` | `[bluetooth]` | Pings per device per cycle (all must succeed) | `3` |
+| `l2ping_timeout_seconds` | `[bluetooth]` | Per-ping timeout (seconds) | `2` |
+| `connect_probe_timeout_seconds` | `[bluetooth]` | Pairing/onboarding connect only (not presence polls) | `2` |
+| `command_timeout_seconds` | `[bluetooth]` | Shell timeout for `bluetoothctl` / `l2ping` | `5` |
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `L2PING_TIMEOUT_SECONDS` | Timeout for l2ping device detection | `1` |
-| `L2PING_COUNT` | Number of pings per device in each cycle | `1` |
-| `CONNECT_TIMEOUT_SECONDS` | Max wait time for bluetoothctl connect attempts | `5` |
-| `DEVICE_INFO_CACHE_SECONDS` | Cache TTL for bluetoothctl info calls | `5` |
-| `ADAPTER_WATCHDOG_INTERVAL_SECONDS` | Interval for checking adapter health (0 = disabled) | `60` |
-| `ADAPTER_RECOVERY_BACKOFF_SECONDS` | Backoff time between adapter recovery attempts | `5` |
-| `ADVERTISE_NUDGE_COMMAND` | Command to nudge LE advertising if needed | `bluetoothctl advertise on` |
-| `ADVERTISE_SCAN_DURATION_SECONDS` | Scan duration for adapter recovery | `3` |
+**Presence detection:** each cycle checks `bluetoothctl devices Connected`, then `l2ping` only. Outbound `bluetoothctl connect` is **not** used for presence (only during pairing). Present requires `present_threshold` hits; absent requires `absent_threshold` misses (~45s at defaults).
+
+#### Legacy Python env vars (not used by Rust agent)
+
+Older docs listed `PRESENT_TTL_SECONDS`, `ENABLE_ADAPTIVE_HYSTERESIS`, `DISCONNECT_CONNECTED_AFTER_CYCLE`, etc. Those applied to the removed Python tracker and are **ignored** by `presence-tracker-rs`.
 
 #### Frontend
 
@@ -525,38 +507,8 @@ CONVEX_DEPLOYMENT_URL=https://your-convex-deployment.convex.cloud
 # Optional - Organization Name
 ORGANIZATION_NAME=My Organization
 
-# Optional - Presence Tracking (defaults shown)
-GRACE_PERIOD_SECONDS=300
-PRESENT_TTL_SECONDS=45
-REGISTRATION_RETRY_SECONDS=5
-UNPUBLISHED_DEVICE_TTL_SECONDS=600
-ENABLE_DEVICE_DIAGNOSTICS=false
-ENABLE_ADAPTIVE_HYSTERESIS=true
-ABSENCE_HOLD_SECONDS=120
-ABSENCE_CONSECUTIVE_MISS_THRESHOLD=3
-FLAP_MONITOR_WINDOW_SECONDS=3600
-FLAP_ALERT_THRESHOLD=4
-ENABLE_AUTO_FREEZE_ON_FLAP=true
-AUTO_FREEZE_DURATION_SECONDS=300
-DEVICE_OVERRIDE_FILE=config/device_overrides.json
-DEVICE_OVERRIDE_REFRESH_SECONDS=30
-FAST_PATH_QUEUE_ENABLED=true
-FAST_PATH_EVENT_SUPPRESSION_SECONDS=3
-FAST_PATH_QUEUE_HOST=127.0.0.1
-FAST_PATH_QUEUE_PORT=51975
-FAST_PATH_QUEUE_AUTH_KEY=presence-fast-path
-FAST_PATH_QUEUE_RETRY_SECONDS=5
-DISCONNECT_CONNECTED_AFTER_CYCLE=true
-
-# Optional - Bluetooth (defaults shown)
-L2PING_TIMEOUT_SECONDS=1
-L2PING_COUNT=1
-CONNECT_TIMEOUT_SECONDS=5
-DEVICE_INFO_CACHE_SECONDS=5
-ADAPTER_WATCHDOG_INTERVAL_SECONDS=60
-ADAPTER_RECOVERY_BACKOFF_SECONDS=5
-ADVERTISE_NUDGE_COMMAND=bluetoothctl advertise on
-ADVERTISE_SCAN_DURATION_SECONDS=3
+# Pi agent tuning: edit config/agent.toml ([presence] / [bluetooth])
+# Legacy Python presence env vars are not read by the Rust agent.
 
 # Optional - Frontend (defaults shown)
 PORT=3132
@@ -879,17 +831,18 @@ uv run src/presence_tracker.py
 ### Performance Issues
 
 #### Slow Device Detection
-- Reduce `PRESENT_TTL_SECONDS` (default: 45) for faster absence detection
-- Reduce `L2PING_COUNT` (default: 1) or `L2PING_TIMEOUT_SECONDS` (default: 1)
-- Reduce `DEVICE_INFO_CACHE_SECONDS` (default: 5) for fresher device info
-- Check Bluetooth hardware issues with `hciconfig`
-- Reduce number of tracked devices
+- Lower `present_threshold` in `config/agent.toml` (default: 2) for faster check-in
+- Lower `absent_threshold` or `polling_interval_seconds` for faster check-out
+- Check Bluetooth hardware with `hciconfig` / `bluetoothctl show`
+
+#### False brief "Present" when device is far away
+- Ensure `presence-tracker-rs` is rebuilt after updates (`cargo build --release` in `rust-agent/`)
+- Defaults avoid outbound connect during polls; tune `l2ping_count` (default: 3) and `present_threshold` (default: 2) if needed
+- Tail `logs/presence_tracker.log` for `presence_loop` / `status_update` lines
 
 #### High CPU Usage
-- Decrease `FLAP_MONITOR_WINDOW_SECONDS` (default: 3600) to reduce monitoring overhead
-- Disable device diagnostics: `ENABLE_DEVICE_DIAGNOSTICS=false`
-- Disable adaptive hysteresis: `ENABLE_ADAPTIVE_HYSTERESIS=false`
-- Disable fast-path queue: `FAST_PATH_QUEUE_ENABLED=false`
+- Increase `polling_interval_seconds` (default: 15)
+- Reduce `l2ping_count` if probes are heavy
 - Check for Bluetooth adapter issues
 
 ### Setup Issues

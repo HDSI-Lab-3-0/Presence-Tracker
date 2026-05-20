@@ -240,21 +240,12 @@ pub fn connect_probe(runner: &dyn CommandRunner, mac: &str, timeout_seconds: u64
     }
 }
 
+/// Presence probe: l2ping only. Outbound connect is reserved for pairing/onboarding.
 pub fn probe_device(
     runner: &dyn CommandRunner,
     mac: &str,
     l2ping_count: u32,
     l2ping_timeout_seconds: u64,
-    connect_probe_timeout_seconds: u64,
-    command_timeout_seconds: u64,
 ) -> bool {
-    if l2ping_device(runner, mac, l2ping_count, l2ping_timeout_seconds) {
-        return true;
-    }
-
-    let connected = connect_probe(runner, mac, connect_probe_timeout_seconds);
-    if connected {
-        let _ = disconnect_device(runner, mac, command_timeout_seconds);
-    }
-    connected
+    l2ping_device(runner, mac, l2ping_count, l2ping_timeout_seconds)
 }

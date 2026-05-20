@@ -66,15 +66,23 @@ impl ConvexClient {
             .context("devices:getDevices did not return a valid device list")
     }
 
-    pub async fn register_pending_device(&self, mac: &str, name: Option<&str>) -> Result<()> {
+    pub async fn register_pending_device(
+        &self,
+        mac: &str,
+        name: Option<&str>,
+        source: Option<&str>,
+    ) -> Result<()> {
         if !self.is_configured() {
             return Ok(());
         }
 
-        let args = json!({
+        let mut args = json!({
             "macAddress": mac,
-            "name": name.unwrap_or("")
+            "name": name.unwrap_or(""),
         });
+        if let Some(source) = source {
+            args["source"] = json!(source);
+        }
         let _ = self
             .call("mutation", "devices:registerPendingDevice", args)
             .await?;
