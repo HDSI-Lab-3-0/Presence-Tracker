@@ -99,8 +99,9 @@ impl PresenceLoop {
 
             let mac = normalize_mac(&device.mac_address);
             known.insert(mac.clone());
-            let probed = if connected.contains(&mac) {
-                true
+            let via_connected = connected.contains(&mac);
+            let via_l2ping = if via_connected {
+                false
             } else {
                 probe_device(
                     self.runner.as_ref(),
@@ -110,13 +111,25 @@ impl PresenceLoop {
                 )
             };
 
-            if probed {
+            if via_l2ping || via_connected {
                 self.misses.remove(&mac);
                 if device.status != "present" {
-                    let hits = self.hits.entry(mac.clone()).or_insert(0);
-                    *hits += 1;
-                    if *hits >= present_threshold {
+                    // l2ping: mark present on first success (fast path).
+                    // Connected list only: debounce via present_threshold.
+                    let should_mark_present = if via_l2ping {
                         self.hits.remove(&mac);
+                        true
+                    } else {
+                        let hits = self.hits.entry(mac.clone()).or_insert(0);
+                        *hits += 1;
+                        if *hits >= present_threshold {
+                            self.hits.remove(&mac);
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if should_mark_present {
                         self.transition_status(&device, "present").await;
                     }
                 }

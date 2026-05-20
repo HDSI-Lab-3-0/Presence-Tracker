@@ -204,7 +204,7 @@ const fn default_absent_threshold() -> u32 {
 }
 
 const fn default_present_threshold() -> u32 {
-    2
+    1
 }
 
 const fn default_grace_period_seconds() -> u64 {
@@ -216,7 +216,7 @@ const fn default_l2ping_timeout_seconds() -> u64 {
 }
 
 const fn default_l2ping_count() -> u32 {
-    3
+    1
 }
 
 const fn default_connect_probe_timeout_seconds() -> u64 {

@@ -412,12 +412,12 @@ admin_key = "$admin_key"
 [presence]
 polling_interval_seconds = 15
 absent_threshold = 3
-present_threshold = 2
+present_threshold = 1
 grace_period_seconds = 300
 
 [bluetooth]
 l2ping_timeout_seconds = 2
-l2ping_count = 3
+l2ping_count = 1
 connect_probe_timeout_seconds = 2
 command_timeout_seconds = 5
 audio_block_uuids = [

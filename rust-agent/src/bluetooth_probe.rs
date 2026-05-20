@@ -207,15 +207,17 @@ pub fn l2ping_device(
     }
 
     let mac = normalize_mac(mac);
-    let count = count.max(1).to_string();
-    let timeout = timeout_seconds.max(1).to_string();
+    let ping_count = count.max(1);
+    let per_ping_timeout = timeout_seconds.max(1);
+    let count = ping_count.to_string();
+    let timeout = per_ping_timeout.to_string();
     let args = ["-c", count.as_str(), "-t", timeout.as_str(), mac.as_str()];
+    // Allow each ping up to per_ping_timeout; add slack for process startup.
+    let command_timeout_secs = per_ping_timeout
+        .saturating_mul(u64::from(ping_count))
+        .saturating_add(2);
 
-    match runner.run(
-        "l2ping",
-        &args,
-        Duration::from_secs(timeout_seconds.max(1) + 1),
-    ) {
+    match runner.run("l2ping", &args, Duration::from_secs(command_timeout_secs)) {
         Ok(out) => out.code == 0 && out.stdout.to_ascii_lowercase().contains("bytes from"),
         Err(_) => false,
     }
