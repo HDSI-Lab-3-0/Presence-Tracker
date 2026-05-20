@@ -15,27 +15,63 @@ if (window.CONVEX_URL) {
   }
 }
 
+const PACIFIC_TIMEZONE = "America/Los_Angeles";
+
 function deviceManualDriver(device) {
   if (!device) return false;
   return device.attendanceDriver === "manual"
     || (device.attendanceDriver !== "bluetooth" && typeof device.latestAppIntentAt === "number");
 }
 
+function pacificDateKey(timestamp) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: PACIFIC_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(timestamp));
+}
+
+/** Manual checkout that happened today (Pacific) — BT in range stays gray on the dashboard. */
+function isManualSameDayCheckout(device) {
+  if (!device || device.attendanceStatus !== "absent") return false;
+  if (!deviceManualDriver(device)) return false;
+  const changedAt = device.attendanceChangedAt;
+  if (typeof changedAt !== "number") return false;
+  return pacificDateKey(changedAt) === pacificDateKey(Date.now());
+}
+
+function isResidentPresent(device) {
+  const manualDriver = deviceManualDriver(device);
+  const bluetoothPresent = device.status === "present";
+
+  if (device.attendanceStatus === "present") {
+    return true;
+  }
+
+  if (manualDriver && device.attendanceStatus === "absent" && bluetoothPresent) {
+    return !isManualSameDayCheckout(device);
+  }
+
+  if (!device.attendanceStatus) {
+    return device.appStatus === "present" || (!manualDriver && bluetoothPresent);
+  }
+
+  return false;
+}
+
 function getPresenceSourceMessage(device) {
   const bluetoothPresent = device.status === "present";
   const manualDriver = deviceManualDriver(device);
-
-  const rosterPresent =
-    device.attendanceStatus === "present"
-    || (!device.attendanceStatus && (
-      device.appStatus === "present"
-      || (!manualDriver && bluetoothPresent)
-    ));
+  const rosterPresent = isResidentPresent(device);
 
   if (manualDriver) {
-    if (rosterPresent) {
+    if (device.attendanceStatus === "present") {
       const bt = bluetoothPresent ? "Bluetooth: in range" : "Bluetooth: away";
       return `✓ Checked in manually · ${bt}`;
+    }
+    if (rosterPresent && bluetoothPresent) {
+      return "✓ Bluetooth in range · Checked out manually (prior day)";
     }
     if (bluetoothPresent) {
       return "✓ Checked out (manual) · Bluetooth: in range";
@@ -151,8 +187,8 @@ function renderDevices(devices) {
 
   const residents = devices.filter((d) => d.pendingRegistration === false);
   residents.sort((a, b) => {
-    const aActive = a.attendanceStatus === "present" || (!a.attendanceStatus && (a.status === "present" || a.appStatus === "present"));
-    const bActive = b.attendanceStatus === "present" || (!b.attendanceStatus && (b.status === "present" || b.appStatus === "present"));
+    const aActive = isResidentPresent(a);
+    const bActive = isResidentPresent(b);
 
     if (aActive && !bActive) return -1;
     if (!aActive && bActive) return 1;
@@ -174,12 +210,7 @@ function renderDevices(devices) {
 
 function createResidentCard(device) {
   const manualDriver = deviceManualDriver(device);
-  const isPresent =
-    device.attendanceStatus === "present"
-    || (!device.attendanceStatus && (
-      device.appStatus === "present"
-      || (!manualDriver && device.status === "present")
-    ));
+  const isPresent = isResidentPresent(device);
   const statusClass = isPresent ? "present" : "away";
   const sourceMessage = getPresenceSourceMessage(device);
   const fullName = device.firstName && device.lastName
@@ -188,13 +219,17 @@ function createResidentCard(device) {
 
   let timeMessage = "";
   if (isPresent) {
-    const activeSince = device.attendanceChangedAt || device.connectedSince;
-    if (activeSince) {
-      const connectedDate = new Date(activeSince);
-      const timeStr = connectedDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      timeMessage = `Checked in at ${timeStr}`;
+    if (manualDriver && device.attendanceStatus === "absent" && device.status === "present") {
+      timeMessage = "Bluetooth in range";
     } else {
-      timeMessage = "Checked in";
+      const activeSince = device.attendanceChangedAt || device.connectedSince;
+      if (activeSince) {
+        const connectedDate = new Date(activeSince);
+        const timeStr = connectedDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        timeMessage = `Checked in at ${timeStr}`;
+      } else {
+        timeMessage = "Checked in";
+      }
     }
   } else {
     timeMessage = `Last seen: ${formatTimeAgo(device.lastSeen)}`;
@@ -231,12 +266,7 @@ function createResidentCard(device) {
 
 function updateResidentCard(card, device) {
   const manualDriver = deviceManualDriver(device);
-  const isPresent =
-    device.attendanceStatus === "present"
-    || (!device.attendanceStatus && (
-      device.appStatus === "present"
-      || (!manualDriver && device.status === "present")
-    ));
+  const isPresent = isResidentPresent(device);
   const statusClass = isPresent ? "present" : "away";
   const sourceMessage = getPresenceSourceMessage(device);
 
@@ -246,13 +276,17 @@ function updateResidentCard(card, device) {
 
   let timeMessage = "";
   if (isPresent) {
-    const activeSince = device.attendanceChangedAt || device.connectedSince;
-    if (activeSince) {
-      const connectedDate = new Date(activeSince);
-      const timeStr = connectedDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      timeMessage = `Checked in at ${timeStr}`;
+    if (manualDriver && device.attendanceStatus === "absent" && device.status === "present") {
+      timeMessage = "Bluetooth in range";
     } else {
-      timeMessage = "Checked in";
+      const activeSince = device.attendanceChangedAt || device.connectedSince;
+      if (activeSince) {
+        const connectedDate = new Date(activeSince);
+        const timeStr = connectedDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        timeMessage = `Checked in at ${timeStr}`;
+      } else {
+        timeMessage = "Checked in";
+      }
     }
   } else {
     timeMessage = `Last seen: ${formatTimeAgo(device.lastSeen)}`;
