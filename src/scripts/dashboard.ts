@@ -513,6 +513,63 @@ window.submitRegistration = async function () {
   }
 };
 
+function inferEditLogConnectionType(log) {
+  if (log.connectionType) return log.connectionType;
+  if (log.origin === "bluetooth" || log.source === "bluetooth") return "bluetooth";
+  if (log.origin === "app" || log.source === "app" || log.source === "app+bluetooth") return "manual";
+  if (log.origin === "system" || log.source === "system") return "system";
+  return null;
+}
+
+function renderEditAttendanceLogRow(log) {
+  const date = new Date(log.timestamp).toLocaleString("en-US", { timeZone: PACIFIC_TIMEZONE });
+  const action =
+    log.action === "check_out"
+      ? "Check out"
+      : log.action === "check_in"
+        ? "Check in"
+        : log.status === "present"
+          ? "Present"
+          : "Absent";
+  const connectionType = inferEditLogConnectionType(log);
+  const connectionLabel =
+    connectionType === "bluetooth"
+      ? "Bluetooth"
+      : connectionType === "manual"
+        ? "Manual"
+        : connectionType === "system"
+          ? "System"
+          : "";
+  let btLabel = "";
+  if (connectionType === "manual") {
+    const btConnected =
+      log.bluetoothConnectedAtEvent === true
+      || log.bluetoothStatusAtEvent === "present"
+      || log.source === "app+bluetooth"
+      || log.verifiedBy === "bluetooth_immediate"
+      || log.verifiedBy === "bluetooth_followup"
+      || log.verifiedBy === "bluetooth_disconnect";
+    const btDisconnected =
+      log.bluetoothConnectedAtEvent === false
+      || log.bluetoothStatusAtEvent === "absent"
+      || (
+        (log.verificationStatus === "unverified" || log.verificationStatus === "expired")
+        && log.verifiedBy === "none"
+      );
+    if (btConnected && !btDisconnected) btLabel = " · BT connected";
+    else if (btDisconnected) btLabel = " · BT not connected";
+  } else if (connectionType === "bluetooth") {
+    btLabel = log.action === "check_out" ? " · BT disconnect" : " · BT connected";
+  }
+  const summary = [connectionLabel, action, btLabel].filter(Boolean).join(" — ");
+  return `
+    <div class="edit-log-row">
+      <div class="edit-log-time">${date}</div>
+      <div>${summary}</div>
+    </div>
+  `;
+}
+
 window.openEditModal = function (id, firstName, lastName, ucsdEmail) {
   const editDeviceId = document.getElementById("edit-device-id");
   const editFirstName = document.getElementById("edit-firstname");
@@ -535,21 +592,13 @@ window.openEditModal = function (id, firstName, lastName, ucsdEmail) {
     return;
   }
 
-  convexClient.query("devices:getDeviceLogs", { deviceId: id }).then((logs) => {
-    if (logs.length === 0) {
-      logsContainer.innerHTML = '<div class="edit-log-empty">No logs found.</div>';
+  convexClient.query("devices:getAttendanceHistoryByDeviceId", { deviceId: id, limit: 20 }).then((logs) => {
+    if (!logs || logs.length === 0) {
+      logsContainer.innerHTML = '<div class="edit-log-empty">No attendance events found.</div>';
       return;
     }
 
-    logsContainer.innerHTML = logs.map((log) => {
-      const date = new Date(log.timestamp).toLocaleString();
-      return `
-        <div class="edit-log-row">
-          <div class="edit-log-time">${date}</div>
-          <div>${log.details}</div>
-        </div>
-      `;
-    }).join("");
+    logsContainer.innerHTML = logs.map((log) => renderEditAttendanceLogRow(log)).join("");
   }).catch((err) => {
     console.error(err);
     logsContainer.innerHTML = "Error loading logs.";

@@ -1,46 +1,10 @@
 "use node";
 import { internalAction } from "./_generated/server";
-import { api, internal } from "./_generated/api";
+import { internal } from "./_generated/api";
 
-export const updatePresenceNotifications = internalAction({
-    args: {},
-    handler: async (ctx: any) => {
-        // 1. Get present users
-        const presentUsers = await ctx.runQuery(api.devices.getPresentUsers);
-
-        // 2. Get integrations
-        const integrations = await ctx.runQuery(api.integrations.getIntegrations);
-
-        // 3. Process each integration
-        for (const integration of integrations) {
-            if (!integration.isEnabled) continue;
-
-            const config = integration.config || {};
-            const displayName = config.displayName || "Presence Tracker";
-            const useEmbeds = config.useEmbeds ?? true;
-            const showAbsentUsers = config.showAbsentUsers ?? false;
-
-            let absentUsers: any[] = [];
-            if (showAbsentUsers) {
-                absentUsers = await ctx.runQuery(api.devices.getAbsentUsers);
-            }
-
-            try {
-                if (integration.type === "discord" && config.webhookUrl) {
-                    await handleDiscord(ctx, integration, presentUsers, absentUsers, displayName, useEmbeds, showAbsentUsers);
-                } else if (integration.type === "slack" && config.botToken && config.channelId) {
-                    await handleSlack(ctx, integration, presentUsers, absentUsers, displayName, showAbsentUsers);
-                }
-            } catch (error) {
-                console.error("Presence notification error", {
-                    integrationId: integration._id,
-                    type: integration.type,
-                    error,
-                });
-            }
-        }
-    },
-});
+const presenceCronsDisabled = () =>
+    process.env.DISABLE_PRESENCE_CRONS === "true"
+    || process.env.DISABLE_PRESENCE_CRONS === "1";
 
 function formatUserName(user: any): string {
     if (user.firstName && user.lastName) {
@@ -52,6 +16,18 @@ function formatUserName(user: any): string {
 function formatBulletList(names: string[]): string {
     if (names.length === 0) return "None";
     return names.map(n => `- ${n}`).join("\n");
+}
+
+function computeRosterHash(
+    presentUsers: any[],
+    absentUsers: any[],
+    showAbsentUsers: boolean,
+): string {
+    const presentNames = presentUsers.map(formatUserName).sort().join("|");
+    const absentNames = showAbsentUsers
+        ? absentUsers.map(formatUserName).sort().join("|")
+        : "";
+    return `${presentNames}::${absentNames}`;
 }
 
 function formatSlackTimestamp(date: Date): string {
@@ -82,6 +58,86 @@ async function getResponseBody(response: Response): Promise<string> {
         return "";
     }
 }
+
+export const updatePresenceNotifications = internalAction({
+    args: {},
+    handler: async (ctx: any) => {
+        if (presenceCronsDisabled()) {
+            return { skipped: true, reason: "DISABLE_PRESENCE_CRONS" };
+        }
+
+        const snapshot = await ctx.runQuery(internal.devices.getPresenceNotificationSnapshot);
+        const { present: presentUsers, absent: absentUsers, integrations } = snapshot;
+
+        const anyEnabled = integrations.some((integration: any) => integration.isEnabled);
+        if (!anyEnabled) {
+            return { skipped: true, reason: "no_enabled_integrations" };
+        }
+
+        const needsAbsent = integrations.some(
+            (integration: any) =>
+                integration.isEnabled
+                && (integration.config?.showAbsentUsers ?? false),
+        );
+
+        for (const integration of integrations) {
+            if (!integration.isEnabled) continue;
+
+            const config = integration.config || {};
+            const displayName = config.displayName || "Presence Tracker";
+            const useEmbeds = config.useEmbeds ?? true;
+            const showAbsentUsers = config.showAbsentUsers ?? false;
+
+            const rosterHash = computeRosterHash(
+                presentUsers,
+                needsAbsent ? absentUsers : [],
+                showAbsentUsers,
+            );
+
+            if (integration.lastNotifiedRosterHash === rosterHash) {
+                continue;
+            }
+
+            const integrationAbsentUsers = showAbsentUsers ? absentUsers : [];
+
+            try {
+                if (integration.type === "discord" && config.webhookUrl) {
+                    await handleDiscord(
+                        ctx,
+                        integration,
+                        presentUsers,
+                        integrationAbsentUsers,
+                        displayName,
+                        useEmbeds,
+                        showAbsentUsers,
+                    );
+                } else if (integration.type === "slack" && config.botToken && config.channelId) {
+                    await handleSlack(
+                        ctx,
+                        integration,
+                        presentUsers,
+                        integrationAbsentUsers,
+                        displayName,
+                        showAbsentUsers,
+                    );
+                } else {
+                    continue;
+                }
+
+                await ctx.runMutation(internal.integrations.updateLastNotifiedRosterHash, {
+                    id: integration._id,
+                    hash: rosterHash,
+                });
+            } catch (error) {
+                console.error("Presence notification error", {
+                    integrationId: integration._id,
+                    type: integration.type,
+                    error,
+                });
+            }
+        }
+    },
+});
 
 async function handleDiscord(
     ctx: any,

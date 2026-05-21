@@ -128,3 +128,13 @@ export const updateIntegrationMessageId = internalMutation({
     },
 });
 
+export const updateLastNotifiedRosterHash = internalMutation({
+    args: {
+        id: v.id("integrations"),
+        hash: v.string(),
+    },
+    handler: async (ctx: any, args: any) => {
+        await ctx.db.patch(args.id, { lastNotifiedRosterHash: args.hash });
+    },
+});
+

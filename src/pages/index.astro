@@ -99,7 +99,7 @@ import "../styles/dashboard.css";
         <div id="logs-view" class="logs-view logs-hidden">
             <div class="logs-header">
                 <button class="btn btn-secondary" onclick="hideLogsView()">← Back</button>
-                <h2 id="logs-title">Device Status Logs</h2>
+                <h2 id="logs-title">Attendance Logs</h2>
                 <button class="btn btn-primary admin-only" onclick="exportToCSV()">Export CSV</button>
             </div>
             <div class="logs-tabs">
@@ -113,16 +113,34 @@ import "../styles/dashboard.css";
                     <select id="person-select">
                         <option value="">-- Choose a person --</option>
                     </select>
+                    <label for="connection-filter" class="logs-filter-secondary-label">Connection:</label>
+                    <select id="connection-filter">
+                        <option value="all">All</option>
+                        <option value="bluetooth">Bluetooth</option>
+                        <option value="manual">Manual (app)</option>
+                    </select>
                 </div>
                 <div class="logs-filter filter-hidden" id="date-filter">
                     <label for="date-picker">Select Date:</label>
                     <input type="date" id="date-picker">
+                    <label for="connection-filter-date" class="logs-filter-secondary-label">Connection:</label>
+                    <select id="connection-filter-date" class="connection-filter-sync">
+                        <option value="all">All</option>
+                        <option value="bluetooth">Bluetooth</option>
+                        <option value="manual">Manual (app)</option>
+                    </select>
                 </div>
                 <div class="logs-filter filter-hidden" id="all-filter">
                     <label for="all-view-mode">View Mode:</label>
                     <select id="all-view-mode">
                         <option value="by-time">By Time</option>
-                        <option value="by-person-per-day">By Person Per Day</option>
+                        <option value="by-day-per-person">By Day, Then Person</option>
+                    </select>
+                    <label for="connection-filter-all" class="logs-filter-secondary-label">Connection:</label>
+                    <select id="connection-filter-all" class="connection-filter-sync">
+                        <option value="all">All</option>
+                        <option value="bluetooth">Bluetooth</option>
+                        <option value="manual">Manual (app)</option>
                     </select>
                 </div>
             </div>

@@ -61,9 +61,11 @@ impl ConvexClient {
             return Ok(Vec::new());
         }
 
-        let value = self.call("query", "devices:getDevices", json!({})).await?;
+        let value = self
+            .call("query", "devices:getDevicesForPresence", json!({}))
+            .await?;
         serde_json::from_value::<Vec<DeviceRecord>>(value)
-            .context("devices:getDevices did not return a valid device list")
+            .context("devices:getDevicesForPresence did not return a valid device list")
     }
 
     pub async fn register_pending_device(

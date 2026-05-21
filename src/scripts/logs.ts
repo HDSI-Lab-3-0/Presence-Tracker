@@ -9,6 +9,7 @@ let personModeSelectedPerson = null;
 let dateModeSelectedDate = null;
 let allModeViewMode = "by-time";
 let allModeSelectedViewMode = "by-time";
+let connectionFilter = "all";
 
 window.showLogsView = async function () {
   const mainApp = document.getElementById("main-app");
@@ -33,9 +34,10 @@ window.showLogsView = async function () {
     logsView.classList.remove("logs-hidden");
   }
 
-  await fetchLogs();
+  document.getElementById("logs-filter-container")?.classList.remove("logs-filters-ready");
   setupEventListeners();
   window.switchTab?.("by-person");
+  await fetchLogs();
 };
 
 window.hideLogsView = function () {
@@ -47,6 +49,7 @@ window.hideLogsView = function () {
     logsView.style.display = "none";
     logsView.classList.add("logs-hidden");
   }
+  document.getElementById("logs-filter-container")?.classList.remove("logs-filters-ready");
   if (dashboard) dashboard.style.display = "block";
 };
 
@@ -110,13 +113,73 @@ function setupEventListeners() {
     allViewModeSelect.addEventListener("change", handleAllViewModeChange);
     allViewModeSelect.dataset.setup = "true";
   }
+
+  document.querySelectorAll(".connection-filter-sync, #connection-filter").forEach((el) => {
+    if (!el.dataset.setup) {
+      el.addEventListener("change", handleConnectionFilterChange);
+      el.dataset.setup = "true";
+    }
+  });
+}
+
+function syncConnectionFilterSelects(value = connectionFilter) {
+  document.querySelectorAll(".connection-filter-sync, #connection-filter").forEach((el) => {
+    el.value = value;
+  });
+}
+
+function handleConnectionFilterChange(e) {
+  connectionFilter = e.target.value;
+  syncConnectionFilterSelects(connectionFilter);
+  populatePersonSelect();
+  renderCurrentView();
+}
+
+function resolveBluetoothConnectedAtEvent(log) {
+  if (log.bluetoothConnectedAtEvent === true) return true;
+  if (log.bluetoothConnectedAtEvent === false) return false;
+  if (log.bluetoothStatusAtEvent === "present") return true;
+  if (log.bluetoothStatusAtEvent === "absent") return false;
+  if (log.source === "app+bluetooth") return true;
+  if (
+    log.verifiedBy === "bluetooth_immediate"
+    || log.verifiedBy === "bluetooth_followup"
+    || log.verifiedBy === "bluetooth_disconnect"
+  ) {
+    return true;
+  }
+  const connectionType = inferConnectionType(log);
+  if (connectionType === "bluetooth") {
+    return log.action === "check_in" || log.status === "present";
+  }
+  if (
+    connectionType === "manual"
+    && (log.verificationStatus === "unverified" || log.verificationStatus === "expired")
+    && log.verifiedBy === "none"
+  ) {
+    return false;
+  }
+  return null;
+}
+
+function inferConnectionType(log) {
+  if (log.connectionType) return log.connectionType;
+  if (log.origin === "bluetooth" || log.source === "bluetooth") return "bluetooth";
+  if (log.origin === "app" || log.source === "app" || log.source === "app+bluetooth") return "manual";
+  if (log.origin === "system" || log.source === "system") return "system";
+  return null;
+}
+
+function getFilteredLogs() {
+  if (connectionFilter === "all") return allLogs;
+  return allLogs.filter((log) => inferConnectionType(log) === connectionFilter);
 }
 
 function populatePersonSelect() {
   const personSelect = document.getElementById("person-select");
   if (!personSelect) return;
 
-  const persons = [...new Set(allLogs.map((log) => log.userName).filter(Boolean))].sort();
+  const persons = [...new Set(getFilteredLogs().map((log) => log.userName).filter(Boolean))].sort();
 
   personSelect.innerHTML = '<option value="">-- Choose a person --</option>';
   persons.forEach((person) => {
@@ -160,27 +223,33 @@ window.switchTab = function (tabName) {
   const allViewModeSelect = document.getElementById("all-view-mode");
 
   if (currentView === "by-person") {
-    if (personFilter) personFilter.style.display = "flex";
-    if (dateFilter) dateFilter.style.display = "none";
-    if (allFilter) allFilter.style.display = "none";
+    personFilter?.classList.remove("filter-hidden");
+    dateFilter?.classList.add("filter-hidden");
+    allFilter?.classList.add("filter-hidden");
     dateModeSelectedDate = selectedDate;
     selectedPerson = personModeSelectedPerson;
     if (personSelect) personSelect.value = personModeSelectedPerson || "";
   } else if (currentView === "by-date") {
-    if (personFilter) personFilter.style.display = "none";
-    if (dateFilter) dateFilter.style.display = "flex";
-    if (allFilter) allFilter.style.display = "none";
+    personFilter?.classList.add("filter-hidden");
+    dateFilter?.classList.remove("filter-hidden");
+    allFilter?.classList.add("filter-hidden");
     personModeSelectedPerson = selectedPerson;
     selectedDate = dateModeSelectedDate;
     if (datePicker) datePicker.value = dateModeSelectedDate || "";
   } else {
-    if (personFilter) personFilter.style.display = "none";
-    if (dateFilter) dateFilter.style.display = "none";
-    if (allFilter) allFilter.style.display = "flex";
-    allModeViewMode = allModeSelectedViewMode;
-    if (allViewModeSelect) allViewModeSelect.value = allModeSelectedViewMode || "by-time";
+    personFilter?.classList.add("filter-hidden");
+    dateFilter?.classList.add("filter-hidden");
+    allFilter?.classList.remove("filter-hidden");
+    allModeViewMode =
+      allModeSelectedViewMode === "by-person-per-day"
+        ? "by-day-per-person"
+        : (allModeSelectedViewMode || "by-time");
+    allModeSelectedViewMode = allModeViewMode;
+    if (allViewModeSelect) allViewModeSelect.value = allModeViewMode;
   }
 
+  syncConnectionFilterSelects();
+  document.getElementById("logs-filter-container")?.classList.add("logs-filters-ready");
   renderCurrentView();
 };
 
@@ -188,8 +257,15 @@ function renderCurrentView() {
   const logsContent = document.getElementById("logs-content");
   if (!logsContent) return;
 
+  const filteredLogs = getFilteredLogs();
+
   if (allLogs.length === 0) {
     logsContent.innerHTML = '<div class="empty-state">No status change logs found.</div>';
+    return;
+  }
+
+  if (filteredLogs.length === 0) {
+    logsContent.innerHTML = '<div class="empty-state">No logs match this connection filter.</div>';
     return;
   }
 
@@ -200,7 +276,7 @@ function renderCurrentView() {
   } else if (allModeViewMode === "by-time") {
     renderLogsByTime(logsContent);
   } else {
-    renderLogsByPersonPerDay(logsContent);
+    renderLogsByDayPerPerson(logsContent);
   }
 }
 
@@ -210,7 +286,7 @@ function renderLogsByPerson(container) {
     return;
   }
 
-  const personLogs = allLogs.filter((log) => log.userName === selectedPerson);
+  const personLogs = getFilteredLogs().filter((log) => log.userName === selectedPerson);
   if (personLogs.length === 0) {
     container.innerHTML = '<div class="empty-state">No logs found for this person.</div>';
     return;
@@ -240,7 +316,7 @@ function renderLogsByDate(container) {
   const endDate = new Date(selectedDate);
   endDate.setUTCHours(23, 59, 59, 999);
 
-  const dateLogs = allLogs.filter((log) => {
+  const dateLogs = getFilteredLogs().filter((log) => {
     const logDate = new Date(log.timestamp);
     return logDate >= startDate && logDate <= endDate;
   });
@@ -264,7 +340,7 @@ function renderLogsByDate(container) {
 }
 
 function renderLogsByTime(container) {
-  const sortedLogs = [...allLogs].sort((a, b) => b.timestamp - a.timestamp);
+  const sortedLogs = [...getFilteredLogs()].sort((a, b) => b.timestamp - a.timestamp);
   container.innerHTML = `
     <div class="all-time-view">
       <div class="all-time-header">
@@ -276,54 +352,63 @@ function renderLogsByTime(container) {
   `;
 }
 
-function renderLogsByPersonPerDay(container) {
-  const persons = [...new Set(allLogs.map((log) => log.userName).filter(Boolean))].sort();
+function pacificDateKeyFromTimestamp(timestamp) {
+  return new Date(timestamp).toLocaleDateString("en-US", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+}
+
+function renderLogsByDayPerPerson(container) {
+  const logs = getFilteredLogs();
+  const dayGroups = {};
+
+  logs.forEach((log) => {
+    const dateKey = pacificDateKeyFromTimestamp(log.timestamp);
+    if (!dayGroups[dateKey]) {
+      dayGroups[dateKey] = {};
+    }
+    const person = log.userName || "Unknown";
+    if (!dayGroups[dateKey][person]) {
+      dayGroups[dateKey][person] = [];
+    }
+    dayGroups[dateKey][person].push(log);
+  });
+
+  const sortedDays = Object.keys(dayGroups).sort(
+    (a, b) => new Date(b).getTime() - new Date(a).getTime(),
+  );
 
   let html = "";
-  let totalEntries = 0;
+  let totalEntries = logs.length;
 
-  persons.forEach((person) => {
-    const personLogs = allLogs.filter((log) => log.userName === person);
-    totalEntries += personLogs.length;
-
-    const dateGroups = {};
-    personLogs.forEach((log) => {
-      const date = new Date(log.timestamp);
-      const dateKey = date.toLocaleDateString("en-US", {
-        timeZone: "America/Los_Angeles",
-        year: "numeric",
-        month: "2-digit",
-        day: "2-digit",
-      });
-
-      if (!dateGroups[dateKey]) {
-        dateGroups[dateKey] = [];
-      }
-      dateGroups[dateKey].push(log);
-    });
-
-    const sortedDates = Object.keys(dateGroups).sort((a, b) => new Date(b).getTime() - new Date(a).getTime());
+  sortedDays.forEach((dateKey) => {
+    const personMap = dayGroups[dateKey];
+    const persons = Object.keys(personMap).sort();
+    const dayCount = persons.reduce((sum, person) => sum + personMap[person].length, 0);
 
     html += `
-      <div class="person-group-all">
-        <div class="person-header">
-          <div class="person-info"><strong>${escapeHtml(person)}</strong></div>
-          <span class="log-count">${personLogs.length} entries</span>
+      <div class="day-group-all">
+        <div class="date-group-header day-group-header">
+          <span class="date-label">${escapeHtml(dateKey)}</span>
+          <span class="log-count">${dayCount} entries</span>
         </div>
-        <div class="person-logs">
+        <div class="day-person-groups">
     `;
 
-    sortedDates.forEach((dateKey) => {
-      const dateLogs = dateGroups[dateKey];
-      dateLogs.sort((a, b) => b.timestamp - a.timestamp);
+    persons.forEach((person) => {
+      const personLogs = personMap[person];
+      personLogs.sort((a, b) => b.timestamp - a.timestamp);
 
       html += `
-        <div class="date-group-all">
-          <div class="date-group-header">
-            <span class="date-label">${escapeHtml(dateKey)}</span>
-            <span class="log-count">${dateLogs.length}</span>
+        <div class="person-group-all person-group-nested">
+          <div class="person-header">
+            <div class="person-info"><strong>${escapeHtml(person)}</strong></div>
+            <span class="log-count">${personLogs.length}</span>
           </div>
-          <div class="logs-list">${dateLogs.map((log) => renderLogEntry(log, true)).join("")}</div>
+          <div class="logs-list">${personLogs.map((log) => renderLogEntry(log, true)).join("")}</div>
         </div>
       `;
     });
@@ -337,9 +422,9 @@ function renderLogsByPersonPerDay(container) {
   }
 
   container.innerHTML = `
-    <div class="all-person-per-day-view">
+    <div class="all-day-per-person-view">
       <div class="all-view-header">
-        <strong>All Logs by Person Per Day</strong>
+        <strong>All Logs by Day, Then Person</strong>
         <span class="log-count">${totalEntries} total entries</span>
       </div>
       ${html}
@@ -347,30 +432,54 @@ function renderLogsByPersonPerDay(container) {
   `;
 }
 
+function formatCompactTimestamp(timestamp) {
+  return new Date(timestamp).toLocaleString("en-US", {
+    timeZone: "America/Los_Angeles",
+    month: "numeric",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+/** Short note only when badges alone do not convey it. */
+function formatLogEntryNote(log, connectionType) {
+  if (connectionType === "manual") {
+    if (log.verificationStatus === "pending") return "Awaiting Bluetooth";
+    if (log.verificationStatus === "unverified") return "Bluetooth not verified";
+    if (log.verificationStatus === "expired") return "Checkout not verified";
+    return "";
+  }
+  if (connectionType === "system") return "System";
+  return "";
+}
+
 function renderLogEntry(log, hidePerson = false) {
-  const date = new Date(log.timestamp);
-  const dateStr = date.toLocaleDateString("en-US", { timeZone: "America/Los_Angeles" });
-  const timeStr = date.toLocaleTimeString("en-US", { timeZone: "America/Los_Angeles" });
   const statusClass = log.status === "present" ? "present" : "absent";
   const statusText = log.action === "check_out"
     ? "Check Out"
     : log.action === "check_in"
       ? "Check In"
       : (log.status === "present" ? "Present" : "Absent");
-  const sourceText = formatSourceText(log);
-  const verificationText = formatVerificationText(log);
+  const connectionType = inferConnectionType(log);
+  const connectionBadge = formatConnectionBadge(connectionType);
+  const btBadge =
+    connectionType === "manual" ? formatBluetoothAtEventBadge(log, connectionType) : "";
+  const note = formatLogEntryNote(log, connectionType);
 
   return `
     <div class="log-entry">
-      <div class="log-entry-header">
-        ${!hidePerson ? `<div class="log-person">${escapeHtml(log.userName)}</div>` : ""}
-        <div class="log-status"><span class="status-badge ${statusClass}">${statusText}</span></div>
-      </div>
-      <div class="log-entry-details">
-        <div class="log-time">${dateStr} at ${timeStr}</div>
-        ${sourceText ? `<div class="log-meta">${escapeHtml(sourceText)}</div>` : ""}
-        ${verificationText ? `<div class="log-meta">${escapeHtml(verificationText)}</div>` : ""}
-        ${log.label ? `<div class="log-meta">${escapeHtml(log.label)}</div>` : ""}
+      <div class="log-entry-main">
+        ${!hidePerson ? `<span class="log-person-inline">${escapeHtml(log.userName)}</span>` : ""}
+        <time class="log-time">${escapeHtml(formatCompactTimestamp(log.timestamp))}</time>
+        ${note ? `<span class="log-note">${escapeHtml(note)}</span>` : ""}
+        <div class="log-badges">
+          ${connectionBadge}
+          <span class="status-badge ${statusClass}">${statusText}</span>
+          ${btBadge}
+        </div>
       </div>
     </div>
   `;
@@ -390,7 +499,7 @@ window.exportToCSV = function () {
       showToast("Please select a person to export", "error");
       return;
     }
-    logsToExport = allLogs.filter((log) => log.userName === selectedPerson);
+    logsToExport = getFilteredLogs().filter((log) => log.userName === selectedPerson);
     filenamePrefix = `logs-${encodeURIComponent(selectedPerson)}`;
   } else if (currentView === "by-date") {
     if (!selectedDate) {
@@ -403,13 +512,13 @@ window.exportToCSV = function () {
     const endDate = new Date(selectedDate);
     endDate.setUTCHours(23, 59, 59, 999);
 
-    logsToExport = allLogs.filter((log) => {
+    logsToExport = getFilteredLogs().filter((log) => {
       const logDate = new Date(log.timestamp);
       return logDate >= startDate && logDate <= endDate;
     });
     filenamePrefix = `logs-${selectedDate}`;
   } else {
-    logsToExport = [...allLogs];
+    logsToExport = [...getFilteredLogs()];
     filenamePrefix = "logs-all";
   }
 
@@ -419,12 +528,12 @@ window.exportToCSV = function () {
   }
 
   const sortedLogs = logsToExport.sort((a, b) => b.timestamp - a.timestamp);
-  let csvContent = "Person Name,Device ID,Action,Status,Source,Verification,Timestamp\n";
+  let csvContent = "Person Name,Device ID,Action,Status,Connection,BluetoothAtEvent,Source,Verification,Timestamp\n";
 
   sortedLogs.forEach((log) => {
     const date = new Date(log.timestamp);
     const pacificDateStr = date.toLocaleString("en-US", { timeZone: "America/Los_Angeles" });
-    csvContent += `"${escapeCsv(log.userName)}","${escapeCsv(log.deviceId)}","${escapeCsv(log.action || "")}","${escapeCsv(log.status)}","${escapeCsv(formatSourceText(log))}","${escapeCsv(formatVerificationText(log))}","${escapeCsv(pacificDateStr)}"\n`;
+    csvContent += `"${escapeCsv(log.userName)}","${escapeCsv(log.deviceId)}","${escapeCsv(log.action || "")}","${escapeCsv(log.status)}","${escapeCsv(formatConnectionLabel(inferConnectionType(log)))}","${escapeCsv(formatBluetoothAtEventCsv(log, inferConnectionType(log)))}","${escapeCsv(formatSourceText(log))}","${escapeCsv(formatVerificationText(log))}","${escapeCsv(pacificDateStr)}"\n`;
   });
 
   const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
@@ -459,6 +568,46 @@ function formatSourceText(log) {
   if (log.origin === "app" || log.source === "app" || log.source === "app+bluetooth") return "Source: app";
   if (log.origin === "bluetooth" || log.source === "bluetooth") return "Source: bluetooth";
   return "";
+}
+
+function formatConnectionLabel(connectionType) {
+  if (connectionType === "bluetooth") return "Bluetooth";
+  if (connectionType === "manual") return "Manual (app)";
+  if (connectionType === "system") return "System";
+  return "";
+}
+
+function formatConnectionBadge(connectionType) {
+  if (connectionType === "bluetooth") {
+    return '<span class="log-connection-badge bluetooth">Bluetooth</span>';
+  }
+  if (connectionType === "manual") {
+    return '<span class="log-connection-badge manual">Manual</span>';
+  }
+  if (connectionType === "system") {
+    return '<span class="log-connection-badge system">System</span>';
+  }
+  return "";
+}
+
+function formatBluetoothAtEventBadge(log, connectionType) {
+  if (connectionType !== "manual") return "";
+  const btConnected = resolveBluetoothConnectedAtEvent(log);
+  if (btConnected === true) {
+    return '<span class="log-bt-badge connected">BT on</span>';
+  }
+  if (btConnected === false) {
+    return '<span class="log-bt-badge disconnected">BT off</span>';
+  }
+  return '<span class="log-bt-badge unknown">BT ?</span>';
+}
+
+function formatBluetoothAtEventCsv(log, connectionType) {
+  if (connectionType !== "manual") return "";
+  const btConnected = resolveBluetoothConnectedAtEvent(log);
+  if (btConnected === true) return "Connected";
+  if (btConnected === false) return "Not connected";
+  return "Unknown";
 }
 
 function formatVerificationText(log) {

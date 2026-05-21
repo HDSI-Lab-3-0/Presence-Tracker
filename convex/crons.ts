@@ -5,22 +5,15 @@ const crons = cronJobs();
 
 crons.interval(
   "updatePresenceNotifications",
-  { minutes: 1 },
+  { minutes: 5 },
   internal.notifications.updatePresenceNotifications,
   {},
 );
 
 crons.interval(
-  "cleanupExpiredDevices",
+  "minuteDeviceMaintenance",
   { minutes: 1 },
-  internal.devices.cleanupExpiredGracePeriodsInternal,
-  {},
-);
-
-crons.interval(
-  "expirePendingAttendanceVerifications",
-  { minutes: 1 },
-  internal.devices.expirePendingAttendanceVerifications,
+  internal.devices.runMinuteDeviceMaintenance,
   {},
 );
 

@@ -47,12 +47,16 @@ export default defineSchema({
     firstSeen: v.number(),
     gracePeriodEnd: v.number(),
     pendingRegistration: v.boolean(),
+    lastStatusChangeAt: v.optional(v.number()),
     // legacy support (optional)
     name: v.optional(v.string()),
   })
     .index("by_macAddress", ["macAddress"])
     .index("by_ucsdEmail", ["ucsdEmail"])
-    .index("by_status", ["status"]),
+    .index("by_status", ["status"])
+    .index("by_pendingRegistration_gracePeriodEnd", ["pendingRegistration", "gracePeriodEnd"])
+    .index("by_pendingVerificationExpiresAt", ["pendingVerificationExpiresAt"])
+    .index("by_pendingRegistration_attendanceStatus", ["pendingRegistration", "attendanceStatus"]),
 
   appConfig: defineTable({
     apiKey: v.string(),
@@ -74,7 +78,8 @@ export default defineSchema({
     details: v.string(),
   })
     .index("by_deviceId", ["deviceId"])
-    .index("by_timestamp", ["timestamp"]),
+    .index("by_timestamp", ["timestamp"])
+    .index("by_deviceId_changeType_timestamp", ["deviceId", "changeType", "timestamp"]),
 
   integrations: defineTable({
     type: v.union(v.literal("discord"), v.literal("slack")),
@@ -91,6 +96,8 @@ export default defineSchema({
     messageId: v.optional(v.string()),
     // Keep track of the last successfully sent message ID to allow threading or replacement
     lastMessageId: v.optional(v.string()),
+    /** Hash of last roster sent to Discord/Slack; skip external update when unchanged */
+    lastNotifiedRosterHash: v.optional(v.string()),
   }).index("by_type", ["type"]),
 
   integrationMessages: defineTable({
@@ -104,7 +111,9 @@ export default defineSchema({
   pendingDeviceSuppressions: defineTable({
     macAddress: v.string(),
     suppressUntil: v.number(),
-  }).index("by_macAddress", ["macAddress"]),
+  })
+    .index("by_macAddress", ["macAddress"])
+    .index("by_suppressUntil", ["suppressUntil"]),
 
   attendanceLogs: defineTable({
     userId: v.string(),
@@ -136,6 +145,7 @@ export default defineSchema({
     eventTimestamp: v.optional(v.number()),
     effectiveTimestamp: v.optional(v.number()),
     verificationDeadline: v.optional(v.number()),
+    bluetoothStatusAtEvent: v.optional(v.union(v.literal("present"), v.literal("absent"))),
   })
     .index("by_timestamp", ["timestamp"])
     .index("by_deviceId_timestamp", ["deviceId", "timestamp"]),

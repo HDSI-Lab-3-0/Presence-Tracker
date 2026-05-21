@@ -37,8 +37,12 @@ export const getAllStatusLogs = query({
       throw new Error("Invalid admin password");
     }
 
-    // Fetch all device logs
-    const logs = await ctx.db.query("deviceLogs").withIndex("by_timestamp").order("desc").collect();
+    const oneYearAgo = Date.now() - 365 * 24 * 60 * 60 * 1000;
+    const logs = await ctx.db
+      .query("deviceLogs")
+      .withIndex("by_timestamp", (q) => q.gte("timestamp", oneYearAgo))
+      .order("desc")
+      .collect();
 
     // Fetch all devices to join information
     const devices = await ctx.db.query("devices").collect();

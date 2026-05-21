@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { action, mutation, query, internalMutation } from "./_generated/server";
+import { action, mutation, query, internalMutation, internalQuery } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { authComponent } from "./betterAuth";
@@ -8,6 +8,10 @@ const GRACE_PERIOD_SECONDS = 300;
 const DEVICE_EXPIRATION_MS = GRACE_PERIOD_SECONDS * 1000;
 /** After auto-deleting an unknown device, block probe re-registration for 1 hour */
 const PENDING_PROBE_SUPPRESSION_MS = 60 * 60 * 1000;
+const MAINTENANCE_BATCH_CAP = 50;
+const LOG_DELETE_BATCH = 500;
+const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+const STATUS_CHANGE_DEDUPE_MS = 10_000;
 
 const normalizeMacAddress = (mac: string) => mac.trim().toUpperCase();
 
@@ -209,6 +213,40 @@ const deviceDisplayName = (device: any) =>
     ? `${device.firstName} ${device.lastName}`
     : (device?.name || device?.macAddress || "Unknown");
 
+const mapRosterUser = (device: Doc<"devices">) => ({
+  firstName: device.firstName,
+  lastName: device.lastName,
+  name: device.name,
+});
+
+const matchesRosterAttendance = (device: Doc<"devices">, target: AttendanceStatusValue) =>
+  !device.pendingRegistration && attendanceStateFromDevice(device) === target;
+
+const queryRegisteredDevicesByAttendanceIndex = async (
+  ctx: any,
+  attendanceStatus: AttendanceStatusValue,
+) => {
+  const candidates = await ctx.db
+    .query("devices")
+    .withIndex("by_pendingRegistration_attendanceStatus", (q: any) =>
+      q.eq("pendingRegistration", false).eq("attendanceStatus", attendanceStatus),
+    )
+    .collect();
+
+  return candidates.filter((device: Doc<"devices">) =>
+    matchesRosterAttendance(device, attendanceStatus),
+  );
+};
+
+const slimDeviceStatusResponse = (device: any, overrides: Record<string, any> = {}) => ({
+  _id: device._id,
+  macAddress: device.macAddress,
+  status: overrides.status ?? device.status,
+  attendanceStatus:
+    overrides.attendanceStatus ?? attendanceStateFromDevice(device),
+  pendingRegistration: device.pendingRegistration,
+});
+
 const pacificDayKey = (timestamp: number) =>
   new Intl.DateTimeFormat("en-CA", {
     timeZone: PACIFIC_TIME_ZONE,
@@ -330,6 +368,26 @@ const normalizeAttendanceLogForResponse = (log: any, now = Date.now()) => {
     label = "checked out via bluetooth";
   }
 
+  const connectionType =
+    origin === "app" ? "manual" : origin === "system" ? "system" : "bluetooth";
+
+  let bluetoothConnectedAtEvent: boolean | null = null;
+  if (log?.bluetoothStatusAtEvent === "present") {
+    bluetoothConnectedAtEvent = true;
+  } else if (log?.bluetoothStatusAtEvent === "absent") {
+    bluetoothConnectedAtEvent = false;
+  } else if (origin === "bluetooth") {
+    bluetoothConnectedAtEvent = action === "check_in";
+  } else if (origin === "app" && (verifiedByBluetooth || source === "app+bluetooth")) {
+    bluetoothConnectedAtEvent = true;
+  } else if (
+    origin === "app"
+    && (verificationStatus === "unverified" || verificationStatus === "expired")
+    && verifiedBy === "none"
+  ) {
+    bluetoothConnectedAtEvent = false;
+  }
+
   return {
     ...log,
     action,
@@ -342,6 +400,8 @@ const normalizeAttendanceLogForResponse = (log: any, now = Date.now()) => {
     timestamp: effectiveTimestamp,
     source,
     label,
+    connectionType,
+    bluetoothConnectedAtEvent,
   };
 };
 
@@ -365,6 +425,7 @@ const createAttendanceEvent = async (
     eventTimestamp: number;
     effectiveTimestamp: number;
     verificationDeadline?: number;
+    bluetoothStatusAtEvent?: "present" | "absent";
   },
 ) => {
   const status = STATUS_FROM_ACTION[args.action];
@@ -380,6 +441,7 @@ const createAttendanceEvent = async (
     eventTimestamp: args.eventTimestamp,
     effectiveTimestamp: args.effectiveTimestamp,
     verificationDeadline: args.verificationDeadline,
+    bluetoothStatusAtEvent: args.bluetoothStatusAtEvent,
     timestamp: args.effectiveTimestamp,
   });
   return eventId;
@@ -485,6 +547,7 @@ const verifyPendingCheckInWithBluetooth = async (ctx: any, device: any) => {
   await patchAttendanceEvent(ctx, pendingEvent._id, {
     verificationStatus: "verified",
     verifiedBy: "bluetooth_followup",
+    bluetoothStatusAtEvent: "present",
   });
 
   const patch = {
@@ -521,6 +584,7 @@ const verifyPendingCheckOutWithBluetooth = async (ctx: any, device: any) => {
     verificationStatus: "verified",
     verifiedBy: "bluetooth_disconnect",
     effectiveTimestamp,
+    bluetoothStatusAtEvent: "absent",
   });
 
   const patch = {
@@ -644,8 +708,11 @@ const deleteDeviceAndLogs = async (
     .withIndex("by_deviceId", (q: any) => q.eq("deviceId", deviceId))
     .collect();
 
-  for (const log of relatedLogs) {
-    await ctx.db.delete(log._id);
+  for (let i = 0; i < relatedLogs.length; i += LOG_DELETE_BATCH) {
+    const batch = relatedLogs.slice(i, i + LOG_DELETE_BATCH);
+    for (const log of batch) {
+      await ctx.db.delete(log._id);
+    }
   }
 
   await ctx.db.delete(deviceId);
@@ -679,13 +746,22 @@ const isPendingProbeSuppressed = async (ctx: any, macAddress: string, now: numbe
   return Boolean(row && row.suppressUntil > now);
 };
 
-const cleanupExpiredDevicesCore = async (ctx: any): Promise<CleanupResult> => {
+const cleanupExpiredDevicesCore = async (
+  ctx: any,
+  cap: number = MAINTENANCE_BATCH_CAP,
+): Promise<CleanupResult> => {
   const now = Date.now();
 
-  const devices = await ctx.db.query("devices").collect();
-  const expiredDevices = devices.filter((device: Doc<"devices">) =>
-    isExpiredUnregisteredUnknown(device, now),
-  );
+  const expiredCandidates = await ctx.db
+    .query("devices")
+    .withIndex("by_pendingRegistration_gracePeriodEnd", (q: any) =>
+      q.eq("pendingRegistration", true).lte("gracePeriodEnd", now),
+    )
+    .collect();
+
+  const expiredDevices = expiredCandidates
+    .filter((device: Doc<"devices">) => isExpiredUnregisteredUnknown(device, now))
+    .slice(0, cap);
 
   const deletedMacs: string[] = [];
 
@@ -718,11 +794,20 @@ export const getOrganizationName = query({
 export const getDeviceLogs = query({
   args: { deviceId: v.id("devices") },
   handler: async (ctx: any, args: any) => {
-    return await ctx.db
+    const logs = await ctx.db
       .query("deviceLogs")
       .withIndex("by_deviceId", (q: any) => q.eq("deviceId", args.deviceId))
       .order("desc")
-      .take(20);
+      .take(50);
+
+    return logs
+      .filter(
+        (log: any) =>
+          log.changeType !== "create"
+          && log.changeType !== "update"
+          && !/Device (registered|created)|Pending device created/i.test(log.details ?? ""),
+      )
+      .slice(0, 20);
   },
 });
 
@@ -763,6 +848,20 @@ export const getDevices = query({
       }),
     );
     return mappedDevices;
+  },
+});
+
+/** Minimal device list for rust presence agent polling */
+export const getDevicesForPresence = query({
+  args: {},
+  handler: async (ctx) => {
+    const devices = await ctx.db.query("devices").collect();
+    return devices.map((device: Doc<"devices">) => ({
+      _id: device._id,
+      macAddress: device.macAddress,
+      status: device.status,
+      pendingRegistration: device.pendingRegistration,
+    }));
   },
 });
 
@@ -812,12 +911,6 @@ export const upsertDevice = mutation({
         gracePeriodEnd,
         pendingRegistration: true,
       });
-      await ctx.db.insert("deviceLogs", {
-        deviceId,
-        changeType: "create",
-        timestamp: now,
-        details: `Device created: ${args.name}`
-      });
       return {
         _id: deviceId,
         macAddress: args.macAddress,
@@ -851,22 +944,29 @@ export const updateDeviceStatus = mutation({
     let device = await settleExpiredPendingVerification(ctx, existingDevice, now);
 
     if (device.status !== args.status) {
-      const tenSecondsAgo = now - 10000;
-      const recentLogs = await ctx.db
-        .query("deviceLogs")
-        .withIndex("by_deviceId", (q: any) => q.eq("deviceId", existingDevice._id))
-        .filter((q: any) =>
-          q.and(
-            q.eq(q.field("changeType"), "status_change"),
-            q.gte(q.field("timestamp"), tenSecondsAgo),
-          )
-        )
-        .collect();
+      const tenSecondsAgo = now - STATUS_CHANGE_DEDUPE_MS;
+      const recentStatusChangeAt =
+        typeof device.lastStatusChangeAt === "number" ? device.lastStatusChangeAt : 0;
+      let isDuplicate = recentStatusChangeAt >= tenSecondsAgo;
 
-      const isDuplicate = recentLogs.some((log: any) =>
-        log.details.includes(`from ${existingDevice.status} to ${args.status}`)
-        || log.details.includes(`from ${args.status} to ${existingDevice.status}`),
-      );
+      if (!isDuplicate) {
+        const recentLog = await ctx.db
+          .query("deviceLogs")
+          .withIndex("by_deviceId_changeType_timestamp", (q: any) =>
+            q
+              .eq("deviceId", existingDevice._id)
+              .eq("changeType", "status_change")
+              .gte("timestamp", tenSecondsAgo),
+          )
+          .order("desc")
+          .first();
+
+        isDuplicate = Boolean(
+          recentLog
+          && (recentLog.details.includes(`from ${existingDevice.status} to ${args.status}`)
+            || recentLog.details.includes(`from ${args.status} to ${existingDevice.status}`)),
+        );
+      }
 
       if (!isDuplicate) {
         await ctx.db.insert("deviceLogs", {
@@ -875,6 +975,8 @@ export const updateDeviceStatus = mutation({
           timestamp: now,
           details: `Status changed from ${existingDevice.status} to ${args.status}`,
         });
+        await ctx.db.patch(device._id, { lastStatusChangeAt: now });
+        device = { ...device, lastStatusChangeAt: now };
       }
     }
 
@@ -882,10 +984,7 @@ export const updateDeviceStatus = mutation({
       await ctx.db.patch(device._id, {
         lastSeen: now,
       });
-      return {
-        ...device,
-        lastSeen: now,
-      };
+      return slimDeviceStatusResponse(device, { lastSeen: now });
     }
 
     if (isManualAttendanceDriver(device)) {
@@ -896,25 +995,26 @@ export const updateDeviceStatus = mutation({
           connectedSince: now,
           lastBluetoothPresentAt: now,
         });
-        return {
-          ...device,
+        return slimDeviceStatusResponse(device, {
           status: "present",
-          lastSeen: now,
-          connectedSince: now,
-          lastBluetoothPresentAt: now,
-        };
+          attendanceStatus: attendanceStateFromDevice({
+            ...device,
+            status: "present",
+          }),
+        });
       }
       await ctx.db.patch(device._id, {
         status: "absent",
         lastSeen: now,
         lastBluetoothAbsentAt: now,
       });
-      return {
-        ...device,
+      return slimDeviceStatusResponse(device, {
         status: "absent",
-        lastSeen: now,
-        lastBluetoothAbsentAt: now,
-      };
+        attendanceStatus: attendanceStateFromDevice({
+          ...device,
+          status: "absent",
+        }),
+      });
     }
 
     if (args.status === "present") {
@@ -958,13 +1058,13 @@ export const updateDeviceStatus = mutation({
         attendanceVerifiedBy: device.attendanceVerifiedBy,
       });
 
-      return {
-        ...device,
+      return slimDeviceStatusResponse(device, {
         status: "present",
-        lastSeen: now,
-        connectedSince: now,
-        lastBluetoothPresentAt: now,
-      };
+        attendanceStatus: attendanceStateFromDevice({
+          ...device,
+          status: "present",
+        }),
+      });
     }
 
     if (
@@ -1006,12 +1106,13 @@ export const updateDeviceStatus = mutation({
       attendanceVerifiedBy: device.attendanceVerifiedBy,
     });
 
-    return {
-      ...device,
+    return slimDeviceStatusResponse(device, {
       status: "absent",
-      lastSeen: now,
-      lastBluetoothAbsentAt: now,
-    };
+      attendanceStatus: attendanceStateFromDevice({
+        ...device,
+        status: "absent",
+      }),
+    });
   },
 });
 
@@ -1046,13 +1147,6 @@ export const registerDevice = mutation({
       gracePeriodEnd: now,
       pendingRegistration: false,
     });
-    await ctx.db.insert("deviceLogs", {
-      deviceId,
-      changeType: "create",
-      timestamp: now,
-      details: `Device registered: ${args.name}`
-    });
-
     return {
       _id: deviceId,
       macAddress: args.macAddress,
@@ -1118,13 +1212,6 @@ export const registerPendingDevice = mutation({
       gracePeriodEnd,
       pendingRegistration: true,
     });
-    await ctx.db.insert("deviceLogs", {
-      deviceId,
-      changeType: "create",
-      timestamp: now,
-      details: `Pending device created: ${deviceName || macAddress}`
-    });
-
     return {
       _id: deviceId,
       macAddress,
@@ -1186,14 +1273,6 @@ export const completeDeviceRegistration = mutation({
       attendanceVerifiedBy:
         existingDevice.attendanceVerifiedBy
         ?? (existingDevice.status === "present" ? "bluetooth_immediate" : "none"),
-    });
-
-    // Log creation
-    await ctx.db.insert("deviceLogs", {
-      deviceId: existingDevice._id,
-      changeType: "create",
-      timestamp: now,
-      details: `Device registered: ${args.firstName} ${args.lastName} (${normalizedEmail})`
     });
 
     return {
@@ -1286,33 +1365,105 @@ export const cleanupExpiredGracePeriodsInternal = internalMutation({
   },
 });
 
-export const getPresentUsers = query({
+const expirePendingVerificationsCore = async (
+  ctx: any,
+  cap: number = MAINTENANCE_BATCH_CAP,
+) => {
+  const now = Date.now();
+  const candidates = await ctx.db
+    .query("devices")
+    .withIndex("by_pendingVerificationExpiresAt", (q: any) =>
+      q.lte("pendingVerificationExpiresAt", now),
+    )
+    .collect();
+
+  let updatedCount = 0;
+
+  for (const device of candidates) {
+    if (updatedCount >= cap) {
+      break;
+    }
+    if (
+      (device.pendingVerificationAction === "check_in"
+        || device.pendingVerificationAction === "check_out")
+      && typeof device.pendingVerificationExpiresAt === "number"
+      && device.pendingVerificationExpiresAt <= now
+    ) {
+      await settleExpiredPendingVerification(ctx, device, now);
+      updatedCount += 1;
+    }
+  }
+
+  return { updatedCount };
+};
+
+const presenceCronsDisabled = () =>
+  process.env.DISABLE_PRESENCE_CRONS === "true"
+  || process.env.DISABLE_PRESENCE_CRONS === "1";
+
+export const runMinuteDeviceMaintenance = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    if (presenceCronsDisabled()) {
+      return { skipped: true, reason: "DISABLE_PRESENCE_CRONS" };
+    }
+
+    const grace = await cleanupExpiredDevicesCore(ctx, MAINTENANCE_BATCH_CAP);
+    const verification = await expirePendingVerificationsCore(ctx, MAINTENANCE_BATCH_CAP);
+    return {
+      deletedCount: grace.deletedCount,
+      deletedMacs: grace.deletedMacs,
+      verificationUpdatedCount: verification.updatedCount,
+    };
+  },
+});
+
+export const backfillAttendanceStatusInternal = internalMutation({
   args: {},
   handler: async (ctx) => {
     const devices = await ctx.db.query("devices").collect();
+    let updated = 0;
 
-    return devices
-      .filter((d) => !d.pendingRegistration && attendanceStateFromDevice(d) === "present")
-      .map((d) => ({
-        firstName: d.firstName,
-        lastName: d.lastName,
-        name: d.name,
-      }));
+    for (const device of devices) {
+      const computed = attendanceStateFromDevice(device);
+      if (device.attendanceStatus !== computed) {
+        await ctx.db.patch(device._id, { attendanceStatus: computed });
+        updated += 1;
+      }
+    }
+
+    return { updated };
+  },
+});
+
+export const getPresentUsers = query({
+  args: {},
+  handler: async (ctx) => {
+    const devices = await queryRegisteredDevicesByAttendanceIndex(ctx, "present");
+    return devices.map(mapRosterUser);
   },
 });
 
 export const getAbsentUsers = query({
   args: {},
   handler: async (ctx) => {
-    const devices = await ctx.db.query("devices").collect();
+    const devices = await queryRegisteredDevicesByAttendanceIndex(ctx, "absent");
+    return devices.map(mapRosterUser);
+  },
+});
 
-    return devices
-      .filter((d) => !d.pendingRegistration && attendanceStateFromDevice(d) === "absent")
-      .map((d) => ({
-        firstName: d.firstName,
-        lastName: d.lastName,
-        name: d.name,
-      }));
+export const getPresenceNotificationSnapshot = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const present = await queryRegisteredDevicesByAttendanceIndex(ctx, "present");
+    const absent = await queryRegisteredDevicesByAttendanceIndex(ctx, "absent");
+    const integrations = await ctx.db.query("integrations").collect();
+
+    return {
+      present: present.map(mapRosterUser),
+      absent: absent.map(mapRosterUser),
+      integrations,
+    };
   },
 });
 
@@ -1368,40 +1519,66 @@ export const getAttendanceLogs = query({
 export const cleanupOldLogs = internalMutation({
   args: {},
   handler: async (ctx: any) => {
-    const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-    const oldLogs = await ctx.db
-      .query("attendanceLogs")
-      .withIndex("by_timestamp", (q: any) => q.lt("timestamp", thirtyDaysAgo))
-      .collect();
+    const cutoff = Date.now() - ONE_YEAR_MS;
 
-    for (const log of oldLogs) {
+    const oldAttendance = await ctx.db
+      .query("attendanceLogs")
+      .withIndex("by_timestamp", (q: any) => q.lt("timestamp", cutoff))
+      .take(LOG_DELETE_BATCH);
+
+    for (const log of oldAttendance) {
+      // Belt-and-suspenders: index query uses lt(cutoff); never delete within retention window
+      if (log.timestamp >= cutoff) {
+        continue;
+      }
       await ctx.db.delete(log._id);
     }
 
-    return { deletedCount: oldLogs.length };
+    const oldDeviceLogs = await ctx.db
+      .query("deviceLogs")
+      .withIndex("by_timestamp", (q: any) => q.lt("timestamp", cutoff))
+      .take(LOG_DELETE_BATCH);
+
+    for (const log of oldDeviceLogs) {
+      if (log.timestamp >= cutoff) {
+        continue;
+      }
+      await ctx.db.delete(log._id);
+    }
+
+    const oldSuppressions = await ctx.db
+      .query("pendingDeviceSuppressions")
+      .withIndex("by_suppressUntil", (q: any) => q.lt("suppressUntil", cutoff))
+      .take(LOG_DELETE_BATCH);
+
+    for (const row of oldSuppressions) {
+      if (row.suppressUntil >= cutoff) {
+        continue;
+      }
+      await ctx.db.delete(row._id);
+    }
+
+    const hasMore =
+      oldAttendance.length === LOG_DELETE_BATCH
+      || oldDeviceLogs.length === LOG_DELETE_BATCH
+      || oldSuppressions.length === LOG_DELETE_BATCH;
+
+    if (hasMore) {
+      await ctx.scheduler.runAfter(0, internal.devices.cleanupOldLogs, {});
+    }
+
+    return {
+      attendanceDeleted: oldAttendance.length,
+      deviceLogsDeleted: oldDeviceLogs.length,
+      suppressionsDeleted: oldSuppressions.length,
+      scheduledContinuation: hasMore,
+    };
   },
 });
 
 export const expirePendingAttendanceVerifications = internalMutation({
   args: {},
-  handler: async (ctx: any) => {
-    const now = Date.now();
-    const devices = await ctx.db.query("devices").collect();
-    let updatedCount = 0;
-
-    for (const device of devices) {
-      if (
-        (device.pendingVerificationAction === "check_in" || device.pendingVerificationAction === "check_out")
-        && typeof device.pendingVerificationExpiresAt === "number"
-        && device.pendingVerificationExpiresAt <= now
-      ) {
-        await settleExpiredPendingVerification(ctx, device, now);
-        updatedCount += 1;
-      }
-    }
-
-    return { updatedCount };
-  },
+  handler: async (ctx: any) => expirePendingVerificationsCore(ctx),
 });
 
 /** Runs from cron at 07:05 and 08:05 UTC; only acts in the first 25 minutes after Pacific midnight. */
@@ -1739,6 +1916,15 @@ export const flipAppStatusByEmail = mutation({
     let devicePatch: Record<string, any>;
     let requestedStatus: AttendanceStatusValue;
 
+    const bluetoothStatusAtEvent =
+      currentDevice.status === "present"
+      || (
+        typeof currentDevice.lastBluetoothPresentAt === "number"
+        && now - currentDevice.lastBluetoothPresentAt <= 5 * 60 * 1000
+      )
+        ? "present"
+        : "absent";
+
     if (desiredAction === "check_in") {
       requestedStatus = "present";
       await createAttendanceEvent(ctx, currentDevice, {
@@ -1748,6 +1934,7 @@ export const flipAppStatusByEmail = mutation({
         verifiedBy: "manual",
         eventTimestamp: now,
         effectiveTimestamp: now,
+        bluetoothStatusAtEvent,
       });
       await auditAttendance(ctx, currentDevice._id, "Checked in via app (manual, independent of bluetooth)");
       devicePatch = {
@@ -1772,6 +1959,7 @@ export const flipAppStatusByEmail = mutation({
         verifiedBy: "manual",
         eventTimestamp: now,
         effectiveTimestamp: now,
+        bluetoothStatusAtEvent,
       });
       await auditAttendance(ctx, currentDevice._id, "Checked out via app (manual, independent of bluetooth)");
       devicePatch = {
@@ -1847,14 +2035,10 @@ export const getCheckedInUsers = query({
   args: {},
   handler: async (ctx: any) => {
     try {
-      const devices = await ctx.db.query("devices").collect();
+      const devices = await queryRegisteredDevicesByAttendanceIndex(ctx, "present");
       const checkedInUsers: any[] = [];
 
       for (const device of devices) {
-        if (device.pendingRegistration || attendanceStateFromDevice(device) !== "present") {
-          continue;
-        }
-
         const manualDriver = isManualAttendanceDriver(device);
         const checkInMethod = manualDriver
           ? "manual"
