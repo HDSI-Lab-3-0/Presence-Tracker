@@ -15,6 +15,7 @@ from presence_tracker.config import BluetoothConfig
 from presence_tracker.logging_utils import log_event
 
 BLUEZ = "org.bluez"
+BLUEZ_PATH = "/org/bluez"
 OBJECT_MANAGER = "org.freedesktop.DBus.ObjectManager"
 PROPERTIES = "org.freedesktop.DBus.Properties"
 ADAPTER = "org.bluez.Adapter1"
@@ -102,7 +103,7 @@ class BlueZPresenceMonitor:
         if not self.bus:
             return
         try:
-            manager = await self._interface(BLUEZ, "/", AGENT_MANAGER)
+            manager = await self._interface(BLUEZ, BLUEZ_PATH, AGENT_MANAGER)
             await manager.call_unregister_agent(AGENT_PATH)
         except Exception:
             pass
@@ -124,7 +125,7 @@ class BlueZPresenceMonitor:
         if not self.bus:
             raise RuntimeError("D-Bus is not connected")
         self.bus.export(AGENT_PATH, self.agent)
-        manager = await self._interface(BLUEZ, "/", AGENT_MANAGER)
+        manager = await self._interface(BLUEZ, BLUEZ_PATH, AGENT_MANAGER)
         try:
             await manager.call_register_agent(AGENT_PATH, "NoInputNoOutput")
         except DBusError as exc:
