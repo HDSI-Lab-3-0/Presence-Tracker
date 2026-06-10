@@ -100,7 +100,7 @@ impl PresenceLoop {
             let mac = normalize_mac(&device.mac_address);
             known.insert(mac.clone());
             let via_connected = connected.contains(&mac);
-            let via_l2ping = if via_connected {
+            let via_active_probe = if via_connected {
                 false
             } else {
                 probe_device(
@@ -108,15 +108,16 @@ impl PresenceLoop {
                     &mac,
                     self.config.bluetooth.l2ping_count,
                     self.config.bluetooth.l2ping_timeout_seconds,
+                    self.config.bluetooth.connect_probe_timeout_seconds,
                 )
             };
 
-            if via_l2ping || via_connected {
+            if via_active_probe || via_connected {
                 self.misses.remove(&mac);
                 if device.status != "present" {
-                    // l2ping: mark present on first success (fast path).
+                    // Active probe: mark present on first success (fast path).
                     // Connected list only: debounce via present_threshold.
-                    let should_mark_present = if via_l2ping {
+                    let should_mark_present = if via_active_probe {
                         self.hits.remove(&mac);
                         true
                     } else {

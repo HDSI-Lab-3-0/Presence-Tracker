@@ -466,15 +466,15 @@ The Rust presence agent reads **`config/agent.toml`**, not the legacy Python `.e
 | Setting | Section | Description | Default |
 |---------|---------|-------------|---------|
 | `polling_interval_seconds` | `[presence]` | Seconds between poll cycles | `15` |
-| `present_threshold` | `[presence]` | Consecutive `devices Connected` hits before present (l2ping is immediate) | `1` |
+| `present_threshold` | `[presence]` | Consecutive passive `devices Connected` hits before present (active probes are immediate) | `1` |
 | `absent_threshold` | `[presence]` | Consecutive failed probes before marking absent | `3` |
 | `grace_period_seconds` | `[presence]` | Pending-device expiry (Convex only) | `300` |
 | `l2ping_count` | `[bluetooth]` | Pings per `l2ping -c` per cycle | `1` |
 | `l2ping_timeout_seconds` | `[bluetooth]` | Per-ping timeout (seconds) | `2` |
-| `connect_probe_timeout_seconds` | `[bluetooth]` | Pairing/onboarding connect only (not presence polls) | `2` |
+| `connect_probe_timeout_seconds` | `[bluetooth]` | Timeout for BlueZ `info` and fallback `connect` presence probes | `2` |
 | `command_timeout_seconds` | `[bluetooth]` | Shell timeout for `bluetoothctl` / `l2ping` | `5` |
 
-**Presence detection:** each cycle checks `bluetoothctl devices Connected`, then `l2ping` only. Outbound `bluetoothctl connect` is **not** used for presence (only during pairing). A successful **l2ping** marks present immediately; the Connected list uses `present_threshold` debounce. Absent requires `absent_threshold` misses (~45s at defaults).
+**Presence detection:** each cycle checks `bluetoothctl devices Connected`, then verifies each registered device with `bluetoothctl info`, `l2ping`, and finally a bounded `bluetoothctl connect` fallback. Active probe success marks present immediately; the Connected list uses `present_threshold` debounce. Absent requires `absent_threshold` misses (~45s at defaults).
 
 #### Legacy Python env vars (not used by Rust agent)
 
@@ -837,7 +837,7 @@ uv run src/presence_tracker.py
 
 #### False brief "Present" when device is far away
 - Ensure `presence-tracker-rs` is rebuilt after updates (`cargo build --release` in `rust-agent/`)
-- Defaults avoid outbound connect during polls; raise `present_threshold` (e.g. 2) if Connected-list flashes persist; keep `l2ping_count` at 1 for fast detection
+- Presence polls use `bluetoothctl info`, `l2ping`, then a short `bluetoothctl connect` fallback; raise `present_threshold` (e.g. 2) if Connected-list flashes persist; keep `l2ping_count` at 1 for fast detection
 - Tail `logs/presence_tracker.log` for `presence_loop` / `status_update` lines
 
 #### High CPU Usage

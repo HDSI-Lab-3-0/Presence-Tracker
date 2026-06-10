@@ -126,6 +126,28 @@ pub fn get_device_name(
     })
 }
 
+pub fn is_device_connected(runner: &dyn CommandRunner, mac: &str, timeout_seconds: u64) -> bool {
+    if !is_valid_mac(mac) {
+        return false;
+    }
+    let mac = normalize_mac(mac);
+    let out = match runner.run(
+        "bluetoothctl",
+        &["info", mac.as_str()],
+        Duration::from_secs(timeout_seconds.max(1)),
+    ) {
+        Ok(out) => out,
+        Err(_) => return false,
+    };
+    if out.code != 0 {
+        return false;
+    }
+
+    out.stdout
+        .lines()
+        .any(|line| line.trim().eq_ignore_ascii_case("Connected: yes"))
+}
+
 pub fn is_device_paired(runner: &dyn CommandRunner, mac: &str, timeout_seconds: u64) -> bool {
     if !is_valid_mac(mac) {
         return false;
@@ -233,21 +255,138 @@ pub fn connect_probe(runner: &dyn CommandRunner, mac: &str, timeout_seconds: u64
         &["connect", mac.as_str()],
         Duration::from_secs(timeout_seconds.max(1)),
     ) {
-        Ok(out) => {
-            out.code == 0
-                || out.stdout.contains("Connected: yes")
-                || out.stdout.contains("Connection successful")
-        }
+        Ok(out) => command_output_indicates_connect_success(&out),
         Err(_) => false,
     }
 }
 
-/// Presence probe: l2ping only. Outbound connect is reserved for pairing/onboarding.
+fn command_output_indicates_connect_success(out: &CommandOutput) -> bool {
+    let combined = format!("{}\n{}", out.stdout, out.stderr);
+    let normalized = combined.to_ascii_lowercase();
+    let failed = [
+        "failed",
+        "not available",
+        "not connected",
+        "no route",
+        "host is down",
+        "connection refused",
+        "connection timed out",
+        "timeout",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle));
+
+    if failed {
+        return false;
+    }
+
+    out.code == 0
+        || normalized.contains("connected: yes")
+        || normalized.contains("connection successful")
+        || normalized.contains("successful")
+}
+
+/// Presence probe: prefer passive BlueZ state, then l2ping, then a bounded connect attempt.
 pub fn probe_device(
     runner: &dyn CommandRunner,
     mac: &str,
     l2ping_count: u32,
     l2ping_timeout_seconds: u64,
+    connect_probe_timeout_seconds: u64,
 ) -> bool {
-    l2ping_device(runner, mac, l2ping_count, l2ping_timeout_seconds)
+    if is_device_connected(runner, mac, connect_probe_timeout_seconds) {
+        return true;
+    }
+    if l2ping_device(runner, mac, l2ping_count, l2ping_timeout_seconds) {
+        return true;
+    }
+    connect_probe(runner, mac, connect_probe_timeout_seconds)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use std::sync::Mutex;
+
+    #[derive(Debug)]
+    struct StubRunner {
+        responses: Mutex<Vec<CommandOutput>>,
+        calls: Mutex<Vec<(String, Vec<String>)>>,
+    }
+
+    impl StubRunner {
+        fn new(responses: Vec<CommandOutput>) -> Self {
+            Self {
+                responses: Mutex::new(responses),
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> Vec<(String, Vec<String>)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl CommandRunner for StubRunner {
+        fn run(&self, program: &str, args: &[&str], _timeout: Duration) -> Result<CommandOutput> {
+            self.calls.lock().unwrap().push((
+                program.to_string(),
+                args.iter().map(|arg| arg.to_string()).collect(),
+            ));
+            Ok(self.responses.lock().unwrap().remove(0))
+        }
+    }
+
+    fn output(code: i32, stdout: &str, stderr: &str) -> CommandOutput {
+        CommandOutput {
+            code,
+            stdout: stdout.to_string(),
+            stderr: stderr.to_string(),
+        }
+    }
+
+    #[test]
+    fn probe_succeeds_from_bluez_connected_state_without_l2ping() {
+        let runner = StubRunner::new(vec![output(
+            0,
+            "Device AA:BB:CC:DD:EE:FF\n\tConnected: yes\n",
+            "",
+        )]);
+
+        assert!(probe_device(&runner, "AA:BB:CC:DD:EE:FF", 1, 2, 2));
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "bluetoothctl");
+        assert_eq!(calls[0].1, vec!["info", "AA:BB:CC:DD:EE:FF"]);
+    }
+
+    #[test]
+    fn probe_falls_back_to_connect_when_l2ping_fails() {
+        let runner = StubRunner::new(vec![
+            output(0, "Device AA:BB:CC:DD:EE:FF\n\tConnected: no\n", ""),
+            output(1, "", "Host is down"),
+            output(0, "Connection successful\n", ""),
+        ]);
+
+        assert!(probe_device(&runner, "AA:BB:CC:DD:EE:FF", 1, 2, 2));
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0].1, vec!["info", "AA:BB:CC:DD:EE:FF"]);
+        assert_eq!(calls[1].0, "l2ping");
+        assert_eq!(calls[2].1, vec!["connect", "AA:BB:CC:DD:EE:FF"]);
+    }
+
+    #[test]
+    fn connect_probe_rejects_failed_output_even_with_zero_exit() {
+        let runner = StubRunner::new(vec![output(
+            0,
+            "Failed to connect: org.bluez.Error.Failed br-connection-page-timeout\n",
+            "",
+        )]);
+
+        assert!(!connect_probe(&runner, "AA:BB:CC:DD:EE:FF", 2));
+    }
 }

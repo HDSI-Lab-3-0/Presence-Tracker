@@ -230,7 +230,11 @@ async fn handle_device_added(
 
     // Best-effort immediate connect so unknown devices can remain "active" during onboarding.
     if is_valid_mac(&mac) {
-        let connected = connect_probe(runner.as_ref(), &normalize_mac(&mac), command_timeout_seconds);
+        let connected = connect_probe(
+            runner.as_ref(),
+            &normalize_mac(&mac),
+            command_timeout_seconds,
+        );
         if connected {
             logging::info(
                 "bluetooth_agent",
