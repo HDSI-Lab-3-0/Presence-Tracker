@@ -469,6 +469,12 @@ cleanup_legacy_services() {
 generate_services() {
   log_step "Generating systemd units"
   local path_value="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$USER_HOME/.local/bin:$USER_HOME/.bun/bin"
+  local uv_bin
+  uv_bin="$(command -v uv || true)"
+  if [[ -z "$uv_bin" && -x "$USER_HOME/.local/bin/uv" ]]; then
+    uv_bin="$USER_HOME/.local/bin/uv"
+  fi
+  uv_bin="${uv_bin:-uv}"
 
   sudo tee /etc/systemd/system/presence-tracker.service >/dev/null << UNIT
 [Unit]
@@ -484,7 +490,7 @@ WorkingDirectory=$PROJECT_DIR
 EnvironmentFile=-$ENV_FILE
 EnvironmentFile=-$ENV_LOCAL_FILE
 Environment="PATH=$path_value"
-ExecStart=/bin/bash -lc 'exec uv run python main.py --config "$AGENT_CONFIG_FILE"'
+ExecStart=$uv_bin run python main.py --config $AGENT_CONFIG_FILE
 Restart=always
 RestartSec=10
 StandardOutput=journal
