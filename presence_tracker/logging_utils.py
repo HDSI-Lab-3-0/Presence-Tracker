@@ -47,9 +47,12 @@ def configure_logging(log_file: Path, max_lines: int) -> None:
     stream.setFormatter(formatter)
     root.addHandler(stream)
 
-    file_handler = LineCappedFileHandler(log_file, max_lines)
-    file_handler.setFormatter(formatter)
-    root.addHandler(file_handler)
+    try:
+        file_handler = LineCappedFileHandler(log_file, max_lines)
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
+    except OSError as exc:
+        logging.warning("file logging disabled for %s: %s", log_file, exc)
 
 
 def log_event(
