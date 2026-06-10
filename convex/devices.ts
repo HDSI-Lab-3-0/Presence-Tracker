@@ -34,6 +34,7 @@ const PACIFIC_TIME_ZONE = "America/Los_Angeles";
 type CleanupResult = { deletedCount: number; deletedMacs: string[] };
 
 type DeleteResult = { success: boolean; macAddress?: string | null };
+type BluetoothRemovalReason = "deleted" | "expired";
 type AttendanceAction = "check_in" | "check_out";
 type AttendanceOrigin = "app" | "bluetooth" | "system";
 type AttendanceStatusValue = "present" | "absent";
@@ -222,6 +223,9 @@ const mapRosterUser = (device: Doc<"devices">) => ({
 const matchesRosterAttendance = (device: Doc<"devices">, target: AttendanceStatusValue) =>
   !device.pendingRegistration && attendanceStateFromDevice(device) === target;
 
+const matchesBluetoothRoster = (device: Doc<"devices">, target: AttendanceStatusValue) =>
+  !device.pendingRegistration && (device.status === "present" ? "present" : "absent") === target;
+
 const queryRegisteredDevicesByAttendanceIndex = async (
   ctx: any,
   attendanceStatus: AttendanceStatusValue,
@@ -235,6 +239,20 @@ const queryRegisteredDevicesByAttendanceIndex = async (
 
   return candidates.filter((device: Doc<"devices">) =>
     matchesRosterAttendance(device, attendanceStatus),
+  );
+};
+
+const queryRegisteredDevicesByBluetoothStatus = async (
+  ctx: any,
+  bluetoothStatus: AttendanceStatusValue,
+) => {
+  const candidates = await ctx.db
+    .query("devices")
+    .withIndex("by_status", (q: any) => q.eq("status", bluetoothStatus))
+    .collect();
+
+  return candidates.filter((device: Doc<"devices">) =>
+    matchesBluetoothRoster(device, bluetoothStatus),
   );
 };
 
@@ -445,6 +463,82 @@ const createAttendanceEvent = async (
     timestamp: args.effectiveTimestamp,
   });
   return eventId;
+};
+
+const hasBluetoothAttendanceLogSince = async (
+  ctx: any,
+  deviceId: Id<"devices">,
+  since: number,
+  action: AttendanceAction,
+) => {
+  const logs = await ctx.db
+    .query("attendanceLogs")
+    .withIndex("by_deviceId_timestamp", (q: any) =>
+      q.eq("deviceId", String(deviceId)).gte("timestamp", since),
+    )
+    .collect();
+
+  return logs.some((log: any) => log.origin === "bluetooth" && log.action === action);
+};
+
+/** One bluetooth check-in row per connected session when attendance is manual-driven. */
+const ensureBluetoothSessionLogged = async (ctx: any, device: any, now: number) => {
+  if (!isManualAttendanceDriver(device)) {
+    return;
+  }
+  if (device.status !== "present") {
+    return;
+  }
+
+  const sessionStart =
+    typeof device.connectedSince === "number"
+      ? device.connectedSince
+      : typeof device.lastBluetoothPresentAt === "number"
+        ? device.lastBluetoothPresentAt
+        : now - STATUS_CHANGE_DEDUPE_MS;
+
+  const alreadyLogged = await hasBluetoothAttendanceLogSince(
+    ctx,
+    device._id,
+    sessionStart,
+    "check_in",
+  );
+  if (alreadyLogged) {
+    return;
+  }
+
+  await logBluetoothAttendanceEvent(ctx, device, "check_in", now);
+};
+
+const logBluetoothAttendanceEvent = async (
+  ctx: any,
+  device: any,
+  action: AttendanceAction,
+  now: number,
+) => {
+  const dedupeSince = now - STATUS_CHANGE_DEDUPE_MS;
+  if (await hasBluetoothAttendanceLogSince(ctx, device._id, dedupeSince, action)) {
+    return;
+  }
+
+  const verifiedBy: AttendanceVerifiedBy =
+    action === "check_in" ? "bluetooth_immediate" : "bluetooth_disconnect";
+  await createAttendanceEvent(ctx, device, {
+    action,
+    origin: "bluetooth",
+    verificationStatus: "verified",
+    verifiedBy,
+    eventTimestamp: now,
+    effectiveTimestamp: now,
+    bluetoothStatusAtEvent: action === "check_in" ? "present" : "absent",
+  });
+  await auditAttendance(
+    ctx,
+    device._id,
+    action === "check_in"
+      ? "Bluetooth connected (logged; manual attendance unchanged)"
+      : "Bluetooth disconnected (logged; manual attendance unchanged)",
+  );
 };
 
 const patchAttendanceEvent = async (ctx: any, eventId: Id<"attendanceLogs">, patch: Record<string, any>) => {
@@ -720,6 +814,30 @@ const deleteDeviceAndLogs = async (
   return { success: true, macAddress: device.macAddress };
 };
 
+const recordBluetoothRemovalRequest = async (
+  ctx: any,
+  macAddress: string,
+  now: number,
+  reason: BluetoothRemovalReason,
+) => {
+  const mac = normalizeMacAddress(macAddress);
+  const existing = await ctx.db
+    .query("bluetoothRemovalRequests")
+    .withIndex("by_macAddress", (q: any) => q.eq("macAddress", mac))
+    .first();
+
+  if (existing) {
+    await ctx.db.patch(existing._id, { requestedAt: now, reason });
+    return;
+  }
+
+  await ctx.db.insert("bluetoothRemovalRequests", {
+    macAddress: mac,
+    requestedAt: now,
+    reason,
+  });
+};
+
 const recordPendingProbeSuppression = async (ctx: any, macAddress: string, now: number) => {
   const mac = normalizeMacAddress(macAddress);
   const suppressUntil = now + PENDING_PROBE_SUPPRESSION_MS;
@@ -770,6 +888,7 @@ const cleanupExpiredDevicesCore = async (
       const result = await deleteDeviceAndLogs(ctx, device._id);
       if (result.success && result.macAddress) {
         deletedMacs.push(result.macAddress);
+        await recordBluetoothRemovalRequest(ctx, result.macAddress, now, "expired");
         await recordPendingProbeSuppression(ctx, result.macAddress, now);
       }
     } catch (error) {
@@ -862,6 +981,44 @@ export const getDevicesForPresence = query({
       status: device.status,
       pendingRegistration: device.pendingRegistration,
     }));
+  },
+});
+
+export const getBluetoothRemovalRequestsForPresence = query({
+  args: {},
+  handler: async (ctx) => {
+    const requests = await ctx.db
+      .query("bluetoothRemovalRequests")
+      .withIndex("by_requestedAt")
+      .order("asc")
+      .take(50);
+
+    return requests.map((request) => ({
+      _id: request._id,
+      macAddress: request.macAddress,
+      requestedAt: request.requestedAt,
+      reason: request.reason ?? null,
+    }));
+  },
+});
+
+export const acknowledgeBluetoothRemovalRequest = mutation({
+  args: {
+    id: v.id("bluetoothRemovalRequests"),
+    macAddress: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const request = await ctx.db.get(args.id);
+    if (!request) {
+      return { success: true };
+    }
+
+    if (request.macAddress !== normalizeMacAddress(args.macAddress)) {
+      throw new Error("Removal request MAC mismatch");
+    }
+
+    await ctx.db.delete(args.id);
+    return { success: true };
   },
 });
 
@@ -984,10 +1141,16 @@ export const updateDeviceStatus = mutation({
       await ctx.db.patch(device._id, {
         lastSeen: now,
       });
+      if (args.status === "present") {
+        await ensureBluetoothSessionLogged(ctx, { ...device, lastSeen: now }, now);
+      }
       return slimDeviceStatusResponse(device, { lastSeen: now });
     }
 
     if (isManualAttendanceDriver(device)) {
+      const action: AttendanceAction = args.status === "present" ? "check_in" : "check_out";
+      await logBluetoothAttendanceEvent(ctx, device, action, now);
+
       if (args.status === "present") {
         await ctx.db.patch(device._id, {
           status: "present",
@@ -1346,6 +1509,11 @@ export const deleteDevice = mutation({
     if (!result.success) {
       return { success: false, message: "Device not found" };
     }
+    if (result.macAddress) {
+      const now = Date.now();
+      await recordBluetoothRemovalRequest(ctx, result.macAddress, now, "deleted");
+      await recordPendingProbeSuppression(ctx, result.macAddress, now);
+    }
 
     return { success: true };
   },
@@ -1439,7 +1607,7 @@ export const backfillAttendanceStatusInternal = internalMutation({
 export const getPresentUsers = query({
   args: {},
   handler: async (ctx) => {
-    const devices = await queryRegisteredDevicesByAttendanceIndex(ctx, "present");
+    const devices = await queryRegisteredDevicesByBluetoothStatus(ctx, "present");
     return devices.map(mapRosterUser);
   },
 });
@@ -1447,7 +1615,7 @@ export const getPresentUsers = query({
 export const getAbsentUsers = query({
   args: {},
   handler: async (ctx) => {
-    const devices = await queryRegisteredDevicesByAttendanceIndex(ctx, "absent");
+    const devices = await queryRegisteredDevicesByBluetoothStatus(ctx, "absent");
     return devices.map(mapRosterUser);
   },
 });
@@ -1455,8 +1623,8 @@ export const getAbsentUsers = query({
 export const getPresenceNotificationSnapshot = internalQuery({
   args: {},
   handler: async (ctx) => {
-    const present = await queryRegisteredDevicesByAttendanceIndex(ctx, "present");
-    const absent = await queryRegisteredDevicesByAttendanceIndex(ctx, "absent");
+    const present = await queryRegisteredDevicesByBluetoothStatus(ctx, "present");
+    const absent = await queryRegisteredDevicesByBluetoothStatus(ctx, "absent");
     const integrations = await ctx.db.query("integrations").collect();
 
     return {
@@ -1937,6 +2105,9 @@ export const flipAppStatusByEmail = mutation({
         bluetoothStatusAtEvent,
       });
       await auditAttendance(ctx, currentDevice._id, "Checked in via app (manual, independent of bluetooth)");
+      if (bluetoothStatusAtEvent === "present") {
+        await logBluetoothAttendanceEvent(ctx, currentDevice, "check_in", now);
+      }
       devicePatch = {
         appStatus: "present",
         appLastSeen: now,
@@ -1962,6 +2133,9 @@ export const flipAppStatusByEmail = mutation({
         bluetoothStatusAtEvent,
       });
       await auditAttendance(ctx, currentDevice._id, "Checked out via app (manual, independent of bluetooth)");
+      if (bluetoothStatusAtEvent === "absent") {
+        await logBluetoothAttendanceEvent(ctx, currentDevice, "check_out", now);
+      }
       devicePatch = {
         appStatus: "absent",
         appLastSeen: now,

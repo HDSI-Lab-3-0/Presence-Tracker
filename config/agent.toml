@@ -1,9 +1,11 @@
+bluetooth_name = "Presence Tracker"
+
 [convex]
 deployment_url = "https://greedy-moose-508.convex.cloud"
 admin_key = ""
 
 [presence]
-polling_interval_seconds = 15
+polling_interval_seconds = 60
 absent_threshold = 3
 present_threshold = 1
 grace_period_seconds = 300
@@ -13,6 +15,7 @@ l2ping_timeout_seconds = 2
 l2ping_count = 1
 connect_probe_timeout_seconds = 2
 command_timeout_seconds = 5
+max_concurrent_probes = 2
 audio_block_uuids = [
   "00001108-0000-1000-8000-00805f9b34fb",
   "0000110a-0000-1000-8000-00805f9b34fb",

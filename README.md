@@ -1,947 +1,268 @@
 # Presence Tracker
 
-Bluetooth-based presence detection system using Convex backend, designed for Raspberry Pi.
-
-![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
-![Convex](https://img.shields.io/badge/Convex-1.31.5-purple.svg)
-![License](https://img.shields.io/badge/License-MIT-green.svg)
-
-## Quick Links
-
-- [Initial Setup](#initial-setup) - Get started in minutes
-- [Quick Start](#quick-start) - Detailed installation instructions
-- [Deploy to GitHub Pages](#deploy-web-dashboard-to-github-pages) - Host web dashboard for free
-- [Architecture](#architecture) - System overview and data flow
-- [Troubleshooting](#troubleshooting) - Common issues and solutions
+Bluetooth-based presence tracking for a Raspberry Pi with a Convex backend and web dashboard.
 
 ## Overview
 
-This system monitors Bluetooth device presence and updates a Convex backend database. It's designed to track when devices (phones, etc.) are connected/disconnected from a Raspberry Pi via Bluetooth, without requiring any mobile app installation. The system includes a web dashboard for monitoring device status and supporting Slack/Discord integrations for real-time notifications.
+The Pi runs an async Python agent (`main.py`) that monitors nearby paired Bluetooth devices and updates Convex. The web dashboard and PWA read from the same Convex backend for registration, attendance, logs, and integrations.
 
-## Features
+Core behavior:
 
-- **Bluetooth Presence Tracking** - Rust agent polls device status every 15 seconds (configurable)
-- **Cross-Platform Support** - Works with iOS (iPhone) and Android devices
-- **No Mobile App Required** - Uses native Bluetooth pairing
-- **Web Dashboard** - Real-time monitoring and device management interface
-- **Discord Integration** - Send presence updates to Discord channels
-- **Slack Integration** - Send presence updates to Slack channels
-- **Device Registration Workflow** - Easy onboarding of new devices
-- **UCSD Email Enforcement** - New registrations require a valid `@ucsd.edu` email
-- **Attendance Logging** - Track device presence over time
-- **Grace Period Handling** - Automatic cleanup of unregistered devices
-- **Comprehensive Logging** - File and console logging with error handling
+- New Bluetooth devices are created as pending devices with a 5 minute registration grace period.
+- Registered devices are checked every 1 minute.
+- Present/absent transitions use the configured debounce thresholds.
+- Deleted or expired devices are removed from the Pi adapter through queued removal requests.
+- Bluetooth audio services are blocked by the Python BlueZ agent.
 
-## Deployment
+## Repository Layout
 
-This system is designed primarily for **Raspberry Pi deployment** with Bluetooth hardware access. The web dashboard container can run on any host (Pi or local machine) and connects to the Convex backend.
-
-- **Presence Tracker** (`presence_tracker.py`) - Must run on Raspberry Pi with Bluetooth hardware
-- **Web Dashboard** (`docker-compose.yml`) - Can run on Raspberry Pi or any machine with Docker
-- **Convex Backend** - Cloud-hosted serverless database and functions
-
-## Prerequisites
-
-### Hardware
-- **Raspberry Pi** (recommended: 4 or 5, minimum: 3B+) with built-in Bluetooth or USB Bluetooth dongle
-- Stable internet connection (required for Convex API)
-
-### Software (Raspberry Pi)
-- **Python 3.10+** - Required for the tracker scripts
-- **UV Package Manager** - Fast Python package installer (`curl -LsSf https://astral.sh/uv/install.sh | sh`)
-- **Bun Runtime** - JavaScript runtime for Convex CLI (`curl -fsSL https://bun.sh/install | bash`)
-- **BlueZ & Bluetooth Tools** - Bluetooth stack (`sudo apt install bluez bluez-tools bluetooth`)
-- **Docker** (optional, for web dashboard): `curl -fsSL https://get.docker.com | sh`
-
-### Software (Local Development)
-- Python 3.10+ with UV
-- Bun runtime
-- Docker for web dashboard
-
-### Accounts
-- **Convex Account** - Free account at [convex.dev](https://convex.dev) (required for backend)
-- **Discord** (optional) - For Discord integration notifications
-- **Slack** (optional) - For Slack integration notifications
-
-## l2ping
-
-`l2ping` is a utility for sending ICMPv6 echo requests to a Bluetooth device. It is used to determine if a device is present on the network.
-
-Run the command
-```
-sudo setcap cap_net_raw+ep /usr/bin/l2ping
-``` 
-to grant the l2ping utility the necessary permissions to send ICMPv6 echo requests.
-
-## Quick Start
-
-### Automated Setup (Recommended)
-
-Run the automated setup script on your Raspberry Pi:
-
-```bash
-cd "/home/user/Desktop/Presence Tracker"
-./setup.sh
+```text
+main.py                         # Python agent entrypoint
+presence_tracker/               # Agent helpers
+  bluetooth.py                  # BlueZ D-Bus, pairing, probing, audio blocking
+  config.py                     # TOML and environment config
+  convex_client.py              # Async Convex HTTP client
+  presence_loop.py              # One-minute presence polling loop
+  state.py                      # Known-device state file
+  logging_utils.py              # Console and line-capped file logging
+config/agent.toml               # Pi agent config
+setup.sh                        # Raspberry Pi installer and service manager
+convex/                         # Convex backend functions and schema
+src/                            # Web dashboard and PWA frontend
+tests/                          # Python agent tests
 ```
 
-The script will display an interactive menu with options:
-1. **Full Install** - Complete installation and configuration
-2. **Update Config** - Update Bluetooth name and configuration
-3. **Resetup/Redeploy Convex** - Trigger Convex re-deployment
-4. **Restart Services** - Restart systemd services
-5. **Make Bluetooth Discoverable** - Configure Bluetooth for discoverable mode
+## Requirements
 
-The script handles:
-- Installing Node.js/npm (latest LTS)
-- Installing UV and Bun package managers
-- Installing BlueZ and Bluetooth tools
-- Installing Python and JavaScript dependencies
-- Configuring Bluetooth permissions and discoverability
-- Installing and configuring systemd services
-- Deploying to Convex backend
-- Persisting configuration to `setup.config` and `.env`
+Raspberry Pi:
 
-**Configuration Persistence:**
-The setup script automatically saves your settings to:
-- `setup.config` - Stores BLUETOOTH_NAME and DEPLOYMENT_MODE for future runs
-- `.env` - Updates with BLUETOOTH_NAME and DEPLOYMENT_MODE variables
+- Python 3.10+
+- UV package manager
+- BlueZ and Bluetooth tools: `bluez bluez-tools bluetooth`
+- `l2ping` with raw socket capability
+- Bun, for Convex/web dependencies and deploys
 
-Subsequent runs will recall saved configuration.
+Local development:
 
-### Manual Setup
+- Python 3.10+
+- UV
+- Bun
 
-#### Step 1: Install Package Managers
+## Quick Start On The Pi
 
 ```bash
-# Install UV (Python package manager)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Install Bun (JavaScript runtime)
-curl -fsSL https://bun.sh/install | bash
+cd /home/hdsi/Desktop/Presence-Tracker
+./setup.sh --full-install
 ```
 
-#### Step 2: Install Bluetooth Tools
+The setup menu supports:
+
+1. Full Install
+2. Update Config
+3. Resetup/Redeploy Backend
+4. Restart Services
+5. Make Bluetooth Discoverable
+
+Non-interactive examples:
 
 ```bash
-sudo apt update
-sudo apt install bluez bluez-tools bluetooth -y
+./setup.sh --full-install --non-interactive --skip-deploy
+./setup.sh --update-config --bluetooth-name "Presence Tracker"
+./setup.sh --restart-services
+./setup.sh --make-discoverable
 ```
 
-#### Step 3: Install Dependencies
+The installer:
+
+- Installs Python, UV, Bun, BlueZ, and project dependencies.
+- Writes `config/agent.toml`.
+- Grants `l2ping` raw socket capability when available.
+- Generates `presence-tracker.service`.
+- Generates `bluetooth-discoverable.service`.
+- Removes old systemd units that conflict with the current agent.
+
+## Running The Agent
+
+Manual test:
 
 ```bash
-# Python dependencies
 uv sync
+uv run python main.py --config config/agent.toml --once
+uv run python main.py --config config/agent.toml
+```
 
-# JavaScript dependencies
+Systemd:
+
+```bash
+sudo systemctl status presence-tracker.service
+sudo systemctl restart presence-tracker.service
+sudo journalctl -u presence-tracker.service -f
+```
+
+## Configuration
+
+The Pi agent reads `config/agent.toml`.
+
+```toml
+bluetooth_name = "Presence Tracker"
+
+[convex]
+deployment_url = "https://your-deployment.convex.cloud"
+admin_key = ""
+
+[presence]
+polling_interval_seconds = 60
+absent_threshold = 3
+present_threshold = 1
+grace_period_seconds = 300
+
+[bluetooth]
+l2ping_timeout_seconds = 2
+l2ping_count = 1
+connect_probe_timeout_seconds = 2
+command_timeout_seconds = 5
+max_concurrent_probes = 2
+audio_block_uuids = [
+  "0000110b-0000-1000-8000-00805f9b34fb",
+]
+
+[logging]
+log_file = "logs/presence_tracker.log"
+max_lines = 1000
+
+[paths]
+state_file = "config/agent_state.json"
+```
+
+Environment fallback:
+
+- `CONVEX_SELF_HOSTED_URL`
+- `CONVEX_DEPLOYMENT_URL`
+- `CONVEX_URL`
+- `CONVEX_SITE_URL`
+- `CONVEX_SELF_HOSTED_ADMIN_KEY`
+- `CONVEX_ADMIN_KEY`
+- `BLUETOOTH_NAME`
+
+## Bluetooth Behavior
+
+The agent uses BlueZ D-Bus as the fast path:
+
+- Adapter configuration uses D-Bus properties.
+- Pairing uses a `NoInputNoOutput` BlueZ agent.
+- Connected state and paired devices are read from BlueZ managed objects.
+- Device removal uses `Adapter1.RemoveDevice`.
+
+Active probing is bounded and hardware-aware:
+
+- The loop does not overlap cycles.
+- Registered devices are probed with an `asyncio.Semaphore`.
+- Default probe concurrency is 2 to avoid stressing Raspberry Pi Bluetooth hardware.
+- `l2ping` is run with strict timeouts.
+- Generic connect probes are skipped for devices advertising blocked audio UUIDs.
+
+Audio protection:
+
+- The agent rejects BlueZ `AuthorizeService` calls for configured audio UUIDs.
+- Audio-capable devices can still be registered for presence, but the agent disconnects and avoids generic connect probes that would attach audio profiles.
+
+## Registration Flow
+
+1. Make the Pi discoverable:
+
+   ```bash
+   ./setup.sh --make-discoverable
+   ```
+
+2. Pair the phone with the Pi named by `bluetooth_name`.
+3. The agent registers the MAC as a pending Convex device.
+4. The user opens the web/PWA registration page and completes registration within 5 minutes.
+5. If registration is not completed in time, backend maintenance expires the pending device and queues adapter removal.
+
+## Backend And Dashboard
+
+Install frontend/backend dependencies:
+
+```bash
 bun install
 ```
 
-#### Step 4: Deploy to Convex
-
-You need a Convex deployment. Create one at [convex.dev](https://convex.dev) or run:
+Run locally:
 
 ```bash
-bunx convex dev
-# Follow the prompts to create or select a deployment
+bun run dev
 ```
 
-Then deploy:
+Build the web dashboard:
+
+```bash
+bun run build:frontend
+```
+
+Deploy Convex:
 
 ```bash
 bunx convex deploy
 ```
 
-This will output your `CONVEX_DEPLOYMENT_URL`.
-
-#### Step 5: Configure Environment
-
-Create `.env` file from the example:
+Docker dashboard:
 
 ```bash
-cp .env.example .env
-nano .env  # Add your CONVEX_DEPLOYMENT_URL
-```
-
-#### Step 6: Pair Bluetooth Devices
-
-Make the Pi discoverable and pair your devices:
-
-```bash
-# Using the setup script (option 5)
-./setup.sh
-# Select option 5) Make Bluetooth Discoverable
-
-# Or manually
-sudo bluetoothctl
-power on
-agent on
-default-agent
-scan on
-# Find your device's MAC address, then:
-pair XX:XX:XX:XX:XX:XX
-trust XX:XX:XX:XX:XX:XX
-exit
-```
-
-Your Pi will appear as **"Presence Tracker"** in Bluetooth scans.
-
-#### Step 7: Register Devices in Convex
-
-Register each paired device:
-
-```bash
-bunx convex run upsertDevice --json '{"macAddress":"AA:BB:CC:DD:EE:FF","name":"John Doe","status":"absent"}'
-```
-
-#### Step 8: Run the Tracker
-
-```bash
-# Run manually to test
-uv run src/presence_tracker.py
-
-# Run as systemd service for automatic startup
-sudo cp presence-tracker.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable presence-tracker.service
-sudo systemctl start presence-tracker.service
-```
-
-### Web Dashboard Setup
-
-Run the web dashboard (can be on Pi or local machine):
-
-```bash
-# Set your Convex URL in .env
-echo "CONVEX_DEPLOYMENT_URL=https://your-deployment.convex.cloud" >> .env
-
-# Run with Docker
 docker-compose up -d
-
-# Access at http://localhost:3132 (or http://<pi-ip>:3132)
 ```
 
-### Deploy Web Dashboard to GitHub Pages
+## Testing
 
-You can automatically deploy the web dashboard to GitHub Pages using GitHub Actions. This provides free hosting with HTTPS and automatic deployments when changes are pushed to the `main` branch.
-
-**Setup Steps:**
-
- 1. **Add GitHub Secrets**
-
-    Go to your repository **Settings > Secrets and variables > Actions** and add:
-
-    | Secret Name | Value | Required |
-    |-------------|-------|----------|
-    | `CONVEX_DEPLOYMENT_URL` | Your Convex backend URL (e.g., `https://your-convex-deployment.convex.cloud`) | ✅ Yes |
-    | `CONVEX_URL_MODE` | `convex` (default) or `selfhosted` | Optional |
-    | `CONVEX_SELF_HOSTED_URL` | Self-hosted Convex URL | Only for self-hosted |
-    | `ORGANIZATION_NAME` | Your organization name for UI customization (e.g., "My Company") | Optional |
-
-2. **Enable GitHub Pages**
-
-   Go to repository **Settings > Pages**:
-   - **Build and deployment** > **Source**: Select **GitHub Actions**
-   - The workflow will handle deployment automatically
-
-3. **Configure CORS in Convex**
-
-   Add your GitHub Pages URL to Convex CORS settings:
-
-   ```
-   https://<username>.github.io
-   ```
-
-   1. Go to [Convex dashboard](https://dashboard.convex.dev)
-   2. Select your deployment
-   3. Navigate to **Settings > CORS**
-   4. Add your GitHub Pages URL
-
-4. **Push and Deploy**
-
-   Push changes to `main` branch:
-   ```bash
-   git push origin main
-   ```
-
-   The workflow will automatically:
-   - Generate `config.js` with your Convex URL from secrets
-   - Deploy the frontend to GitHub Pages
-   - Provide the live URL in the workflow run logs
-
-5. **Access Your Dashboard**
-
-   Your dashboard will be available at:
-   ```
-   https://<username>.github.io/<repository-name>/
-   ```
-
-**Manual Deployment:**
-
-You can also manually trigger the deployment from GitHub Actions:
-1. Go to **Actions** tab
-2. Select **Deploy Website to GitHub Pages** workflow
-3. Click **Run workflow** > **Run workflow**
-
-**GitHub Actions Workflow:**
-
-The workflow file is located at `.github/workflows/deploy-website.yml`.
-
-Features:
-- ✅ Auto-deploys on push to `main`
-- ✅ Manual trigger available
-- ✅ Supports both Convex cloud and self-hosted deployments
-- ✅ Validates secrets before deployment
-- ✅ Free hosting with HTTPS
-
-**Comparing Deployment Options:**
-
-| Option | Use Case | Pros | Cons |
-|--------|----------|------|------|
-| **Docker** | Raspberry Pi/local hosting | No setup required, runs with tracker | Need Docker, manage updates manually |
-| **GitHub Pages** | Public web dashboard | Free, HTTPS, auto-deploys, CDN | Cannot access on offline network |
-
-## Initial Setup
-
-Follow these steps to get your presence tracker up and running:
-
-### 1. Set Up Convex Backend
-
-1. Create a free account at [convex.dev](https://convex.dev)
-2. Create a new deployment
-3. In your Convex dashboard, navigate to **Settings > Environment Variables** and add:
-   - **Required**: `AUTH_PASSWORD` - Set a password for regular user access (view-only)
-   - **Optional**: `ADMIN_PASSWORD` - Set a password for admin access (full permissions)
-4. In **Settings > CORS**, add your web dashboard URL:
-   - If using GitHub Pages: `https://<username>.github.io`
-   - If using Docker locally: `http://localhost:3132`
-
-### 2. Deploy the Web Dashboard
-
-Choose one of the deployment options:
-
-**Option A: GitHub Pages (Recommended)**
-1. Follow the [Deploy Web Dashboard to GitHub Pages](#deploy-web-dashboard-to-github-pages) section
-2. Add the following secrets in GitHub Settings:
-   - `CONVEX_DEPLOYMENT_URL` (required)
-   - `ORGANIZATION_NAME` (optional) - Your organization name for UI customization
-3. Push to `main` to trigger deployment
-
-**Option B: Docker**
-1. Set environment variables in your `.env` file:
-   - `CONVEX_DEPLOYMENT_URL` (required)
-   - `ORGANIZATION_NAME` (optional) - Your organization name for UI customization
-2. Run `docker-compose up -d`
-3. Access at `http://localhost:3132`
-
-### 3. Connect to the Raspberry Pi
-
-1. SSH into your Raspberry Pi or connect directly
-2. Run the setup script:
-   ```bash
-   cd "/path/to/Presence-Tracker"
-   ./setup.sh
-   ```
-3. Select **Option 1: Full Install**
-4. Follow the prompts:
-   - Select deployment mode (Convex, self-hosted, or skip)
-   - Set your Bluetooth device name
-   - The script will handle all installation and configuration
-
-### 4. Login to the Web Dashboard
-
-1. Open your web dashboard in a browser:
-   - GitHub Pages: `https://<username>.github.io/<repository-name>/`
-   - Docker: `http://<pi-ip>:3132` or `http://localhost:3132`
-2. Enter the password you set in Step 1 (`AUTH_PASSWORD` or `ADMIN_PASSWORD`)
-3. **Important**: It may take up to a minute for the dashboard to fully load and connect to the backend
-
-### 5. Register Your Device
-
-1. Once logged in, click **"Scan for Devices"** to discover your Bluetooth device
-2. Find your device in the scan results and click **"Register"**
-3. Enter your **first name**, **last name**, and **UCSD email**
-4. Click **"Save"** to complete registration
-
-> **Heads up:** As soon as a new device connects to the Raspberry Pi it is published to Convex as a *pending* entry. It will show up on the website immediately, but it will remain pending (and excluded from attendance) until you finish this step in the UI.
-
-**You're all set!** 🎉
-
-Your device will now be tracked for presence. The tracker will automatically:
-- Detect when your device is connected/present
-- Update the dashboard in real-time
-- Log attendance history
-
-**What's Next:**
-- Pair other devices and repeat Step 5 to register them
-- Configure Discord/Slack integrations for notifications (see dashboard settings)
-- Monitor attendance logs in the dashboard
-
-## Environment Configuration
-
-Create a `.env` file by copying the example:
+Local Python checks:
 
 ```bash
-cp .env.example .env
+uv sync
+uv run python -m compileall main.py presence_tracker
+uv run pytest
 ```
 
-### Required Variables
-
-These variables must be set in your `.env` file for the tracker to run:
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `CONVEX_DEPLOYMENT_URL` | Your Convex backend deployment URL (cloud deployment) | `https://your-convex-deployment.convex.cloud` |
-
-**Authentication Variables (Set in Convex Dashboard)**
-
-| Variable | Description | Required | Where to Set |
-|----------|-------------|----------|--------------|
-| `AUTH_PASSWORD` | Regular user password - provides view-only access | ✅ Yes | Convex Dashboard → Settings → Environment Variables |
-| `ADMIN_PASSWORD` | Admin password - provides full access (edit, delete, manage) | Optional | Convex Dashboard → Settings → Environment Variables |
-
-**Setting up Authentication:**
-
-1. Go to your [Convex dashboard](https://dashboard.convex.dev)
-2. Select your deployment
-3. Navigate to **Settings > Environment Variables**
-4. Add `AUTH_PASSWORD` with your desired user password
-5. (Optional) Add `ADMIN_PASSWORD` for admin-level access
-
-**Access Levels:**
-- **User** (AUTH_PASSWORD): View device status, attendance logs, and run Bluetooth scans
-- **Admin** (ADMIN_PASSWORD): All user permissions plus device registration, editing, deletion, and integration management
-
-### Mobile App Status API
-
-The web server exposes a single app route for external mobile clients:
-
-- `POST /api/change_status`
-
-This endpoint flips the app check-in state for the submitted UCSD email (`present` ↔ `absent`).
-
-Request requirements:
-
-- `Authorization: Bearer <apiKey>` header
-- JSON body with email:
-
-```json
-{
-  "email": "student@ucsd.edu"
-}
-```
-
-Notes:
-
-- API key is managed internally by the app configuration.
-- Boundary settings are available in **Settings → Boundary**.
-- Set `ADMIN_EMAIL` to allow that signed-in PWA user to toggle boundary enforcement.
-- If app check-out is missed, Bluetooth absence will still clear app status.
-
-### Optional Variables
-
-These have sensible defaults and only need to be changed if you want to customize behavior.
-
-#### Authentication
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `ADMIN_PASSWORD` | Admin password - provides full access to all features | Not set (user-only access) |
-| `ADMIN_EMAIL` | Signed-in PWA email allowed to enable/disable boundary enforcement | Not set |
-
-#### Convex Configuration
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `CONVEX_SELF_HOSTED_URL` | Self-hosted Convex URL (alternative to CONVEX_DEPLOYMENT_URL) | Not set |
-| `CONVEX_SELF_HOSTED_ADMIN_KEY` | Admin key for self-hosted Convex | Not set |
-| `CONVEX_URL_MODE` | Mode selector: `convex` (cloud) or `selfhosted` | `convex` |
-| `DEPLOYMENT_MODE` | Deployment mode (same as CONVEX_URL_MODE) | `convex` |
-| `ORGANIZATION_NAME` | Display name for your organization | `Presence Tracker` |
-
-#### Pi agent (`config/agent.toml`)
-
-The Rust presence agent reads **`config/agent.toml`**, not the legacy Python `.env` presence variables below.
-
-| Setting | Section | Description | Default |
-|---------|---------|-------------|---------|
-| `polling_interval_seconds` | `[presence]` | Seconds between poll cycles | `15` |
-| `present_threshold` | `[presence]` | Consecutive passive `devices Connected` hits before present (active probes are immediate) | `1` |
-| `absent_threshold` | `[presence]` | Consecutive failed probes before marking absent | `3` |
-| `grace_period_seconds` | `[presence]` | Pending-device expiry (Convex only) | `300` |
-| `l2ping_count` | `[bluetooth]` | Pings per `l2ping -c` per cycle | `1` |
-| `l2ping_timeout_seconds` | `[bluetooth]` | Per-ping timeout (seconds) | `2` |
-| `connect_probe_timeout_seconds` | `[bluetooth]` | Timeout for BlueZ `info` and fallback `connect` presence probes | `2` |
-| `command_timeout_seconds` | `[bluetooth]` | Shell timeout for `bluetoothctl` / `l2ping` | `5` |
-
-**Presence detection:** each cycle checks `bluetoothctl devices Connected`, then verifies each registered device with `bluetoothctl info`, `l2ping`, and finally a bounded `bluetoothctl connect` fallback. Active probe success marks present immediately; the Connected list uses `present_threshold` debounce. Absent requires `absent_threshold` misses (~45s at defaults).
-
-#### Legacy Python env vars (not used by Rust agent)
-
-Older docs listed `PRESENT_TTL_SECONDS`, `ENABLE_ADAPTIVE_HYSTERESIS`, `DISCONNECT_CONNECTED_AFTER_CYCLE`, etc. Those applied to the removed Python tracker and are **ignored** by `presence-tracker-rs`.
-
-#### Frontend
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `PORT` | Frontend server port | `3132` |
-| `FRONTEND_PORT` | Alternative frontend port (same as PORT) | `3132` |
-
-#### Logging
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `LOG_DIR` | Directory for log files | `logs` (created if needed) |
-| `LOG_MAX_LINES` | Maximum lines per log file before rotation | Not set (no rotation) |
-
-### Example .env File
+Convex/frontend checks:
 
 ```bash
-# Required
-CONVEX_DEPLOYMENT_URL=https://your-convex-deployment.convex.cloud
-
-# Optional - Authentication (set in Convex Dashboard)
-# AUTH_PASSWORD=your-password-here
-# ADMIN_PASSWORD=admin-password-here
-
-# Optional - Organization Name
-ORGANIZATION_NAME=My Organization
-
-# Pi agent tuning: edit config/agent.toml ([presence] / [bluetooth])
-# Legacy Python presence env vars are not read by the Rust agent.
-
-# Optional - Frontend (defaults shown)
-PORT=3132
-
-# Optional - Logging (defaults shown)
-LOG_DIR=logs
+bunx convex codegen
+bun run build:frontend
 ```
 
-## Usage Instructions
-
-### Running the Tracker
+Pi smoke test:
 
 ```bash
-# Run manually (for testing)
-uv run src/presence_tracker.py
-
-# View live logs
-tail -f logs/presence_tracker.log
-
-# Run via systemd service (production)
+ssh hdsi@100.105.57.6
+cd /home/hdsi/Desktop/Presence-Tracker
+git pull origin main
+./setup.sh --full-install --non-interactive --skip-deploy
 sudo systemctl status presence-tracker.service
-sudo systemctl restart presence-tracker.service
+sudo journalctl -u presence-tracker.service -f
 ```
 
-### Convex Operations
-
-```bash
-# Start Convex development server
-npm run dev
-
-# Deploy to Convex
-npm run deploy
-
-# List all devices
-bunx convex run getDevices
-
-# Register a new device
-bunx convex run upsertDevice --json '{"macAddress":"AA:BB:CC:DD:EE:FF","name":"John Doe","status":"absent"}'
-
-# Update device status
-bunx convex run updateDeviceStatus --json '{"macAddress":"AA:BB:CC:DD:EE:FF","status":"present"}'
-
-# List device logs
-bunx convex run getDeviceLogs '{"deviceId":"j4k2l9..." }'
-```
-
-### Web Dashboard
-
-```bash
-# Start web dashboard (Docker)
-docker-compose up -d
-
-# View dashboard at http://localhost:3132
-
-# Stop web dashboard
-docker-compose down
-
-# View dashboard logs
-docker-compose logs -f web-dashboard
-```
-
-### Bluetooth Commands
-
-```bash
-# Check Bluetooth status
-bluetoothctl show
-
-# List paired devices
-bluetoothctl paired-devices
-
-# Check device connection
-bluetoothctl info AA:BB:CC:DD:EE:FF
-
-# Restart Bluetooth service
-sudo systemctl restart bluetooth
-
-# Scan for devices
-bluetoothctl scan on
-```
-
-## Available Scripts
-
-### npm Scripts
-
-```bash
-npm run dev      # Start Convex development server
-npm run deploy   # Deploy to Convex cloud
-```
-
-### Python Scripts
-
-```bash
-uv run src/presence_tracker.py     # Main tracker (runs every 60 seconds)
-uv run src/bluetooth_scanner.py    # Test Bluetooth scanning
-uv run src/bluetooth_agent.py      # Bluetooth pairing agent
-```
-
-### Systemd Services
-
-```bash
-sudo systemctl start presence-tracker.service        # Start tracker service
-sudo systemctl stop presence-tracker.service         # Stop tracker service
-sudo systemctl restart presence-tracker.service      # Restart tracker service
-sudo systemctl status presence-tracker.service       # Check service status
-sudo systemctl enable presence-tracker.service       # Enable on boot
-sudo journalctl -u presence-tracker.service -f       # View service logs
-
-sudo systemctl start bluetooth-agent.service         # Start pairing agent
-sudo systemctl start bluetooth-discoverable.service  # Start discoverable mode
-```
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Raspberry Pi                           │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │         presence_tracker.py (Python)                 │  │
-│  │  - Polls every 60 seconds                            │  │
-│  │  - Checks Bluetooth connections                      │  │
-│  │  - Syncs with Convex backend                         │  │
-│  └──────────────────┬───────────────────────────────────┘  │
-│                     │                                       │
-│  ┌──────────────────▼───────────────────────────────────┐  │
-│  │         bluetooth_scanner.py                         │  │
-│  │  - Uses bluetoothctl to check device connections    │  │
-│  └──────────────────────────────────────────────────────┘  │
-└──────────────────────────┬──────────────────────────────────┘
-                           │ HTTPS API
-                           │
-┌──────────────────────────▼──────────────────────────────────┐
-│                      Convex Backend                        │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │         TypeScript Functions                        │  │
-│  │  - getDevices() - Fetch all registered devices      │  │
-│  │  - updateDeviceStatus() - Update device status       │  │
-│  │  - registerDevice() - Add new device                │  │
-│  └──────────────────┬───────────────────────────────────┘  │
-│                     │                                       │
-│  ┌──────────────────▼───────────────────────────────────┐  │
-│  │         Database (Devices Table)                     │  │
-│  │  - macAddress, name, status, lastSeen               │  │
-│  └──────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## Pairing Your Device
-
-1. Open Bluetooth settings on your phone
-2. Scan for devices
-3. Find "Presence Tracker" 
-4. Tap to pair (no PIN required)
-
-If the Pi is not appearing as discoverable, run:
-
-```bash
-./setup.sh
-# Select option 5) Make Bluetooth Discoverable
-```
+Then pair a test phone, confirm it appears as pending, register it within 5 minutes, and verify that the one-minute loop updates presence.
 
 ## Troubleshooting
 
-### Bluetooth Issues
+Bluetooth service:
 
-#### Bluetooth Not Working
 ```bash
-# Check Bluetooth service status
 sudo systemctl status bluetooth
-
-# Restart Bluetooth service
 sudo systemctl restart bluetooth
-
-# Check Bluetooth controller info
 bluetoothctl show
-
-# Check for hardware blocks
-sudo rfkill list bluetooth
+rfkill list bluetooth
 sudo rfkill unblock bluetooth
 ```
 
-#### Device Not Detected
-1. Ensure device is paired: `bluetoothctl paired-devices`
-2. Verify MAC address matches exactly in Convex (case-sensitive)
-3. Check device Bluetooth is enabled and in range
-4. Some devices disconnect when locked (especially iOS)
+Agent logs:
 
-#### Permission Denied
 ```bash
-sudo usermod -a -G bluetooth $USER
-# Log out and back in for changes to take effect
-```
-
-#### Pi Not Discoverable
-```bash
-# Re-run setup script discoverable option
-./setup.sh
-# Select option 5) Make Bluetooth Discoverable
-
-# Manually configure
-sudo bluetoothctl
-power on
-discoverable on
-pairable on
-agent on
-default-agent
-```
-
-### Convex Issues
-
-#### Connection Errors
-- Verify `CONVEX_DEPLOYMENT_URL` in `.env` is correct
-- Check internet connectivity
-- Verify deployment exists at [convex.dev](https://convex.dev)
-
-#### Deployment Problems
-```bash
-# Check Convex status
-bunx convex dev
-
-# Redeploy
-npm run deploy
-```
-
-#### Device Not Registering
-- Check MAC address format (should be `AA:BB:CC:DD:EE:FF`)
-- Verify device is paired via `bluetoothctl paired-devices`
-- Check Convex logs: `bunx convex logs`
-
-### Docker / Web Dashboard Issues
-
-#### Dashboard Not Accessible
-```bash
-# Check container status
-docker-compose ps
-
-# View logs
-docker-compose logs web-dashboard
-
-# Restart container
-docker-compose restart
-
-# Rebuild if needed
-docker-compose up -d --build
-```
-
-#### Wrong Convex URL
-Ensure `.env` has correct `CONVEX_DEPLOYMENT_URL` and restart container:
-```bash
-docker-compose down
-# Edit .env with correct URL
-docker-compose up -d
-```
-
-### Integration Issues
-
-#### Discord Integration Not Working
-- Verify webhook URL is correct in web dashboard
-- Check Discord server has the webhook enabled
-- View logs: `tail -f logs/presence_tracker.log`
-
-#### Slack Integration Not Working
-- Verify bot token and channel ID are correct
-- Ensure bot has permission to post in the channel
-- Test webhook:
-```bash
-curl -X POST -H 'Content-type: application/json' --data '{"text":"Test message"}' YOUR_WEBHOOK_URL
-```
-
-### Device Registration Issues
-
-#### Newly Registered Device Not Updating Immediately
-
-When you first register a device (transition from pending to registered), the device is immediately entered into the polling cycle. Presence status will update within the next polling cycle (every 5 seconds by default).
-
-#### Pending Devices Not Auto-Deleted
-
-Unregistered devices are automatically deleted after `GRACE_PERIOD_SECONDS` (default: 5 minutes). If not deleting:
-- Check that the tracker is running: `sudo systemctl status presence-tracker.service`
-- Verify grace period is set correctly in `.env`
-- Manually fix: `bunx convex run fixPendingDevices`
-
-### Platform-Specific Notes
-
-#### iOS Devices
-- iOS devices don't appear in Bluetooth scans when paired
-- Tracker uses `bluetoothctl` to check connection status
-- Keep iPhone unlocked and Bluetooth enabled
-- Some iOS versions require active connection (not just paired)
-- iOS may disconnect when device locks
-
-#### Android Devices
-- Android devices are more discoverable via Bluetooth scanning
-- Connection checking works via `bluetoothctl`
-- May disconnect when screen is off or in power saving mode
-- Add the Pi to "Allowed devices" to prevent automatic disconnection
-
-### Service Issues
-
-#### Service Won't Start
-```bash
-# Check service logs
-sudo journalctl -u presence-tracker.service -n 50
-
-# Check for errors in logs
+sudo journalctl -u presence-tracker.service -n 100
 tail -f logs/presence_tracker.log
-
-# Verify dependencies installed
-uv sync
-
-# Test manually
-uv run src/presence_tracker.py
 ```
 
-#### Service Crashes Automatically
-- Check Python version: `python3 --version` (requires 3.10+)
-- Verify UV is installed: `uv --version`
-- Check Bluetooth hardware is accessible: `bluetoothctl show`
-- Review logs for specific errors
+Common fixes:
 
-### Performance Issues
-
-#### Slow Device Detection
-- Lower `present_threshold` in `config/agent.toml` (default: 2) for faster check-in
-- Lower `absent_threshold` or `polling_interval_seconds` for faster check-out
-- Check Bluetooth hardware with `hciconfig` / `bluetoothctl show`
-
-#### False brief "Present" when device is far away
-- Ensure `presence-tracker-rs` is rebuilt after updates (`cargo build --release` in `rust-agent/`)
-- Presence polls use `bluetoothctl info`, `l2ping`, then a short `bluetoothctl connect` fallback; raise `present_threshold` (e.g. 2) if Connected-list flashes persist; keep `l2ping_count` at 1 for fast detection
-- Tail `logs/presence_tracker.log` for `presence_loop` / `status_update` lines
-
-#### High CPU Usage
-- Increase `polling_interval_seconds` (default: 15)
-- Reduce `l2ping_count` if probes are heavy
-- Check for Bluetooth adapter issues
-
-### Setup Issues
-
-#### Bun Command Not Found After Setup Script
-If `bun` or `bunx` commands are not available after running `setup.sh`:
-
-```bash
-# Source your bashrc to load bun in the current session
-source ~/.bashrc
-
-# Verify bun is installed
-bun --version
-```
-
-This can happen because bash needs to be re-sourced afterbun is installed. The setup script attempts to handle this automatically, but if it doesn't work, you can manually source your bashrc.
-
-#### Setup Script Fails at Convex Deployment
-If the setup script fails during the Convex deployment, you can manually deploy later:
-
-```bash
-# Source bashrc first
-source ~/.bashrc
-
-# Initialize Convex deployment
-bunx convex dev
-
-# Deploy to Convex
-bunx convex deploy
-```
-
-The setup script now automatically runs `bunx convex dev` before deploying to ensure the deployment is properly initialized.
-
-#### Configuration Not Persisting
-If `setup.config` is not being created or settings aren't saving:
-
-```bash
-# Check if setup.config exists
-ls -la setup.config
-
-# View saved configuration
-cat setup.config
-
-# Manually run setup configuration option
-./setup.sh
-# Select option 2) Update Config
-```
-
-## Project Structure
-
-```
-.
-├── src/                              # Python source files
-│   ├── presence_tracker.py           # Main presence tracking script
-│   ├── bluetooth_scanner.py          # Bluetooth detection and connection management
-│   └── bluetooth_agent.py            # Bluetooth pairing agent (no PIN required)
-├── convex/                           # Convex backend
-│   ├── schema.ts                     # Database schema (devices, logs, integrations)
-│   ├── devices.ts                    # Device CRUD operations and queries
-│   ├── integrations.ts               # Discord/Slack integration configuration
-│   ├── notifications.ts              # Notification handlers for integrations
-│   ├── crons.ts                      # Scheduled tasks
-│   ├── auth.ts                       # Authentication functions
-│   ├── fixPendingDevices.ts          # Utility for fixing pending devices
-│   └── _generated/                   # Auto-generated Convex client code
-├── src/                              # Frontend + Python source files
-│   ├── pages/                        # Astro routes (`/` and `/pwa`)
-│   ├── scripts/                      # Frontend TypeScript modules
-│   └── styles/                       # Tailwind-first styles and component layers
-├── public/                           # Static frontend assets
-│   ├── config.js                     # Convex URL configuration (auto-generated)
-│   └── pwa/                          # PWA manifest/icons/runtime config
-├── logs/                             # Application logs
-│   └── presence_tracker.log          # Presence tracker output
-├── pyproject.toml                    # Python project configuration (UV)
-├── requirements.txt                  # Python dependencies
-├── package.json                      # JavaScript dependencies
-├── bun.lock                          # Bun lock file
-├── docker-compose.yml                # Web dashboard container orchestration
-├── convex.json                       # Convex project configuration
-├── setup.sh                          # Interactive setup script
-├── setup.config                      # Setup script configuration (auto-generated)
-└── .env.example                      # Environment variable template
-```
-
-**Additional Files Created During Setup:**
-- `.env` - Environment configuration (created from .env.example)
-- `setup.config` - Persists setup script settings (BLUETOOTH_NAME, DEPLOYMENT_MODE)
-
-## Systemd Services
-
-The setup script automatically installs and configures systemd services:
-
-- **presence-tracker.service** - Runs the Rust tracker backend
-- **presence-tracker-gui.service** - Launches the Rust GUI on boot (`--gui`)
-- **bluetooth-discoverable.service** - Makes the Pi discoverable on boot
-
-All services are automatically enabled and started during full installation.
-
-## License
-
-MIT
+- If `l2ping` fails with permissions, run `sudo setcap cap_net_raw+ep "$(command -v l2ping)"`.
+- If devices do not appear, run `./setup.sh --make-discoverable` and restart the service.
+- If cycles are slow, lower `max_concurrent_probes` or keep `l2ping_count = 1`.
+- If audio connects, check `audio_block_uuids` and restart `presence-tracker.service`.

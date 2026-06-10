@@ -1,0 +1,21 @@
+[project]
+name = "hdsi-presence-tracker"
+version = "0.1.0"
+description = "Async Python Bluetooth presence agent for Raspberry Pi"
+requires-python = ">=3.10"
+dependencies = [
+  "dbus-next>=0.2.3",
+  "httpx>=0.28.0",
+  "python-dotenv>=1.0.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

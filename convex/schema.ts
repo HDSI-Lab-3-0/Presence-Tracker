@@ -115,6 +115,14 @@ export default defineSchema({
     .index("by_macAddress", ["macAddress"])
     .index("by_suppressUntil", ["suppressUntil"]),
 
+  bluetoothRemovalRequests: defineTable({
+    macAddress: v.string(),
+    requestedAt: v.number(),
+    reason: v.optional(v.string()),
+  })
+    .index("by_macAddress", ["macAddress"])
+    .index("by_requestedAt", ["requestedAt"]),
+
   attendanceLogs: defineTable({
     userId: v.string(),
     userName: v.string(),

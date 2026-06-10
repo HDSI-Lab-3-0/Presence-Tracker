@@ -20,13 +20,16 @@ CONFIG_DIR="$PROJECT_DIR/config"
 CONFIG_FILE="$PROJECT_DIR/setup.config"
 ENV_FILE="$PROJECT_DIR/.env"
 ENV_LOCAL_FILE="$PROJECT_DIR/.env.local"
-RUST_AGENT_DIR="$PROJECT_DIR/rust-agent"
-RUST_BIN_PATH="$RUST_AGENT_DIR/target/release/presence-tracker-rs"
 AGENT_CONFIG_FILE="$CONFIG_DIR/agent.toml"
 BLUETOOTH_DISCOVERABLE_SCRIPT="/usr/local/bin/bluetooth-discoverable"
 
-CURRENT_USER="$USER"
-USER_HOME="$HOME"
+CURRENT_USER="${SUDO_USER:-$USER}"
+if command -v getent >/dev/null 2>&1; then
+  USER_HOME="$(getent passwd "$CURRENT_USER" | cut -d: -f6 || true)"
+else
+  USER_HOME="$HOME"
+fi
+USER_HOME="${USER_HOME:-$HOME}"
 
 BLUETOOTH_NAME="Presence Tracker"
 DEPLOYMENT_MODE="convex"
@@ -55,7 +58,6 @@ Actions:
   --redeploy-backend
   --restart-services
   --make-discoverable
-  --run-gui
 
 Options:
   --bluetooth-name <name>
@@ -77,7 +79,6 @@ parse_args() {
       --redeploy-backend) CLI_ACTION="redeploy_backend"; shift ;;
       --restart-services) CLI_ACTION="restart_services_menu"; shift ;;
       --make-discoverable) CLI_ACTION="make_discoverable_menu"; shift ;;
-      --run-gui) CLI_ACTION="run_gui_menu"; shift ;;
       --bluetooth-name) CLI_BLUETOOTH_NAME="$2"; shift 2 ;;
       --deployment-mode)
         CLI_DEPLOYMENT_MODE="$2"
@@ -142,7 +143,8 @@ escape_env_value() {
 set_env_var() {
   local file="$1"
   local key="$2"
-  local value="$(escape_env_value "$3")"
+  local value
+  value="$(escape_env_value "$3")"
   local line="${key}=\"${value}\""
   if grep -qE "^${key}=" "$file"; then
     sed -i "s|^${key}=.*|${line}|" "$file"
@@ -161,9 +163,7 @@ get_env_var() {
   local file="$1"
   local key="$2"
   local line=""
-
   [[ -f "$file" ]] || { printf ''; return 0; }
-
   line="$(grep -E "^${key}=" "$file" | tail -1 || true)"
   line="${line#*=}"
   line="${line%\"}"
@@ -174,7 +174,6 @@ get_env_var() {
 get_env_var_with_local_override() {
   local key="$1"
   local value=""
-
   value="$(get_env_var "$ENV_LOCAL_FILE" "$key")"
   if [[ -z "$value" ]]; then
     value="$(get_env_var "$ENV_FILE" "$key")"
@@ -184,7 +183,6 @@ get_env_var_with_local_override() {
 
 update_env_files() {
   log_step "Syncing .env and .env.local"
-
   for file in "$ENV_FILE" "$ENV_LOCAL_FILE"; do
     set_env_var "$file" "BLUETOOTH_NAME" "$BLUETOOTH_NAME"
     set_env_var "$file" "DEPLOYMENT_MODE" "$DEPLOYMENT_MODE"
@@ -230,11 +228,10 @@ prompt_with_default() {
 }
 
 prompt_bluetooth_name() {
-  local default_name="$BLUETOOTH_NAME"
   if [[ -n "$CLI_BLUETOOTH_NAME" ]]; then
     BLUETOOTH_NAME="$CLI_BLUETOOTH_NAME"
   else
-    BLUETOOTH_NAME="$(prompt_with_default "Bluetooth device name" "$default_name")"
+    BLUETOOTH_NAME="$(prompt_with_default "Bluetooth device name" "$BLUETOOTH_NAME")"
   fi
 }
 
@@ -243,27 +240,24 @@ prompt_deployment_mode() {
     DEPLOYMENT_MODE="$CLI_DEPLOYMENT_MODE"
     return 0
   fi
-
   if [[ "$CLI_NON_INTERACTIVE" == true ]]; then
     DEPLOYMENT_MODE="${DEPLOYMENT_MODE:-convex}"
     return 0
   fi
 
-  local current="$DEPLOYMENT_MODE"
   echo ""
   echo "Choose backend deployment mode:"
   echo "  1) Convex cloud"
   echo "  2) Convex self-hosted"
   echo "  3) Skip backend setup"
   local choice
-  read -r -p "Select [1-3] (default based on current: $current): " choice
-
+  read -r -p "Select [1-3] (current: $DEPLOYMENT_MODE): " choice
   case "$choice" in
     1) DEPLOYMENT_MODE="convex" ;;
     2) DEPLOYMENT_MODE="selfhosted" ;;
     3) DEPLOYMENT_MODE="none" ;;
-    "") DEPLOYMENT_MODE="$current" ;;
-    *) log_warn "Invalid selection, keeping $current" ;;
+    "") ;;
+    *) log_warn "Invalid selection, keeping $DEPLOYMENT_MODE" ;;
   esac
 }
 
@@ -295,20 +289,20 @@ install_system_dependencies() {
   log_step "Installing system packages"
   sudo apt update
   sudo apt install -y \
-    bluez bluez-tools bluetooth \
-    build-essential pkg-config libdbus-1-dev libglib2.0-dev \
+    python3 python3-venv python3-pip \
+    bluez bluez-tools bluetooth libcap2-bin \
     curl git ca-certificates
 }
 
 ensure_bluetooth_service() {
   log_step "Ensuring bluetooth service"
   sudo systemctl enable bluetooth >/dev/null 2>&1 || true
+  sudo rfkill unblock bluetooth || true
   sudo systemctl restart bluetooth
 }
 
 configure_bluetooth_discoverable() {
   log_step "Configuring bluetooth adapter"
-  log_info "Applying adapter settings (this can take up to ~30 seconds)"
   if ! command -v bluetoothctl >/dev/null 2>&1; then
     log_error "bluetoothctl not found"
     return 1
@@ -325,8 +319,6 @@ configure_bluetooth_discoverable() {
   if timeout 5s bluetoothctl help 2>/dev/null | grep -q "pairable-timeout"; then
     btctl_quick pairable-timeout 0
   fi
-  btctl_quick agent NoInputNoOutput
-  btctl_quick default-agent
   btctl_quick system-alias "$BLUETOOTH_NAME"
 
   echo "PRETTY_HOSTNAME=$BLUETOOTH_NAME" | sudo tee /etc/machine-info >/dev/null
@@ -348,25 +340,22 @@ install_bun_if_missing() {
   fi
   log_step "Installing Bun"
   curl -fsSL https://bun.sh/install | bash
-  export BUN_INSTALL="$HOME/.bun"
+  export BUN_INSTALL="$USER_HOME/.bun"
   export PATH="$BUN_INSTALL/bin:$PATH"
 }
 
-install_rust_if_missing() {
-  if command -v cargo >/dev/null 2>&1; then
+install_uv_if_missing() {
+  if command -v uv >/dev/null 2>&1; then
     return 0
   fi
-  log_step "Installing Rust toolchain"
-  curl https://sh.rustup.rs -sSf | sh -s -- -y
+  log_step "Installing UV"
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$USER_HOME/.local/bin:$PATH"
 }
 
 source_runtime_paths() {
-  if [[ -f "$HOME/.cargo/env" ]]; then
-    # shellcheck disable=SC1090
-    source "$HOME/.cargo/env"
-  fi
-  export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
-  export PATH="$BUN_INSTALL/bin:$PATH"
+  export BUN_INSTALL="${BUN_INSTALL:-$USER_HOME/.bun}"
+  export PATH="$USER_HOME/.local/bin:$BUN_INSTALL/bin:/usr/local/bin:$PATH"
 }
 
 install_project_dependencies() {
@@ -377,12 +366,11 @@ install_project_dependencies() {
     bun install
   fi
 
-  if [[ ! -f "$RUST_AGENT_DIR/Cargo.toml" ]]; then
-    log_error "Missing rust-agent/Cargo.toml"
+  if [[ ! -f "$PROJECT_DIR/pyproject.toml" ]]; then
+    log_error "Missing pyproject.toml"
     exit 1
   fi
-
-  (cd "$RUST_AGENT_DIR" && cargo build --release)
+  uv sync
 }
 
 configure_l2ping_permissions() {
@@ -405,12 +393,14 @@ write_agent_config() {
   admin_key="$(get_env_var_with_local_override "CONVEX_SELF_HOSTED_ADMIN_KEY")"
 
   cat > "$AGENT_CONFIG_FILE" << CFG
+bluetooth_name = "$BLUETOOTH_NAME"
+
 [convex]
 deployment_url = "$convex_url"
 admin_key = "$admin_key"
 
 [presence]
-polling_interval_seconds = 15
+polling_interval_seconds = 60
 absent_threshold = 3
 present_threshold = 1
 grace_period_seconds = 300
@@ -420,6 +410,7 @@ l2ping_timeout_seconds = 2
 l2ping_count = 1
 connect_probe_timeout_seconds = 2
 command_timeout_seconds = 5
+max_concurrent_probes = 2
 audio_block_uuids = [
   "00001108-0000-1000-8000-00805f9b34fb",
   "0000110a-0000-1000-8000-00805f9b34fb",
@@ -444,7 +435,7 @@ CFG
 
 install_discoverable_script() {
   log_step "Installing bluetooth discoverable helper"
-sudo tee "$BLUETOOTH_DISCOVERABLE_SCRIPT" >/dev/null << SCRIPT
+  sudo tee "$BLUETOOTH_DISCOVERABLE_SCRIPT" >/dev/null << SCRIPT
 #!/usr/bin/env bash
 set -e
 timeout 5s bluetoothctl --timeout 3 power on >/dev/null 2>&1 || true
@@ -454,19 +445,17 @@ timeout 5s bluetoothctl --timeout 3 discoverable-timeout 0 >/dev/null 2>&1 || tr
 if timeout 5s bluetoothctl help 2>/dev/null | grep -q "pairable-timeout"; then
   timeout 5s bluetoothctl --timeout 3 pairable-timeout 0 >/dev/null 2>&1 || true
 fi
-timeout 5s bluetoothctl --timeout 3 agent NoInputNoOutput >/dev/null 2>&1 || true
-timeout 5s bluetoothctl --timeout 3 default-agent >/dev/null 2>&1 || true
 SCRIPT
   sudo chmod +x "$BLUETOOTH_DISCOVERABLE_SCRIPT"
 }
 
 cleanup_legacy_services() {
-  log_step "Cleaning up legacy Python-era services"
-
+  log_step "Cleaning up legacy services"
   local legacy_units=(
     "bluetooth-agent.service"
     "presence-tracker-python.service"
     "presence-tracker-agent.service"
+    "presence-tracker-gui.service"
   )
 
   local unit
@@ -479,16 +468,13 @@ cleanup_legacy_services() {
 
 generate_services() {
   log_step "Generating systemd units"
-  local gui_user="${SUDO_USER:-$CURRENT_USER}"
-  local gui_home
-  gui_home="$(getent passwd "$gui_user" | cut -d: -f6)"
-  [[ -n "$gui_home" ]] || gui_home="$USER_HOME"
+  local path_value="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$USER_HOME/.local/bin:$USER_HOME/.bun/bin"
 
   sudo tee /etc/systemd/system/presence-tracker.service >/dev/null << UNIT
 [Unit]
-Description=Presence Tracker - Bluetooth Device Monitoring Service
+Description=Presence Tracker - Async Python Bluetooth Presence Agent
 After=bluetooth.target network-online.target
-Wants=bluetooth.target
+Wants=bluetooth.target network-online.target
 
 [Service]
 Type=simple
@@ -497,8 +483,8 @@ Group=bluetooth
 WorkingDirectory=$PROJECT_DIR
 EnvironmentFile=-$ENV_FILE
 EnvironmentFile=-$ENV_LOCAL_FILE
-Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$HOME/.cargo/bin:$HOME/.bun/bin"
-ExecStart=$RUST_BIN_PATH --agent --config $AGENT_CONFIG_FILE
+Environment="PATH=$path_value"
+ExecStart=/bin/bash -lc 'exec uv run python main.py --config "$AGENT_CONFIG_FILE"'
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -506,33 +492,6 @@ StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
-UNIT
-
-  sudo tee /etc/systemd/system/presence-tracker-gui.service >/dev/null << UNIT
-[Unit]
-Description=Presence Tracker GUI
-After=display-manager.service graphical.target
-Wants=display-manager.service graphical.target
-
-[Service]
-Type=simple
-User=$gui_user
-Group=$gui_user
-WorkingDirectory=$RUST_AGENT_DIR
-EnvironmentFile=-$ENV_FILE
-EnvironmentFile=-$ENV_LOCAL_FILE
-Environment="DISPLAY=:0"
-Environment="XAUTHORITY=$gui_home/.Xauthority"
-Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$gui_home/.cargo/bin:$gui_home/.bun/bin"
-ExecStartPre=/bin/bash -lc 'for i in {1..90}; do [[ -S /tmp/.X11-unix/X0 && -f $gui_home/.Xauthority ]] && exit 0; sleep 2; done; exit 1'
-ExecStart=$RUST_BIN_PATH --gui
-Restart=always
-RestartSec=5
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=graphical.target
 UNIT
 
   sudo tee /etc/systemd/system/bluetooth-discoverable.service >/dev/null << UNIT
@@ -554,7 +513,6 @@ UNIT
 deploy_backend() {
   [[ "$CLI_SKIP_DEPLOY" == true ]] && { log_info "Skipping backend deploy (--skip-deploy)"; return 0; }
   [[ "$DEPLOYMENT_MODE" == "none" ]] && { log_info "Skipping backend deploy (mode=none)"; return 0; }
-
   source_runtime_paths
 
   if ! command -v bunx >/dev/null 2>&1; then
@@ -577,12 +535,10 @@ deploy_backend() {
       log_warn "Self-hosted URL missing; skipping self-hosted deploy"
       return 0
     fi
-
     export CONVEX_SELF_HOSTED_URL="$SELF_HOSTED_URL"
     if [[ -n "$SELF_HOSTED_ADMIN_KEY" ]]; then
       export CONVEX_SELF_HOSTED_ADMIN_KEY="$SELF_HOSTED_ADMIN_KEY"
     fi
-
     bunx convex deploy
   fi
 }
@@ -590,26 +546,15 @@ deploy_backend() {
 restart_services() {
   log_step "Reloading and restarting services"
   source_runtime_paths
-
-  if [[ ! -x "$RUST_BIN_PATH" ]]; then
-    log_info "Rust binary missing, rebuilding"
-    (cd "$RUST_AGENT_DIR" && cargo build --release)
-  fi
-
   cleanup_legacy_services
   install_discoverable_script
   generate_services
   sudo systemctl daemon-reload
   sudo systemctl enable presence-tracker.service
-  # Refresh install symlinks to avoid stale WantedBy links after unit changes.
-  sudo systemctl disable presence-tracker-gui.service >/dev/null 2>&1 || true
-  sudo systemctl enable presence-tracker-gui.service
   sudo systemctl enable bluetooth-discoverable.service
-  sudo systemctl restart presence-tracker.service
-  sudo systemctl restart presence-tracker-gui.service
-  sudo rfkill unblock bluetooth || true
   sudo systemctl restart bluetooth
   sudo systemctl restart bluetooth-discoverable.service
+  sudo systemctl restart presence-tracker.service
 }
 
 prompt_runtime_settings() {
@@ -620,7 +565,6 @@ prompt_runtime_settings() {
 
 full_install() {
   log_info "Starting full install"
-
   if [[ "$EUID" -eq 0 ]]; then
     log_error "Run setup.sh as a regular user, not root"
     exit 1
@@ -634,12 +578,10 @@ full_install() {
   install_system_dependencies
   ensure_bluetooth_service
   configure_bluetooth_discoverable
-
   install_node_if_missing
   install_bun_if_missing
-  install_rust_if_missing
+  install_uv_if_missing
   install_project_dependencies
-
   configure_l2ping_permissions
   write_agent_config
   install_discoverable_script
@@ -651,7 +593,7 @@ full_install() {
   log_info "Setup completed"
   log_info "Bluetooth name: $BLUETOOTH_NAME"
   log_info "Deployment mode: $DEPLOYMENT_MODE"
-  log_info "Service logs: sudo journalctl -u presence-tracker -f"
+  log_info "Service logs: sudo journalctl -u presence-tracker.service -f"
 }
 
 update_config() {
@@ -683,31 +625,10 @@ restart_services_menu() {
 make_discoverable_menu() {
   ensure_bluetooth_service
   configure_bluetooth_discoverable
+  install_discoverable_script
+  sudo systemctl daemon-reload
+  sudo systemctl restart bluetooth-discoverable.service 2>/dev/null || true
   log_info "Bluetooth discoverable mode refreshed"
-}
-
-run_gui_menu() {
-  log_step "Building and launching GUI"
-  source_runtime_paths
-  install_rust_if_missing
-
-  if [[ ! -f "$RUST_AGENT_DIR/Cargo.toml" ]]; then
-    log_error "Missing rust-agent/Cargo.toml"
-    exit 1
-  fi
-
-  (cd "$RUST_AGENT_DIR" && cargo build --release)
-
-  (
-    set -a
-    [[ -f "$ENV_FILE" ]] && source "$ENV_FILE"
-    set +a
-
-    cd "$RUST_AGENT_DIR"
-    DISPLAY="${DISPLAY:-:0}" \
-    XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}" \
-    "$RUST_BIN_PATH" --gui
-  )
 }
 
 show_menu() {
@@ -720,23 +641,21 @@ show_menu() {
   echo "  3) Resetup/Redeploy Backend"
   echo "  4) Restart Services"
   echo "  5) Make Bluetooth Discoverable"
-  echo "  6) Compile & Run GUI"
-  echo "  7) Exit"
+  echo "  6) Exit"
   echo "=========================================="
 }
 
 main_menu() {
   while true; do
     show_menu
-    read -r -p "Select an option [1-7]: " choice
+    read -r -p "Select an option [1-6]: " choice
     case "$choice" in
       1) full_install; break ;;
       2) update_config ;;
       3) redeploy_backend ;;
       4) restart_services_menu ;;
       5) make_discoverable_menu ;;
-      6) run_gui_menu ;;
-      7) exit 0 ;;
+      6) exit 0 ;;
       *) log_warn "Invalid option" ;;
     esac
   done
@@ -744,14 +663,12 @@ main_menu() {
 
 run_action_if_requested() {
   [[ -n "$CLI_ACTION" ]] || return 1
-
   case "$CLI_ACTION" in
     full_install) full_install ;;
     update_config) update_config ;;
     redeploy_backend) redeploy_backend ;;
     restart_services_menu) restart_services_menu ;;
     make_discoverable_menu) make_discoverable_menu ;;
-    run_gui_menu) run_gui_menu ;;
     *) log_error "Unknown action: $CLI_ACTION"; exit 1 ;;
   esac
   return 0
