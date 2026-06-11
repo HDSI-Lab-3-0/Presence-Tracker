@@ -98,6 +98,7 @@ class BlueZPresenceMonitor:
         self.passive_seen_at: dict[str, float] = {}
         self.watched_device_paths: set[str] = set()
         self._connect_lock = asyncio.Lock()
+        self._probe_batch_depth = 0
 
     def seed_seen_paired(self, macs: set[str]) -> None:
         for mac in macs:
@@ -283,6 +284,7 @@ class BlueZPresenceMonitor:
         if await remote_name_probe_device(mac, self.config.connect_probe_timeout_seconds):
             log_event("bluetooth", "name_probe", mac=mac, result="seen")
             return True
+        await asyncio.sleep(0.15)
         connected = await self.connect_probe(mac)
         if connected and await self.device_has_audio_services(mac):
             await self.disconnect_audio_capable_device(mac)
@@ -303,9 +305,24 @@ class BlueZPresenceMonitor:
             log_event("bluetooth", "connect_probe", mac=mac, result="failed")
         return False
 
+    async def begin_probe_batch(self) -> None:
+        async with self._connect_lock:
+            if self._probe_batch_depth == 0:
+                await self.stop_discovery()
+            self._probe_batch_depth += 1
+
+    async def end_probe_batch(self) -> None:
+        async with self._connect_lock:
+            if self._probe_batch_depth == 0:
+                return
+            self._probe_batch_depth -= 1
+            if self._probe_batch_depth == 0:
+                await self.start_discovery()
+
     async def connect_probe(self, mac: str) -> bool:
         async with self._connect_lock:
-            await self.stop_discovery()
+            if self._probe_batch_depth == 0:
+                await self.stop_discovery()
             last_error = ""
             try:
                 for attempt in range(3):
@@ -314,31 +331,27 @@ class BlueZPresenceMonitor:
                         return True
                     last_error = error
                     if attempt < 2:
-                        await asyncio.sleep(0.75)
+                        await asyncio.sleep(1.0)
                 if last_error:
                     log_event("bluetooth", "connect_probe", mac=mac, result="failed", message=last_error)
                 return False
             finally:
-                await self.start_discovery()
+                if self._probe_batch_depth == 0:
+                    await self.start_discovery()
 
     async def _connect_probe_once(self, mac: str) -> tuple[bool, str]:
-        path = await self.device_path(mac)
-        if not path:
-            out = await run_command(
-                "bluetoothctl",
-                ["connect", normalize_mac(mac)],
-                self.config.connect_probe_timeout_seconds,
-            )
-            if command_output_indicates_connect_success(out):
-                return True, ""
-            combined = f"{out.stdout}\n{out.stderr}".strip()
-            return False, combined or f"exit={out.code}"
-        try:
-            device = await self._interface(BLUEZ, path, DEVICE)
-            await asyncio.wait_for(device.call_connect(), timeout=self.config.connect_probe_timeout_seconds)
+        mac = normalize_mac(mac)
+        out = await run_command(
+            "bluetoothctl",
+            ["connect", mac],
+            self.config.connect_probe_timeout_seconds,
+        )
+        if command_output_indicates_connect_success(out):
             return True, ""
-        except Exception as exc:
-            return False, str(exc)
+        if await self.is_device_connected(mac):
+            return True, ""
+        combined = f"{out.stdout}\n{out.stderr}".strip()
+        return False, combined or f"exit={out.code}"
 
     async def monitor_new_pairings(
         self,

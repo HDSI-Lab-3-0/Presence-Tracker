@@ -21,7 +21,6 @@ class PresenceLoop:
         self.hits: dict[str, int] = defaultdict(int)
         self.last_positive_at: dict[str, float] = {}
         self.known_macs = load_known_macs(config.paths.state_file)
-        self.probe_semaphore = asyncio.Semaphore(config.bluetooth.max_concurrent_probes)
 
     async def run_forever(self) -> None:
         log_event("presence_loop", "started", result="ok", message="Presence polling loop started")
@@ -93,35 +92,35 @@ class PresenceLoop:
             for device in devices
             if not device.pending_registration and is_valid_mac(device.mac_address)
         ]
-        present_results = await asyncio.gather(
-            *(self.check_present(device, connected) for device in registered),
-            return_exceptions=True,
-        )
-        for device, result in zip(registered, present_results, strict=False):
-            if isinstance(result, Exception):
-                log_event(
-                    "presence_loop",
-                    "probe",
-                    mac=normalize_mac(device.mac_address),
-                    result="error",
-                    message=str(result),
-                    level=logging.WARNING,
-                )
-                continue
-            await self.apply_presence_result(device, bool(result), normalize_mac(device.mac_address) in connected)
+        await self.bluetooth.begin_probe_batch()
+        try:
+            for device in registered:
+                mac = normalize_mac(device.mac_address)
+                try:
+                    if mac in connected:
+                        present = True
+                    else:
+                        present = await self.bluetooth.probe_device(mac)
+                except Exception as exc:
+                    log_event(
+                        "presence_loop",
+                        "probe",
+                        mac=mac,
+                        result="error",
+                        message=str(exc),
+                        level=logging.WARNING,
+                    )
+                    continue
+                await self.apply_presence_result(device, present, mac in connected)
+                await asyncio.sleep(0.25)
+        finally:
+            await self.bluetooth.end_probe_batch()
 
         known_registered = {normalize_mac(device.mac_address) for device in registered}
         self.misses = defaultdict(int, {mac: count for mac, count in self.misses.items() if mac in known_registered})
         self.hits = defaultdict(int, {mac: count for mac, count in self.hits.items() if mac in known_registered})
         self.last_positive_at = {mac: ts for mac, ts in self.last_positive_at.items() if mac in known_registered}
         save_known_macs(self.config.paths.state_file, self.known_macs)
-
-    async def check_present(self, device: DeviceRecord, connected: set[str]) -> bool:
-        mac = normalize_mac(device.mac_address)
-        if mac in connected:
-            return True
-        async with self.probe_semaphore:
-            return await self.bluetooth.probe_device(mac)
 
     def _seed_last_positive(self, device: DeviceRecord) -> None:
         mac = normalize_mac(device.mac_address)

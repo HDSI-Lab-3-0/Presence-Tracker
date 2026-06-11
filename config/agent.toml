@@ -14,7 +14,7 @@ grace_period_seconds = 300
 [bluetooth]
 l2ping_timeout_seconds = 2
 l2ping_count = 1
-connect_probe_timeout_seconds = 5
+connect_probe_timeout_seconds = 8
 command_timeout_seconds = 5
 max_concurrent_probes = 1
 passive_presence_ttl_seconds = 300
