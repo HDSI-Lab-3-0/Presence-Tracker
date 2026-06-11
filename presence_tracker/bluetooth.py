@@ -265,7 +265,7 @@ class BlueZPresenceMonitor:
         )
         return command_output_indicates_remove_success(out)
 
-    async def probe_device(self, mac: str) -> bool:
+    async def probe_device_passive(self, mac: str) -> bool:
         if not is_valid_mac(mac):
             return False
         mac = normalize_mac(mac)
@@ -284,7 +284,14 @@ class BlueZPresenceMonitor:
         if await remote_name_probe_device(mac, self.config.connect_probe_timeout_seconds):
             log_event("bluetooth", "name_probe", mac=mac, result="seen")
             return True
-        await asyncio.sleep(0.15)
+        return False
+
+    async def probe_device_connect(self, mac: str) -> bool:
+        if not is_valid_mac(mac):
+            return False
+        mac = normalize_mac(mac)
+        if await self.is_device_connected(mac):
+            return True
         connected = await self.connect_probe(mac)
         if connected and await self.device_has_audio_services(mac):
             await self.disconnect_audio_capable_device(mac)
@@ -304,6 +311,11 @@ class BlueZPresenceMonitor:
         else:
             log_event("bluetooth", "connect_probe", mac=mac, result="failed")
         return False
+
+    async def probe_device(self, mac: str) -> bool:
+        if await self.probe_device_passive(mac):
+            return True
+        return await self.probe_device_connect(mac)
 
     async def begin_probe_batch(self) -> None:
         async with self._connect_lock:

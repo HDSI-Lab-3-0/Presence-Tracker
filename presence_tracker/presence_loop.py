@@ -93,26 +93,51 @@ class PresenceLoop:
             if not device.pending_registration and is_valid_mac(device.mac_address)
         ]
         await self.bluetooth.begin_probe_batch()
+        present_by_mac: dict[str, bool] = {}
         try:
             for device in registered:
                 mac = normalize_mac(device.mac_address)
+                if mac in connected:
+                    present_by_mac[mac] = True
+                    continue
                 try:
-                    if mac in connected:
-                        present = True
-                    else:
-                        present = await self.bluetooth.probe_device(mac)
+                    present_by_mac[mac] = await self.bluetooth.probe_device_passive(mac)
                 except Exception as exc:
                     log_event(
                         "presence_loop",
-                        "probe",
+                        "probe_passive",
                         mac=mac,
                         result="error",
                         message=str(exc),
                         level=logging.WARNING,
                     )
+                    present_by_mac[mac] = False
+                await asyncio.sleep(0.15)
+
+            for device in registered:
+                mac = normalize_mac(device.mac_address)
+                if present_by_mac.get(mac):
                     continue
-                await self.apply_presence_result(device, present, mac in connected)
+                try:
+                    present_by_mac[mac] = await self.bluetooth.probe_device_connect(mac)
+                except Exception as exc:
+                    log_event(
+                        "presence_loop",
+                        "probe_connect",
+                        mac=mac,
+                        result="error",
+                        message=str(exc),
+                        level=logging.WARNING,
+                    )
                 await asyncio.sleep(0.25)
+
+            for device in registered:
+                mac = normalize_mac(device.mac_address)
+                await self.apply_presence_result(
+                    device,
+                    present_by_mac.get(mac, False),
+                    mac in connected,
+                )
         finally:
             await self.bluetooth.end_probe_batch()
 
