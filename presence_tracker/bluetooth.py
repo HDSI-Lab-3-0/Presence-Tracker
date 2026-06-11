@@ -382,19 +382,21 @@ class BlueZPresenceMonitor:
                 log_event("bluetooth", "watch_device", mac=mac, result="error", message=str(exc), level=logging.WARNING)
                 continue
 
-            def on_properties_changed(
-                interface_name: str,
-                changed_properties: dict[str, Any],
-                invalidated_properties: list[str],
-                watched_mac: str = mac,
-            ) -> None:
-                if interface_name != DEVICE:
-                    return
-                if device_properties_indicate_passive_presence(changed_properties):
-                    self.passive_seen_at[normalize_mac(watched_mac)] = time.monotonic()
-                    log_event("bluetooth", "passive_seen", mac=watched_mac, result="event")
+            def make_handler(watched_mac: str) -> Callable[[str, dict[str, Any], list[str]], None]:
+                def on_properties_changed(
+                    interface_name: str,
+                    changed_properties: dict[str, Any],
+                    invalidated_properties: list[str],
+                ) -> None:
+                    if interface_name != DEVICE:
+                        return
+                    if device_properties_indicate_passive_presence(changed_properties):
+                        self.passive_seen_at[normalize_mac(watched_mac)] = time.monotonic()
+                        log_event("bluetooth", "passive_seen", mac=watched_mac, result="event")
 
-            props.on_properties_changed(on_properties_changed)
+                return on_properties_changed
+
+            props.on_properties_changed(make_handler(mac))
             self.watched_device_paths.add(path)
 
     async def is_device_passively_present(self, mac: str) -> bool:
