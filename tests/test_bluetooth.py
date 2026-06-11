@@ -5,6 +5,7 @@ from dbus_next.errors import DBusError
 from presence_tracker.bluetooth import (
     BlueZPresenceMonitor,
     CommandOutput,
+    adapter_hci_name,
     command_output_indicates_connect_success,
     command_output_indicates_remote_name_success,
     command_output_indicates_remove_success,
@@ -74,6 +75,14 @@ def test_dbus_error_matches_name_and_text() -> None:
     assert dbus_error_matches(exc, "InProgress")
     assert dbus_error_matches(exc, "in progress")
     assert not dbus_error_matches(exc, "NotReady")
+
+    not_ready = DBusError("org.bluez.Error.NotReady", "Resource Not Ready")
+    assert dbus_error_matches(not_ready, "NotReady", "resource not ready")
+
+
+def test_adapter_hci_name() -> None:
+    assert adapter_hci_name("/org/bluez/hci0") == "hci0"
+    assert adapter_hci_name("/org/bluez/weird") == "hci0"
 
 
 def test_connect_probe_rejects_failed_success_code() -> None:

@@ -145,9 +145,9 @@ class BlueZPresenceMonitor:
         log_event("bluetooth_agent", "agent_started", result="ok", message="NoInputNoOutput agent registered")
 
     async def configure_adapter(self, alias: str) -> None:
+        if not await self.ensure_adapter_ready():
+            raise RuntimeError(f"Bluetooth adapter not ready: {self.adapter_path}")
         adapter_props = await self._interface(BLUEZ, self.adapter_path, PROPERTIES)
-        await self._safe_set(adapter_props, ADAPTER, "Powered", Variant("b", True))
-        await asyncio.sleep(0.2)
         await self._safe_set(adapter_props, ADAPTER, "Pairable", Variant("b", True))
         await self._safe_set(adapter_props, ADAPTER, "Discoverable", Variant("b", True))
         await self._safe_set(adapter_props, ADAPTER, "DiscoverableTimeout", Variant("u", 0))
@@ -156,45 +156,123 @@ class BlueZPresenceMonitor:
             await self._safe_set(adapter_props, ADAPTER, "Alias", Variant("s", alias))
         log_event("bluetooth", "configure_adapter", result="ok", message=self.adapter_path)
 
+    async def ensure_adapter_ready(self, timeout_seconds: float = 30.0) -> bool:
+        deadline = time.monotonic() + max(1.0, timeout_seconds)
+        attempt = 0
+        while time.monotonic() < deadline:
+            attempt += 1
+            if await self.is_adapter_powered():
+                if attempt > 1:
+                    log_event(
+                        "bluetooth",
+                        "adapter_ready",
+                        result="ok",
+                        message=f"{self.adapter_path} powered after {attempt} attempts",
+                    )
+                return True
+            await unblock_bluetooth_rfkill(self.config.command_timeout_seconds)
+            await power_on_adapter_cli(
+                adapter_hci_name(self.adapter_path),
+                self.config.command_timeout_seconds,
+            )
+            adapter_props = await self._interface(BLUEZ, self.adapter_path, PROPERTIES)
+            try:
+                await adapter_props.call_set(ADAPTER, "Powered", Variant("b", True))
+            except Exception as exc:
+                log_event(
+                    "bluetooth",
+                    "adapter_property",
+                    result="retry",
+                    message=f"Powered: {exc}",
+                    level=logging.WARNING,
+                )
+            await asyncio.sleep(min(0.5 * attempt, 2.0))
+        log_event(
+            "bluetooth",
+            "adapter_ready",
+            result="failed",
+            message=f"{self.adapter_path} still not powered after {timeout_seconds:.0f}s",
+            level=logging.ERROR,
+        )
+        return False
+
+    async def is_adapter_powered(self) -> bool:
+        try:
+            props = await self._interface(BLUEZ, self.adapter_path, PROPERTIES)
+            return _variant_value(await props.call_get(ADAPTER, "Powered")) is True
+        except Exception:
+            return False
+
     async def is_discovering(self) -> bool:
         props = await self._interface(BLUEZ, self.adapter_path, PROPERTIES)
         return _variant_value(await props.call_get(ADAPTER, "Discovering")) is True
 
     async def start_discovery(self) -> None:
-        adapter = await self._interface(BLUEZ, self.adapter_path, ADAPTER)
-        try:
-            await adapter.call_start_discovery()
-        except DBusError as exc:
-            # BlueZ raises org.bluez.Error.InProgress ("Operation already in
-            # progress") when discovery is already running. dbus_next exposes the
-            # error *name* via exc.type and the human text via str(exc), so the old
-            # `"InProgress" in str(exc)` check never matched and crashed the agent.
-            if not dbus_error_matches(exc, "InProgress", "in progress"):
-                raise
-            # "Already in progress" is only safe if the controller is *actually*
-            # scanning. A crash loop can leave a stuck session where StartDiscovery
-            # reports InProgress while Discovering stays false — passive detection
-            # then silently never works. Verify, and force a stop/restart if stuck.
-            if await self.is_discovering():
-                log_event("bluetooth", "start_discovery", result="already_active")
-                return
+        if not await self.ensure_adapter_ready():
             log_event(
                 "bluetooth",
                 "start_discovery",
-                result="stuck",
-                message="InProgress reported but adapter not discovering; resetting",
+                result="failed",
+                message="Adapter not powered; passive detection disabled",
                 level=logging.WARNING,
             )
-            try:
-                await adapter.call_stop_discovery()
-            except DBusError:
-                pass
-            await asyncio.sleep(0.5)
+            return
+        adapter = await self._interface(BLUEZ, self.adapter_path, ADAPTER)
+        for attempt in range(5):
             try:
                 await adapter.call_start_discovery()
-            except DBusError as exc2:
-                if not dbus_error_matches(exc2, "InProgress", "in progress"):
+                break
+            except DBusError as exc:
+                if dbus_error_matches(exc, "NotReady", "not ready", "resource not ready"):
+                    log_event(
+                        "bluetooth",
+                        "start_discovery",
+                        result="retry",
+                        message=f"attempt={attempt + 1}: {exc}",
+                        level=logging.WARNING,
+                    )
+                    await self.ensure_adapter_ready(timeout_seconds=5.0)
+                    await asyncio.sleep(min(0.5 * (attempt + 1), 2.0))
+                    continue
+                if not dbus_error_matches(exc, "InProgress", "in progress"):
                     raise
+                # "Already in progress" is only safe if the controller is *actually*
+                # scanning. A crash loop can leave a stuck session where StartDiscovery
+                # reports InProgress while Discovering stays false — passive detection
+                # then silently never works. Verify, and force a stop/restart if stuck.
+                if await self.is_discovering():
+                    log_event("bluetooth", "start_discovery", result="already_active")
+                    return
+                log_event(
+                    "bluetooth",
+                    "start_discovery",
+                    result="stuck",
+                    message="InProgress reported but adapter not discovering; resetting",
+                    level=logging.WARNING,
+                )
+                try:
+                    await adapter.call_stop_discovery()
+                except DBusError:
+                    pass
+                await asyncio.sleep(0.5)
+                try:
+                    await adapter.call_start_discovery()
+                except DBusError as exc2:
+                    if dbus_error_matches(exc2, "NotReady", "not ready", "resource not ready"):
+                        await self.ensure_adapter_ready(timeout_seconds=5.0)
+                        continue
+                    if not dbus_error_matches(exc2, "InProgress", "in progress"):
+                        raise
+                break
+        else:
+            log_event(
+                "bluetooth",
+                "start_discovery",
+                result="failed",
+                message="Adapter not ready after retries; passive detection disabled",
+                level=logging.WARNING,
+            )
+            return
         if await self.is_discovering():
             log_event("bluetooth", "start_discovery", result="ok")
         else:
@@ -563,6 +641,21 @@ class BlueZPresenceMonitor:
             await props.call_set(interface_name, prop, value)
         except Exception as exc:
             log_event("bluetooth", "adapter_property", result="ignored", message=f"{prop}: {exc}")
+
+
+def adapter_hci_name(adapter_path: str) -> str:
+    name = adapter_path.rsplit("/", 1)[-1]
+    return name if name.startswith("hci") else "hci0"
+
+
+async def unblock_bluetooth_rfkill(timeout_seconds: int) -> None:
+    await run_command("rfkill", ["unblock", "bluetooth"], timeout_seconds)
+
+
+async def power_on_adapter_cli(hci_name: str, timeout_seconds: int) -> None:
+    if hci_name:
+        await run_command("hciconfig", [hci_name, "up"], timeout_seconds)
+    await run_command("bluetoothctl", ["power", "on"], timeout_seconds)
 
 
 async def run_command(program: str, args: list[str], timeout_seconds: int) -> CommandOutput:
