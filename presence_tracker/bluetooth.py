@@ -161,8 +161,15 @@ class BlueZPresenceMonitor:
         try:
             await adapter.call_start_discovery()
         except DBusError as exc:
-            if "InProgress" not in str(exc):
+            # BlueZ raises org.bluez.Error.InProgress ("Operation already in
+            # progress") when discovery is already running. dbus_next exposes the
+            # error *name* via exc.type and the human text via str(exc), so the old
+            # `"InProgress" in str(exc)` check never matched and the benign error
+            # crashed the agent. Treat "already discovering" as success.
+            if not dbus_error_matches(exc, "InProgress", "in progress"):
                 raise
+            log_event("bluetooth", "start_discovery", result="already_active")
+            return
         log_event("bluetooth", "start_discovery", result="ok")
 
     async def stop_discovery(self) -> None:
@@ -170,7 +177,7 @@ class BlueZPresenceMonitor:
         try:
             await adapter.call_stop_discovery()
         except DBusError as exc:
-            if "NotReady" not in str(exc) and "not ready" not in str(exc).lower():
+            if not dbus_error_matches(exc, "NotReady", "not ready"):
                 log_event("bluetooth", "stop_discovery", result="ignored", message=str(exc))
         for _ in range(10):
             props = await self._interface(BLUEZ, self.adapter_path, PROPERTIES)
@@ -647,6 +654,18 @@ def command_output_indicates_remote_name_success(out: CommandOutput) -> bool:
     if out.code != 0 or any(text in combined for text in failed):
         return False
     return bool(out.stdout.strip())
+
+
+def dbus_error_matches(exc: DBusError, *needles: str) -> bool:
+    """True if a needle matches the D-Bus error name (exc.type) or its text.
+
+    dbus_next puts the error name (e.g. "org.bluez.Error.InProgress") in
+    ``exc.type`` and the human-readable message (e.g. "Operation already in
+    progress") in ``str(exc)``. Callers often only know one of the two, so match
+    against both, case-insensitively.
+    """
+    haystack = f"{getattr(exc, 'type', '') or ''} {exc}".lower()
+    return any(needle.lower() in haystack for needle in needles)
 
 
 def _variant_value(value: Any) -> Any:

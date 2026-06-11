@@ -1,11 +1,14 @@
 import asyncio
 
+from dbus_next.errors import DBusError
+
 from presence_tracker.bluetooth import (
     BlueZPresenceMonitor,
     CommandOutput,
     command_output_indicates_connect_success,
     command_output_indicates_remote_name_success,
     command_output_indicates_remove_success,
+    dbus_error_matches,
     device_properties_indicate_passive_presence,
     has_audio_uuid,
     is_valid_mac,
@@ -61,6 +64,16 @@ def test_passive_presence_survives_routine_property_invalidation() -> None:
     monitor._record_property_change("AA:BB:CC:DD:EE:FF", {})
 
     assert asyncio.run(monitor.is_device_passively_present("AA:BB:CC:DD:EE:FF"))
+
+
+def test_dbus_error_matches_name_and_text() -> None:
+    # "Operation already in progress" is the human text; the error *name* is
+    # org.bluez.Error.InProgress. start_discovery must tolerate this so an
+    # already-scanning adapter does not crash the agent on startup.
+    exc = DBusError("org.bluez.Error.InProgress", "Operation already in progress")
+    assert dbus_error_matches(exc, "InProgress")
+    assert dbus_error_matches(exc, "in progress")
+    assert not dbus_error_matches(exc, "NotReady")
 
 
 def test_connect_probe_rejects_failed_success_code() -> None:
