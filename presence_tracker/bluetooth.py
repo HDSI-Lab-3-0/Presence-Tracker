@@ -309,6 +309,9 @@ class BlueZPresenceMonitor:
         async with self._connect_lock:
             if self._probe_batch_depth == 0:
                 await self.stop_discovery()
+                for mac in await self.get_connected_devices():
+                    await self.disconnect_audio_capable_device(mac)
+                await asyncio.sleep(0.3)
             self._probe_batch_depth += 1
 
     async def end_probe_batch(self) -> None:
@@ -346,10 +349,11 @@ class BlueZPresenceMonitor:
             ["connect", mac],
             self.config.connect_probe_timeout_seconds,
         )
-        if command_output_indicates_connect_success(out):
-            return True, ""
-        if await self.is_device_connected(mac):
-            return True, ""
+        deadline = time.monotonic() + self.config.connect_probe_timeout_seconds
+        while time.monotonic() < deadline:
+            if command_output_indicates_connect_success(out) or await self.is_device_connected(mac):
+                return True, ""
+            await asyncio.sleep(0.25)
         combined = f"{out.stdout}\n{out.stderr}".strip()
         return False, combined or f"exit={out.code}"
 
@@ -585,8 +589,9 @@ def device_properties_indicate_passive_presence(props: dict[str, Any]) -> bool:
 
 def command_output_indicates_connect_success(out: CommandOutput) -> bool:
     combined = f"{out.stdout}\n{out.stderr}".lower()
+    if "connected: yes" in combined or "connection successful" in combined:
+        return True
     failed = (
-        "failed",
         "not available",
         "not connected",
         "no route",
@@ -594,10 +599,13 @@ def command_output_indicates_connect_success(out: CommandOutput) -> bool:
         "connection refused",
         "connection timed out",
         "timeout",
+        "page timeout",
     )
     if any(text in combined for text in failed):
         return False
-    return out.code == 0 or "connected: yes" in combined or "connection successful" in combined or "successful" in combined
+    if "failed" in combined and "profile-unavailable" not in combined:
+        return False
+    return out.code == 0 or "successful" in combined
 
 
 def command_output_indicates_remove_success(out: CommandOutput) -> bool:
