@@ -156,6 +156,10 @@ class BlueZPresenceMonitor:
             await self._safe_set(adapter_props, ADAPTER, "Alias", Variant("s", alias))
         log_event("bluetooth", "configure_adapter", result="ok", message=self.adapter_path)
 
+    async def is_discovering(self) -> bool:
+        props = await self._interface(BLUEZ, self.adapter_path, PROPERTIES)
+        return _variant_value(await props.call_get(ADAPTER, "Discovering")) is True
+
     async def start_discovery(self) -> None:
         adapter = await self._interface(BLUEZ, self.adapter_path, ADAPTER)
         try:
@@ -164,13 +168,43 @@ class BlueZPresenceMonitor:
             # BlueZ raises org.bluez.Error.InProgress ("Operation already in
             # progress") when discovery is already running. dbus_next exposes the
             # error *name* via exc.type and the human text via str(exc), so the old
-            # `"InProgress" in str(exc)` check never matched and the benign error
-            # crashed the agent. Treat "already discovering" as success.
+            # `"InProgress" in str(exc)` check never matched and crashed the agent.
             if not dbus_error_matches(exc, "InProgress", "in progress"):
                 raise
-            log_event("bluetooth", "start_discovery", result="already_active")
-            return
-        log_event("bluetooth", "start_discovery", result="ok")
+            # "Already in progress" is only safe if the controller is *actually*
+            # scanning. A crash loop can leave a stuck session where StartDiscovery
+            # reports InProgress while Discovering stays false — passive detection
+            # then silently never works. Verify, and force a stop/restart if stuck.
+            if await self.is_discovering():
+                log_event("bluetooth", "start_discovery", result="already_active")
+                return
+            log_event(
+                "bluetooth",
+                "start_discovery",
+                result="stuck",
+                message="InProgress reported but adapter not discovering; resetting",
+                level=logging.WARNING,
+            )
+            try:
+                await adapter.call_stop_discovery()
+            except DBusError:
+                pass
+            await asyncio.sleep(0.5)
+            try:
+                await adapter.call_start_discovery()
+            except DBusError as exc2:
+                if not dbus_error_matches(exc2, "InProgress", "in progress"):
+                    raise
+        if await self.is_discovering():
+            log_event("bluetooth", "start_discovery", result="ok")
+        else:
+            log_event(
+                "bluetooth",
+                "start_discovery",
+                result="failed",
+                message="Adapter not discovering after reset; passive detection disabled (controller may need an rfkill/HCI reset)",
+                level=logging.WARNING,
+            )
 
     async def stop_discovery(self) -> None:
         adapter = await self._interface(BLUEZ, self.adapter_path, ADAPTER)
