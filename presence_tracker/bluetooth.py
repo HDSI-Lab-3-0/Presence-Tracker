@@ -472,20 +472,22 @@ class BlueZPresenceMonitor:
                 ) -> None:
                     if interface_name != DEVICE:
                         return
-                    normalized = normalize_mac(watched_mac)
-                    if device_properties_indicate_passive_presence(changed_properties):
-                        self.passive_seen_at[normalized] = time.monotonic()
-                        log_event("bluetooth", "passive_seen", mac=watched_mac, result="event")
-                    if any(
-                        prop in invalidated_properties
-                        for prop in ("RSSI", "ManufacturerData", "AdvertisingFlags")
-                    ):
-                        self.passive_seen_at.pop(normalized, None)
+                    self._record_property_change(watched_mac, changed_properties)
 
                 return on_properties_changed
 
             props.on_properties_changed(make_handler(mac))
             self.watched_device_paths.add(path)
+
+    def _record_property_change(self, mac: str, changed_properties: dict[str, Any]) -> None:
+        # Only a live advertisement (a changed RSSI/ManufacturerData/AdvertisingFlags)
+        # counts as a fresh passive sighting. We deliberately do NOT clear presence on
+        # property *invalidation*: BlueZ invalidates RSSI as a routine side effect of
+        # stopping discovery (which happens on every probe cycle), so an invalidation is
+        # not evidence the device left. Staleness is bounded by passive_presence_ttl_seconds.
+        if device_properties_indicate_passive_presence(changed_properties):
+            self.passive_seen_at[normalize_mac(mac)] = time.monotonic()
+            log_event("bluetooth", "passive_seen", mac=mac, result="event")
 
     async def is_device_passively_present(self, mac: str) -> bool:
         if not is_valid_mac(mac):
