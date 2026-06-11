@@ -68,9 +68,9 @@ def test_remote_name_probe_rejects_timeout() -> None:
     assert not command_output_indicates_remote_name_success(out)
 
 
-def test_probe_device_uses_remote_name_before_audio_skip(monkeypatch) -> None:
+def test_probe_device_uses_remote_name_before_connect(monkeypatch) -> None:
     monitor = BlueZPresenceMonitor(BluetoothConfig())
-    checked_audio = False
+    connect_called = False
 
     async def is_device_connected(mac: str) -> bool:
         return False
@@ -84,16 +84,58 @@ def test_probe_device_uses_remote_name_before_audio_skip(monkeypatch) -> None:
     async def remote_name_probe_device(mac: str, timeout_seconds: int) -> bool:
         return True
 
+    async def connect_probe(mac: str) -> bool:
+        nonlocal connect_called
+        connect_called = True
+        return False
+
     async def device_has_audio_services(mac: str) -> bool:
-        nonlocal checked_audio
-        checked_audio = True
         return True
 
     monitor.is_device_connected = is_device_connected
     monitor.is_device_passively_present = is_device_passively_present
+    monitor.connect_probe = connect_probe
     monitor.device_has_audio_services = device_has_audio_services
     monkeypatch.setattr("presence_tracker.bluetooth.l2ping_device", l2ping_device)
     monkeypatch.setattr("presence_tracker.bluetooth.remote_name_probe_device", remote_name_probe_device)
 
     assert asyncio.run(monitor.probe_device("74:F4:41:2E:2B:3A"))
-    assert not checked_audio
+    assert not connect_called
+
+
+def test_probe_device_connects_audio_devices_for_presence(monkeypatch) -> None:
+    monitor = BlueZPresenceMonitor(BluetoothConfig())
+    disconnected = False
+
+    async def is_device_connected(mac: str) -> bool:
+        return False
+
+    async def is_device_passively_present(mac: str) -> bool:
+        return False
+
+    async def l2ping_device(mac: str, count: int, timeout_seconds: int) -> bool:
+        return False
+
+    async def remote_name_probe_device(mac: str, timeout_seconds: int) -> bool:
+        return False
+
+    async def connect_probe(mac: str) -> bool:
+        return True
+
+    async def device_has_audio_services(mac: str) -> bool:
+        return True
+
+    async def disconnect_audio_capable_device(mac: str) -> None:
+        nonlocal disconnected
+        disconnected = True
+
+    monitor.is_device_connected = is_device_connected
+    monitor.is_device_passively_present = is_device_passively_present
+    monitor.connect_probe = connect_probe
+    monitor.device_has_audio_services = device_has_audio_services
+    monitor.disconnect_audio_capable_device = disconnect_audio_capable_device
+    monkeypatch.setattr("presence_tracker.bluetooth.l2ping_device", l2ping_device)
+    monkeypatch.setattr("presence_tracker.bluetooth.remote_name_probe_device", remote_name_probe_device)
+
+    assert asyncio.run(monitor.probe_device("F0:F5:64:4E:E5:05"))
+    assert disconnected

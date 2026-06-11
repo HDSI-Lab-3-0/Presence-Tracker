@@ -265,16 +265,25 @@ class BlueZPresenceMonitor:
         if await remote_name_probe_device(mac, self.config.connect_probe_timeout_seconds):
             log_event("bluetooth", "name_probe", mac=mac, result="seen")
             return True
-        if await self.device_has_audio_services(mac):
+        connected = await self.connect_probe(mac)
+        if connected and await self.device_has_audio_services(mac):
+            await self.disconnect_audio_capable_device(mac)
             log_event(
                 "bluetooth",
                 "connect_probe",
                 mac=mac,
-                result="skipped_audio",
-                message="Paired audio device; presence uses passive/l2ping/name probes only",
+                result="seen_audio",
+                message="Brief connect for presence; audio services remain blocked",
             )
-            return False
-        return await self.connect_probe(mac)
+            return True
+        if connected:
+            log_event("bluetooth", "connect_probe", mac=mac, result="seen")
+            return True
+        if await self.device_has_audio_services(mac):
+            log_event("bluetooth", "connect_probe", mac=mac, result="failed_audio")
+        else:
+            log_event("bluetooth", "connect_probe", mac=mac, result="failed")
+        return False
 
     async def connect_probe(self, mac: str) -> bool:
         path = await self.device_path(mac)
