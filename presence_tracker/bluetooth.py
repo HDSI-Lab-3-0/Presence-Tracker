@@ -35,6 +35,12 @@ class CommandOutput:
     stderr: str
 
 
+@dataclass(slots=True)
+class PassiveSighting:
+    seen_at: float
+    rssi: int | None = None
+
+
 class PresenceAgent(ServiceInterface):
     def __init__(self, audio_uuids: set[str]) -> None:
         super().__init__(AGENT)
@@ -95,7 +101,7 @@ class BlueZPresenceMonitor:
         self.adapter_path = ""
         self.agent = PresenceAgent(self.audio_uuids)
         self.seen_paired: set[str] = set()
-        self.passive_seen_at: dict[str, float] = {}
+        self.passive_seen_at: dict[str, PassiveSighting] = {}
         self.watched_device_paths: set[str] = set()
         self._connect_lock = asyncio.Lock()
         self._probe_batch_depth = 0
@@ -390,9 +396,6 @@ class BlueZPresenceMonitor:
         mac = normalize_mac(mac)
         if await self.is_device_connected(mac):
             return True
-        if await self.is_device_passively_present(mac):
-            log_event("bluetooth", "passive_probe", mac=mac, result="seen")
-            return True
         if await l2ping_device(
             mac,
             self.config.l2ping_count,
@@ -400,8 +403,8 @@ class BlueZPresenceMonitor:
         ):
             log_event("bluetooth", "l2ping_probe", mac=mac, result="seen")
             return True
-        if await remote_name_probe_device(mac, self.config.connect_probe_timeout_seconds):
-            log_event("bluetooth", "name_probe", mac=mac, result="seen")
+        if await self.is_device_passively_present(mac):
+            log_event("bluetooth", "passive_probe", mac=mac, result="seen")
             return True
         return False
 
@@ -599,23 +602,31 @@ class BlueZPresenceMonitor:
             self.watched_device_paths.add(path)
 
     def _record_property_change(self, mac: str, changed_properties: dict[str, Any]) -> None:
-        # Only a live advertisement (a changed RSSI/ManufacturerData/AdvertisingFlags)
-        # counts as a fresh passive sighting. We deliberately do NOT clear presence on
-        # property *invalidation*: BlueZ invalidates RSSI as a routine side effect of
-        # stopping discovery (which happens on every probe cycle), so an invalidation is
-        # not evidence the device left. Staleness is bounded by passive_presence_ttl_seconds.
-        if device_properties_indicate_passive_presence(changed_properties):
-            self.passive_seen_at[normalize_mac(mac)] = time.monotonic()
-            log_event("bluetooth", "passive_seen", mac=mac, result="event")
+        # Only a live advertisement with a credible RSSI counts as a passive sighting.
+        # ManufacturerData/AdvertisingFlags alone are too noisy for paired-but-away devices.
+        # We deliberately do NOT clear presence on property *invalidation*: BlueZ
+        # invalidates RSSI as a routine side effect of stopping discovery (which happens
+        # on every probe cycle), so an invalidation is not evidence the device left.
+        rssi = passive_rssi_from_properties(changed_properties)
+        if rssi is None:
+            return
+        if rssi < self.config.min_passive_rssi:
+            return
+        self.passive_seen_at[normalize_mac(mac)] = PassiveSighting(time.monotonic(), rssi)
+        log_event("bluetooth", "passive_seen", mac=mac, result="event", message=f"rssi={rssi}")
 
     async def is_device_passively_present(self, mac: str) -> bool:
         if not is_valid_mac(mac):
             return False
         mac = normalize_mac(mac)
-        seen_at = self.passive_seen_at.get(mac)
-        if seen_at is None:
+        sighting = self.passive_seen_at.get(mac)
+        if sighting is None:
             return False
-        return (time.monotonic() - seen_at) <= self.config.passive_presence_ttl_seconds
+        if (time.monotonic() - sighting.seen_at) > self.config.passive_presence_ttl_seconds:
+            return False
+        if sighting.rssi is not None and sighting.rssi < self.config.min_passive_rssi:
+            return False
+        return True
 
     def _paired_devices_from_objects(self, objects: dict[str, dict[str, dict[str, Any]]]) -> dict[str, str]:
         paired: dict[str, str] = {}
@@ -726,13 +737,19 @@ def has_audio_uuid(uuids: list[str], blocked: set[str]) -> bool:
     return any(uuid.strip().lower() in blocked for uuid in uuids)
 
 
+def passive_rssi_from_properties(props: dict[str, Any]) -> int | None:
+    if "RSSI" not in props:
+        return None
+    value = _variant_value(props.get("RSSI"))
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return None
+
+
 def device_properties_indicate_passive_presence(props: dict[str, Any]) -> bool:
-    if "RSSI" in props:
-        return True
-    if _variant_value(props.get("AdvertisingFlags")):
-        return True
-    manufacturer_data = _variant_value(props.get("ManufacturerData"))
-    return bool(manufacturer_data)
+    return passive_rssi_from_properties(props) is not None
 
 
 def command_output_indicates_connect_success(out: CommandOutput) -> bool:

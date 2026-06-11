@@ -120,6 +120,19 @@ def test_connected_device_marks_present_immediately(tmp_path) -> None:
     assert convex.statuses == [("AA:BB:CC:DD:EE:FF", "present")]
 
 
+def test_present_device_gets_touched_when_still_seen(tmp_path) -> None:
+    config = Config.from_dict({"paths": {"state_file": str(tmp_path / "state.json")}})
+    config.normalize()
+    device = DeviceRecord(None, "AA:BB:CC:DD:EE:FF", "present", False, last_seen=int(time.time() * 1000))
+    convex = FakeConvex(devices=[device])
+    bluetooth = FakeBluetooth(probes={"AA:BB:CC:DD:EE:FF": True})
+    loop = PresenceLoop(config, convex, bluetooth)
+
+    run(loop.run_cycle())
+
+    assert convex.statuses == [("AA:BB:CC:DD:EE:FF", "present")]
+
+
 def test_absent_threshold_debounces_checkout(tmp_path) -> None:
     config = Config.from_dict(
         {

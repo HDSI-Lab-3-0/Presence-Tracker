@@ -34,7 +34,7 @@ def test_audio_uuid_detection() -> None:
 
 def test_passive_presence_uses_discovery_properties() -> None:
     assert device_properties_indicate_passive_presence({"RSSI": -78})
-    assert device_properties_indicate_passive_presence({"ManufacturerData": {117: b"abc"}})
+    assert not device_properties_indicate_passive_presence({"ManufacturerData": {117: b"abc"}})
     assert not device_properties_indicate_passive_presence({})
 
 
@@ -119,7 +119,7 @@ def test_remote_name_probe_rejects_timeout() -> None:
     assert not command_output_indicates_remote_name_success(out)
 
 
-def test_probe_device_uses_remote_name_before_connect(monkeypatch) -> None:
+def test_probe_device_uses_l2ping_before_connect(monkeypatch) -> None:
     monitor = BlueZPresenceMonitor(BluetoothConfig())
     connect_called = False
 
@@ -130,9 +130,6 @@ def test_probe_device_uses_remote_name_before_connect(monkeypatch) -> None:
         return False
 
     async def l2ping_device(mac: str, count: int, timeout_seconds: int) -> bool:
-        return False
-
-    async def remote_name_probe_device(mac: str, timeout_seconds: int) -> bool:
         return True
 
     async def connect_probe(mac: str) -> bool:
@@ -148,10 +145,15 @@ def test_probe_device_uses_remote_name_before_connect(monkeypatch) -> None:
     monitor.connect_probe = connect_probe
     monitor.device_has_audio_services = device_has_audio_services
     monkeypatch.setattr("presence_tracker.bluetooth.l2ping_device", l2ping_device)
-    monkeypatch.setattr("presence_tracker.bluetooth.remote_name_probe_device", remote_name_probe_device)
 
     assert asyncio.run(monitor.probe_device("74:F4:41:2E:2B:3A"))
     assert not connect_called
+
+
+def test_weak_rssi_does_not_count_as_passive_presence() -> None:
+    monitor = BlueZPresenceMonitor(BluetoothConfig(min_passive_rssi=-80))
+    monitor._record_property_change("AA:BB:CC:DD:EE:FF", {"RSSI": -95})
+    assert not asyncio.run(monitor.is_device_passively_present("AA:BB:CC:DD:EE:FF"))
 
 
 def test_probe_device_connects_audio_devices_for_presence(monkeypatch) -> None:

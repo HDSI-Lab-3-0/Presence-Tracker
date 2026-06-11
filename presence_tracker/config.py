@@ -44,6 +44,7 @@ class BluetoothConfig:
     command_timeout_seconds: int = 5
     max_concurrent_probes: int = 1
     passive_presence_ttl_seconds: int = 180
+    min_passive_rssi: int = -80
     adapter_name: str = ""
     audio_block_uuids: list[str] = field(default_factory=lambda: DEFAULT_AUDIO_UUIDS.copy())
 
@@ -107,6 +108,7 @@ class Config:
                 command_timeout_seconds=_int(bluetooth.get("command_timeout_seconds"), 5),
                 max_concurrent_probes=_int(bluetooth.get("max_concurrent_probes"), 2),
                 passive_presence_ttl_seconds=_int(bluetooth.get("passive_presence_ttl_seconds"), 180),
+                min_passive_rssi=_int(bluetooth.get("min_passive_rssi"), -80),
                 adapter_name=str(bluetooth.get("adapter_name", "")),
                 audio_block_uuids=[
                     str(uuid).strip().lower()
@@ -151,6 +153,7 @@ class Config:
         self.bluetooth.command_timeout_seconds = max(1, self.bluetooth.command_timeout_seconds)
         self.bluetooth.max_concurrent_probes = max(1, self.bluetooth.max_concurrent_probes)
         self.bluetooth.passive_presence_ttl_seconds = max(30, self.bluetooth.passive_presence_ttl_seconds)
+        self.bluetooth.min_passive_rssi = min(-30, max(-120, self.bluetooth.min_passive_rssi))
         self.logging.max_lines = max(1, self.logging.max_lines)
 
 

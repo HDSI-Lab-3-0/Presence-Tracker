@@ -93,51 +93,41 @@ class PresenceLoop:
             if not device.pending_registration and is_valid_mac(device.mac_address)
         ]
         await self.bluetooth.begin_probe_batch()
-        present_by_mac: dict[str, bool] = {}
         try:
             for device in registered:
                 mac = normalize_mac(device.mac_address)
-                if mac in connected:
-                    present_by_mac[mac] = True
-                    continue
-                try:
-                    present_by_mac[mac] = await self.bluetooth.probe_device_passive(mac)
-                except Exception as exc:
-                    log_event(
-                        "presence_loop",
-                        "probe_passive",
-                        mac=mac,
-                        result="error",
-                        message=str(exc),
-                        level=logging.WARNING,
-                    )
-                    present_by_mac[mac] = False
-                await asyncio.sleep(0.15)
-
-            for device in registered:
-                mac = normalize_mac(device.mac_address)
-                if present_by_mac.get(mac):
-                    continue
-                try:
-                    present_by_mac[mac] = await self.bluetooth.probe_device_connect(mac)
-                except Exception as exc:
-                    log_event(
-                        "presence_loop",
-                        "probe_connect",
-                        mac=mac,
-                        result="error",
-                        message=str(exc),
-                        level=logging.WARNING,
-                    )
-                await asyncio.sleep(0.25)
-
-            for device in registered:
-                mac = normalize_mac(device.mac_address)
-                await self.apply_presence_result(
-                    device,
-                    present_by_mac.get(mac, False),
-                    mac in connected,
-                )
+                via_connected = mac in connected
+                if via_connected:
+                    is_present = True
+                else:
+                    try:
+                        is_present = await self.bluetooth.probe_device_passive(mac)
+                    except Exception as exc:
+                        log_event(
+                            "presence_loop",
+                            "probe_passive",
+                            mac=mac,
+                            result="error",
+                            message=str(exc),
+                            level=logging.WARNING,
+                        )
+                        is_present = False
+                    if not is_present:
+                        try:
+                            is_present = await self.bluetooth.probe_device_connect(mac)
+                        except Exception as exc:
+                            log_event(
+                                "presence_loop",
+                                "probe_connect",
+                                mac=mac,
+                                result="error",
+                                message=str(exc),
+                                level=logging.WARNING,
+                            )
+                        await asyncio.sleep(0.25)
+                    else:
+                        await asyncio.sleep(0.15)
+                await self.apply_presence_result(device, is_present, via_connected)
         finally:
             await self.bluetooth.end_probe_batch()
 
@@ -152,7 +142,9 @@ class PresenceLoop:
         if mac in self.last_positive_at:
             return
         if device.status == "present" and device.last_seen:
-            self.last_positive_at[mac] = device.last_seen / 1000.0
+            seen_at = device.last_seen / 1000.0
+            if (time.time() - seen_at) < self.config.presence.present_ttl_seconds:
+                self.last_positive_at[mac] = seen_at
 
     def _within_present_ttl(self, mac: str) -> bool:
         last_positive = self.last_positive_at.get(mac)
@@ -182,6 +174,8 @@ class PresenceLoop:
                         return
                     self.hits.pop(mac, None)
                 await self.transition_status(device, "present")
+            else:
+                await self.touch_device_presence(device)
             return
 
         if device.status == "present" and self._within_present_ttl(mac):
@@ -254,6 +248,20 @@ class PresenceLoop:
             level=logging.WARNING,
         )
         return False
+
+    async def touch_device_presence(self, device: DeviceRecord) -> None:
+        mac = normalize_mac(device.mac_address)
+        try:
+            await self.convex.update_device_status(mac, "present")
+        except Exception as exc:
+            log_event(
+                "presence_loop",
+                "presence_touch",
+                mac=mac,
+                result="error",
+                message=str(exc),
+                level=logging.WARNING,
+            )
 
     async def transition_status(self, device: DeviceRecord, status: str) -> None:
         mac = normalize_mac(device.mac_address)
