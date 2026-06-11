@@ -1312,6 +1312,12 @@ body:not(.role-admin) .admin-only {
     border: 1px solid rgba(180, 83, 9, 0.2);
 }
 
+.log-connection-badge.app-bluetooth {
+    background: #ECFDF5;
+    color: #047857;
+    border: 1px solid rgba(4, 120, 87, 0.2);
+}
+
 .log-connection-badge.system {
     background: #F1F5F9;
     color: #475569;

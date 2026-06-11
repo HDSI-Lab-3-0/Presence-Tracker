@@ -122,6 +122,7 @@ l2ping_count = 1
 connect_probe_timeout_seconds = 2
 command_timeout_seconds = 5
 max_concurrent_probes = 2
+passive_presence_ttl_seconds = 180
 audio_block_uuids = [
   "0000110b-0000-1000-8000-00805f9b34fb",
 ]
@@ -158,13 +159,14 @@ Active probing is bounded and hardware-aware:
 - The loop does not overlap cycles.
 - Registered devices are probed with an `asyncio.Semaphore`.
 - Default probe concurrency is 2 to avoid stressing Raspberry Pi Bluetooth hardware.
+- Paired phones seen through BlueZ RSSI/advertising count as present for `passive_presence_ttl_seconds`, so presence works without connecting audio profiles.
 - `l2ping` is run with strict timeouts.
 - Generic connect probes are skipped for devices advertising blocked audio UUIDs.
 
 Audio protection:
 
 - The agent rejects BlueZ `AuthorizeService` calls for configured audio UUIDs.
-- Audio-capable devices can still be registered for presence, but the agent disconnects and avoids generic connect probes that would attach audio profiles.
+- Audio-capable devices can still be registered for presence through passive Bluetooth visibility, but the agent disconnects and avoids generic connect probes that would attach audio profiles.
 
 ## Registration Flow
 

@@ -170,6 +170,12 @@ function inferConnectionType(log) {
   return null;
 }
 
+function actionLabel(log) {
+  if (log.action === "check_out") return "check-out";
+  if (log.action === "check_in") return "check-in";
+  return log.status === "present" ? "presence" : "absence";
+}
+
 function getFilteredLogs() {
   if (connectionFilter === "all") return allLogs;
   return allLogs.filter((log) => inferConnectionType(log) === connectionFilter);
@@ -446,13 +452,26 @@ function formatCompactTimestamp(timestamp) {
 
 /** Short note only when badges alone do not convey it. */
 function formatLogEntryNote(log, connectionType) {
+  const btConnected = resolveBluetoothConnectedAtEvent(log);
+  if (connectionType === "bluetooth") {
+    if (log.syntheticReason === "current_bluetooth_session") {
+      return "Bluetooth connected now";
+    }
+    return log.action === "check_out" || log.status === "absent"
+      ? "Bluetooth disconnected"
+      : "Bluetooth connected";
+  }
   if (connectionType === "manual") {
+    if (btConnected === true) return `App ${actionLabel(log)} with Bluetooth in range`;
+    if (btConnected === false) return `App ${actionLabel(log)} with Bluetooth away`;
     if (log.verificationStatus === "pending") return "Awaiting Bluetooth";
     if (log.verificationStatus === "unverified") return "Bluetooth not verified";
     if (log.verificationStatus === "expired") return "Checkout not verified";
+    if (log.label) return log.label;
     return "";
   }
   if (connectionType === "system") return "System";
+  if (log.label) return log.label;
   return "";
 }
 
@@ -464,7 +483,7 @@ function renderLogEntry(log, hidePerson = false) {
       ? "Check In"
       : (log.status === "present" ? "Present" : "Absent");
   const connectionType = inferConnectionType(log);
-  const connectionBadge = formatConnectionBadge(connectionType);
+  const connectionBadge = formatConnectionBadge(log, connectionType);
   const btBadge =
     connectionType === "manual" ? formatBluetoothAtEventBadge(log, connectionType) : "";
   const note = formatLogEntryNote(log, connectionType);
@@ -533,7 +552,7 @@ window.exportToCSV = function () {
   sortedLogs.forEach((log) => {
     const date = new Date(log.timestamp);
     const pacificDateStr = date.toLocaleString("en-US", { timeZone: "America/Los_Angeles" });
-    csvContent += `"${escapeCsv(log.userName)}","${escapeCsv(log.deviceId)}","${escapeCsv(log.action || "")}","${escapeCsv(log.status)}","${escapeCsv(formatConnectionLabel(inferConnectionType(log)))}","${escapeCsv(formatBluetoothAtEventCsv(log, inferConnectionType(log)))}","${escapeCsv(formatSourceText(log))}","${escapeCsv(formatVerificationText(log))}","${escapeCsv(pacificDateStr)}"\n`;
+    csvContent += `"${escapeCsv(log.userName)}","${escapeCsv(log.deviceId)}","${escapeCsv(log.action || "")}","${escapeCsv(log.status)}","${escapeCsv(formatConnectionLabel(log, inferConnectionType(log)))}","${escapeCsv(formatBluetoothAtEventCsv(log, inferConnectionType(log)))}","${escapeCsv(formatSourceText(log))}","${escapeCsv(formatVerificationText(log))}","${escapeCsv(pacificDateStr)}"\n`;
   });
 
   const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
@@ -570,18 +589,25 @@ function formatSourceText(log) {
   return "";
 }
 
-function formatConnectionLabel(connectionType) {
+function formatConnectionLabel(log, connectionType) {
   if (connectionType === "bluetooth") return "Bluetooth";
-  if (connectionType === "manual") return "Manual (app)";
+  if (connectionType === "manual") {
+    return resolveBluetoothConnectedAtEvent(log) === true
+      ? "App + Bluetooth"
+      : "Manual (app)";
+  }
   if (connectionType === "system") return "System";
   return "";
 }
 
-function formatConnectionBadge(connectionType) {
+function formatConnectionBadge(log, connectionType) {
   if (connectionType === "bluetooth") {
     return '<span class="log-connection-badge bluetooth">Bluetooth</span>';
   }
   if (connectionType === "manual") {
+    if (resolveBluetoothConnectedAtEvent(log) === true) {
+      return '<span class="log-connection-badge app-bluetooth">App + Bluetooth</span>';
+    }
     return '<span class="log-connection-badge manual">Manual</span>';
   }
   if (connectionType === "system") {
@@ -594,10 +620,10 @@ function formatBluetoothAtEventBadge(log, connectionType) {
   if (connectionType !== "manual") return "";
   const btConnected = resolveBluetoothConnectedAtEvent(log);
   if (btConnected === true) {
-    return '<span class="log-bt-badge connected">BT on</span>';
+    return '<span class="log-bt-badge connected">BT in range</span>';
   }
   if (btConnected === false) {
-    return '<span class="log-bt-badge disconnected">BT off</span>';
+    return '<span class="log-bt-badge disconnected">BT away</span>';
   }
   return '<span class="log-bt-badge unknown">BT ?</span>';
 }
@@ -611,7 +637,11 @@ function formatBluetoothAtEventCsv(log, connectionType) {
 }
 
 function formatVerificationText(log) {
-  if (log.verifiedBy === "manual") return "Verification: manual (app)";
+  if (log.verifiedBy === "manual") {
+    return resolveBluetoothConnectedAtEvent(log) === true
+      ? "Verification: app with bluetooth in range"
+      : "Verification: manual (app)";
+  }
   if (log.verificationStatus === "verified") {
     if (log.source === "app+bluetooth") return "Verification: verified with bluetooth";
     if (log.origin === "app" || log.source === "app") return "Verification: verified (app)";

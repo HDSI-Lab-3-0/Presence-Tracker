@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -94,6 +95,7 @@ class BlueZPresenceMonitor:
         self.adapter_path = ""
         self.agent = PresenceAgent(self.audio_uuids)
         self.seen_paired: set[str] = set()
+        self.passive_seen_at: dict[str, float] = {}
 
     async def connect(self) -> None:
         self.bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
@@ -157,6 +159,7 @@ class BlueZPresenceMonitor:
 
     async def get_connected_devices(self) -> set[str]:
         objects = await self.get_managed_objects()
+        self._remember_passive_seen_from_objects(objects)
         connected: set[str] = set()
         for path, ifaces in objects.items():
             device = ifaces.get(DEVICE)
@@ -170,6 +173,7 @@ class BlueZPresenceMonitor:
 
     async def get_paired_devices(self) -> dict[str, str]:
         objects = await self.get_managed_objects()
+        self._remember_passive_seen_from_objects(objects)
         paired: dict[str, str] = {}
         for path, ifaces in objects.items():
             device = ifaces.get(DEVICE)
@@ -247,11 +251,16 @@ class BlueZPresenceMonitor:
         mac = normalize_mac(mac)
         if await self.is_device_connected(mac):
             return True
+        if await self.is_device_passively_present(mac):
+            log_event("bluetooth", "passive_probe", mac=mac, result="seen")
+            return True
         if await l2ping_device(
             mac,
             self.config.l2ping_count,
             self.config.l2ping_timeout_seconds,
         ):
+            return True
+        if await remote_name_probe_device(mac, self.config.connect_probe_timeout_seconds):
             return True
         if await self.device_has_audio_services(mac):
             log_event("bluetooth", "connect_probe", mac=mac, result="skipped_audio")
@@ -349,11 +358,36 @@ class BlueZPresenceMonitor:
 
     async def get_device_properties(self, path: str) -> dict[str, Any]:
         objects = await self.get_managed_objects()
+        self._remember_passive_seen_from_objects(objects)
         return dict(objects.get(path, {}).get(DEVICE, {}))
 
     async def get_managed_objects(self) -> dict[str, dict[str, dict[str, Any]]]:
         manager = await self._interface(BLUEZ, "/", OBJECT_MANAGER)
         return await manager.call_get_managed_objects()
+
+    async def is_device_passively_present(self, mac: str) -> bool:
+        if not is_valid_mac(mac):
+            return False
+        mac = normalize_mac(mac)
+        path = await self.device_path(mac)
+        if path:
+            props = await self.get_device_properties(path)
+            self._remember_passive_seen(mac, props)
+        seen_at = self.passive_seen_at.get(mac)
+        if seen_at is None:
+            return False
+        return (time.monotonic() - seen_at) <= self.config.passive_presence_ttl_seconds
+
+    def _remember_passive_seen_from_objects(self, objects: dict[str, dict[str, dict[str, Any]]]) -> None:
+        for path, ifaces in objects.items():
+            device = ifaces.get(DEVICE)
+            mac = path_to_mac(path)
+            if device and mac:
+                self._remember_passive_seen(mac, device)
+
+    def _remember_passive_seen(self, mac: str, props: dict[str, Any]) -> None:
+        if device_properties_indicate_passive_presence(props):
+            self.passive_seen_at[normalize_mac(mac)] = time.monotonic()
 
     async def _interface(self, bus_name: str, path: str, interface_name: str) -> Any:
         if not self.bus:
@@ -406,6 +440,17 @@ async def l2ping_device(mac: str, count: int, timeout_seconds: int) -> bool:
     return out.code == 0 and "bytes from" in out.stdout.lower()
 
 
+async def remote_name_probe_device(mac: str, timeout_seconds: int) -> bool:
+    if not is_valid_mac(mac):
+        return False
+    out = await run_command(
+        "hcitool",
+        ["name", normalize_mac(mac)],
+        timeout_seconds,
+    )
+    return command_output_indicates_remote_name_success(out)
+
+
 def normalize_mac(mac: str) -> str:
     return mac.strip().upper()
 
@@ -424,6 +469,15 @@ def path_to_mac(path: str) -> str | None:
 
 def has_audio_uuid(uuids: list[str], blocked: set[str]) -> bool:
     return any(uuid.strip().lower() in blocked for uuid in uuids)
+
+
+def device_properties_indicate_passive_presence(props: dict[str, Any]) -> bool:
+    if "RSSI" in props:
+        return True
+    if _variant_value(props.get("AdvertisingFlags")):
+        return True
+    manufacturer_data = _variant_value(props.get("ManufacturerData"))
+    return bool(manufacturer_data)
 
 
 def command_output_indicates_connect_success(out: CommandOutput) -> bool:
@@ -450,6 +504,24 @@ def command_output_indicates_remove_success(out: CommandOutput) -> bool:
     return out.code == 0 and "failed" not in combined and any(
         text in combined for text in ("removed", "successful", "device has been removed")
     )
+
+
+def command_output_indicates_remote_name_success(out: CommandOutput) -> bool:
+    combined = f"{out.stdout}\n{out.stderr}".lower()
+    failed = (
+        "not available",
+        "no route",
+        "host is down",
+        "connection refused",
+        "connection timed out",
+        "timeout",
+        "invalid",
+        "not found",
+        "no such file",
+    )
+    if out.code != 0 or any(text in combined for text in failed):
+        return False
+    return bool(out.stdout.strip())
 
 
 def _variant_value(value: Any) -> Any:

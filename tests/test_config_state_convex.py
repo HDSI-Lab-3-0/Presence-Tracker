@@ -10,13 +10,14 @@ def test_config_defaults_to_one_minute_polling() -> None:
     config.normalize()
     assert config.presence.polling_interval_seconds == 60
     assert config.bluetooth.max_concurrent_probes == 2
+    assert config.bluetooth.passive_presence_ttl_seconds == 180
 
 
 def test_config_normalizes_invalid_minimums() -> None:
     config = Config.from_dict(
         {
             "presence": {"polling_interval_seconds": 0, "absent_threshold": 0},
-            "bluetooth": {"max_concurrent_probes": 0},
+            "bluetooth": {"max_concurrent_probes": 0, "passive_presence_ttl_seconds": 1},
             "logging": {"max_lines": 0},
         }
     )
@@ -24,6 +25,7 @@ def test_config_normalizes_invalid_minimums() -> None:
     assert config.presence.polling_interval_seconds == 1
     assert config.presence.absent_threshold == 1
     assert config.bluetooth.max_concurrent_probes == 1
+    assert config.bluetooth.passive_presence_ttl_seconds == 30
     assert config.logging.max_lines == 1
 
 

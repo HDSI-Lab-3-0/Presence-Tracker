@@ -423,6 +423,64 @@ const normalizeAttendanceLogForResponse = (log: any, now = Date.now()) => {
   };
 };
 
+const synthesizeCurrentBluetoothSessionsForLogs = async (
+  ctx: any,
+  logs: any[],
+  now: number,
+) => {
+  const devices = await ctx.db.query("devices").collect();
+  const recentLogs = [...logs];
+
+  for (const device of devices) {
+    if (device.pendingRegistration || device.status !== "present") {
+      continue;
+    }
+
+    const sessionStart =
+      typeof device.connectedSince === "number"
+        ? device.connectedSince
+        : typeof device.lastBluetoothPresentAt === "number"
+          ? device.lastBluetoothPresentAt
+          : undefined;
+    if (typeof sessionStart !== "number") {
+      continue;
+    }
+
+    const hasCheckIn = recentLogs.some((log: any) =>
+      log.deviceId === String(device._id)
+      && log.origin === "bluetooth"
+      && log.action === "check_in"
+      && typeof log.timestamp === "number"
+      && log.timestamp >= sessionStart,
+    );
+    if (hasCheckIn) {
+      continue;
+    }
+
+    recentLogs.push({
+      _id: `synthetic-bluetooth-check-in-${device._id}`,
+      userId: device.macAddress,
+      userName: deviceDisplayName(device),
+      status: "present",
+      action: "check_in",
+      origin: "bluetooth",
+      verificationStatus: "verified",
+      verifiedBy: "bluetooth_immediate",
+      eventTimestamp: sessionStart,
+      effectiveTimestamp: sessionStart,
+      timestamp: sessionStart,
+      deviceId: String(device._id),
+      bluetoothStatusAtEvent: "present",
+      synthetic: true,
+      syntheticReason: "current_bluetooth_session",
+    });
+  }
+
+  return recentLogs
+    .sort((a: any, b: any) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
+    .map((log: any) => normalizeAttendanceLogForResponse(log, now));
+};
+
 const auditAttendance = async (ctx: any, deviceId: Id<"devices">, details: string) => {
   await ctx.db.insert("deviceLogs", {
     deviceId,
@@ -1680,7 +1738,7 @@ export const getAttendanceLogs = query({
       .order("desc")
       .collect();
 
-    return logs.map((log: any) => normalizeAttendanceLogForResponse(log));
+    return synthesizeCurrentBluetoothSessionsForLogs(ctx, logs, Date.now());
   },
 });
 
