@@ -106,6 +106,8 @@ class BlueZPresenceMonitor:
         self._connect_lock = asyncio.Lock()
         self._probe_batch_depth = 0
         self._probe_semaphore = asyncio.Semaphore(max(1, config.max_concurrent_probes))
+        # HCI can only service one L2CAP ping at a time; parallel l2ping silently fails.
+        self._l2ping_semaphore = asyncio.Semaphore(1)
 
     def seed_seen_paired(self, macs: set[str]) -> None:
         for mac in macs:
@@ -397,16 +399,25 @@ class BlueZPresenceMonitor:
         mac = normalize_mac(mac)
         if await self.is_device_connected(mac):
             return True
-        if await l2ping_device(
-            mac,
-            self.config.l2ping_count,
-            self.config.l2ping_timeout_seconds,
-        ):
-            log_event("bluetooth", "l2ping_probe", mac=mac, result="seen")
+        if await self._l2ping_probe(mac):
             return True
         if await self.is_device_passively_present(mac):
             log_event("bluetooth", "passive_probe", mac=mac, result="seen")
             return True
+        return False
+
+    async def _l2ping_probe(self, mac: str) -> bool:
+        async with self._l2ping_semaphore:
+            for attempt in range(2):
+                if await l2ping_device(
+                    mac,
+                    self.config.l2ping_count,
+                    self.config.l2ping_timeout_seconds,
+                ):
+                    log_event("bluetooth", "l2ping_probe", mac=mac, result="seen")
+                    return True
+                if attempt == 0:
+                    await asyncio.sleep(0.15)
         return False
 
     async def probe_device_connect(self, mac: str) -> bool:
