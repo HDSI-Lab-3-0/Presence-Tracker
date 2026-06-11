@@ -41,8 +41,9 @@ class BluetoothConfig:
     l2ping_timeout_seconds: int = 2
     l2ping_count: int = 1
     connect_probe_timeout_seconds: int = 8
+    connect_probe_attempts: int = 1
     command_timeout_seconds: int = 5
-    max_concurrent_probes: int = 1
+    max_concurrent_probes: int = 3
     passive_presence_ttl_seconds: int = 180
     min_passive_rssi: int = -80
     adapter_name: str = ""
@@ -105,8 +106,9 @@ class Config:
                 l2ping_timeout_seconds=_int(bluetooth.get("l2ping_timeout_seconds"), 2),
                 l2ping_count=_int(bluetooth.get("l2ping_count"), 1),
                 connect_probe_timeout_seconds=_int(bluetooth.get("connect_probe_timeout_seconds"), 2),
+                connect_probe_attempts=_int(bluetooth.get("connect_probe_attempts"), 1),
                 command_timeout_seconds=_int(bluetooth.get("command_timeout_seconds"), 5),
-                max_concurrent_probes=_int(bluetooth.get("max_concurrent_probes"), 2),
+                max_concurrent_probes=_int(bluetooth.get("max_concurrent_probes"), 3),
                 passive_presence_ttl_seconds=_int(bluetooth.get("passive_presence_ttl_seconds"), 180),
                 min_passive_rssi=_int(bluetooth.get("min_passive_rssi"), -80),
                 adapter_name=str(bluetooth.get("adapter_name", "")),
@@ -150,8 +152,9 @@ class Config:
         self.bluetooth.l2ping_timeout_seconds = max(1, self.bluetooth.l2ping_timeout_seconds)
         self.bluetooth.l2ping_count = max(1, self.bluetooth.l2ping_count)
         self.bluetooth.connect_probe_timeout_seconds = max(1, self.bluetooth.connect_probe_timeout_seconds)
+        self.bluetooth.connect_probe_attempts = max(1, min(3, self.bluetooth.connect_probe_attempts))
         self.bluetooth.command_timeout_seconds = max(1, self.bluetooth.command_timeout_seconds)
-        self.bluetooth.max_concurrent_probes = max(1, self.bluetooth.max_concurrent_probes)
+        self.bluetooth.max_concurrent_probes = max(1, min(6, self.bluetooth.max_concurrent_probes))
         self.bluetooth.passive_presence_ttl_seconds = max(30, self.bluetooth.passive_presence_ttl_seconds)
         self.bluetooth.min_passive_rssi = min(-30, max(-120, self.bluetooth.min_passive_rssi))
         self.logging.max_lines = max(1, self.logging.max_lines)

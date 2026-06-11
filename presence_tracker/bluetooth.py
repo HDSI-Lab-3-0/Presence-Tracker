@@ -105,6 +105,7 @@ class BlueZPresenceMonitor:
         self.watched_device_paths: set[str] = set()
         self._connect_lock = asyncio.Lock()
         self._probe_batch_depth = 0
+        self._probe_semaphore = asyncio.Semaphore(max(1, config.max_concurrent_probes))
 
     def seed_seen_paired(self, macs: set[str]) -> None:
         for mac in macs:
@@ -457,24 +458,29 @@ class BlueZPresenceMonitor:
                 await self.start_discovery()
 
     async def connect_probe(self, mac: str) -> bool:
+        if self._probe_batch_depth > 0:
+            async with self._probe_semaphore:
+                return await self._connect_probe_inner(mac)
         async with self._connect_lock:
-            if self._probe_batch_depth == 0:
-                await self.stop_discovery()
-            last_error = ""
+            await self.stop_discovery()
             try:
-                for attempt in range(3):
-                    connected, error = await self._connect_probe_once(mac)
-                    if connected:
-                        return True
-                    last_error = error
-                    if attempt < 2:
-                        await asyncio.sleep(1.0)
-                if last_error:
-                    log_event("bluetooth", "connect_probe", mac=mac, result="failed", message=last_error)
-                return False
+                return await self._connect_probe_inner(mac)
             finally:
-                if self._probe_batch_depth == 0:
-                    await self.start_discovery()
+                await self.start_discovery()
+
+    async def _connect_probe_inner(self, mac: str) -> bool:
+        last_error = ""
+        attempts = max(1, self.config.connect_probe_attempts)
+        for attempt in range(attempts):
+            connected, error = await self._connect_probe_once(mac)
+            if connected:
+                return True
+            last_error = error
+            if attempt < attempts - 1:
+                await asyncio.sleep(0.5)
+        if last_error:
+            log_event("bluetooth", "connect_probe", mac=mac, result="failed", message=last_error)
+        return False
 
     async def _connect_probe_once(self, mac: str) -> tuple[bool, str]:
         mac = normalize_mac(mac)

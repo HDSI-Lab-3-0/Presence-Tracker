@@ -9,7 +9,8 @@ def test_config_defaults_to_one_minute_polling() -> None:
     config = Config.from_dict({})
     config.normalize()
     assert config.presence.polling_interval_seconds == 60
-    assert config.bluetooth.max_concurrent_probes == 2
+    assert config.bluetooth.max_concurrent_probes == 3
+    assert config.bluetooth.connect_probe_attempts == 1
     assert config.bluetooth.passive_presence_ttl_seconds == 180
 
 
