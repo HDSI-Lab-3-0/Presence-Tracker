@@ -171,6 +171,12 @@ class BlueZPresenceMonitor:
         except DBusError as exc:
             if "NotReady" not in str(exc) and "not ready" not in str(exc).lower():
                 log_event("bluetooth", "stop_discovery", result="ignored", message=str(exc))
+        for _ in range(10):
+            props = await self._interface(BLUEZ, self.adapter_path, PROPERTIES)
+            discovering = _variant_value(await props.call_get(ADAPTER, "Discovering"))
+            if discovering is not True:
+                return
+            await asyncio.sleep(0.1)
 
     async def get_connected_devices(self) -> set[str]:
         objects = await self.get_managed_objects()
