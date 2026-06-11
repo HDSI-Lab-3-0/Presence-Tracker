@@ -32,6 +32,7 @@ class PresenceConfig:
     polling_interval_seconds: int = 60
     absent_threshold: int = 3
     present_threshold: int = 1
+    present_ttl_seconds: int = 300
     grace_period_seconds: int = 300
 
 
@@ -42,7 +43,7 @@ class BluetoothConfig:
     connect_probe_timeout_seconds: int = 2
     command_timeout_seconds: int = 5
     max_concurrent_probes: int = 2
-    passive_presence_ttl_seconds: int = 180
+    passive_presence_ttl_seconds: int = 300
     adapter_name: str = ""
     audio_block_uuids: list[str] = field(default_factory=lambda: DEFAULT_AUDIO_UUIDS.copy())
 
@@ -96,6 +97,7 @@ class Config:
                 polling_interval_seconds=_int(presence.get("polling_interval_seconds"), 60),
                 absent_threshold=_int(presence.get("absent_threshold"), 3),
                 present_threshold=_int(presence.get("present_threshold"), 1),
+                present_ttl_seconds=_int(presence.get("present_ttl_seconds"), 300),
                 grace_period_seconds=_int(presence.get("grace_period_seconds"), 300),
             ),
             bluetooth=BluetoothConfig(
@@ -141,6 +143,7 @@ class Config:
         self.presence.polling_interval_seconds = max(1, self.presence.polling_interval_seconds)
         self.presence.absent_threshold = max(1, self.presence.absent_threshold)
         self.presence.present_threshold = max(1, self.presence.present_threshold)
+        self.presence.present_ttl_seconds = max(30, self.presence.present_ttl_seconds)
         self.presence.grace_period_seconds = max(1, self.presence.grace_period_seconds)
         self.bluetooth.l2ping_timeout_seconds = max(1, self.bluetooth.l2ping_timeout_seconds)
         self.bluetooth.l2ping_count = max(1, self.bluetooth.l2ping_count)

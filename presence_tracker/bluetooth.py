@@ -260,11 +260,19 @@ class BlueZPresenceMonitor:
             self.config.l2ping_count,
             self.config.l2ping_timeout_seconds,
         ):
+            log_event("bluetooth", "l2ping_probe", mac=mac, result="seen")
             return True
         if await remote_name_probe_device(mac, self.config.connect_probe_timeout_seconds):
+            log_event("bluetooth", "name_probe", mac=mac, result="seen")
             return True
         if await self.device_has_audio_services(mac):
-            log_event("bluetooth", "connect_probe", mac=mac, result="skipped_audio")
+            log_event(
+                "bluetooth",
+                "connect_probe",
+                mac=mac,
+                result="skipped_audio",
+                message="Paired audio device; presence uses passive/l2ping/name probes only",
+            )
             return False
         return await self.connect_probe(mac)
 

@@ -14,6 +14,7 @@ class DeviceRecord:
     mac_address: str
     status: str = "absent"
     pending_registration: bool = False
+    last_seen: int | None = None
 
 
 @dataclass(slots=True)
@@ -54,6 +55,7 @@ class ConvexClient:
                 mac_address=str(item.get("macAddress", "")),
                 status=str(item.get("status", "absent")),
                 pending_registration=bool(item.get("pendingRegistration", False)),
+                last_seen=item.get("lastSeen") if isinstance(item.get("lastSeen"), int) else None,
             )
             for item in value
             if isinstance(item, dict)

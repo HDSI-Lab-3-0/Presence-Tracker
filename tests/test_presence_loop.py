@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 from presence_tracker.config import Config
 from presence_tracker.convex_client import BluetoothRemovalRequest, DeviceRecord
@@ -62,6 +63,31 @@ def test_unknown_connected_device_registers_pending(tmp_path) -> None:
     assert convex.pending == [("AA:BB:CC:DD:EE:FF", None, None)]
 
 
+def test_present_ttl_holds_status_after_probe_misses(tmp_path) -> None:
+    config = Config.from_dict(
+        {
+            "presence": {"absent_threshold": 1, "present_ttl_seconds": 300},
+            "paths": {"state_file": str(tmp_path / "state.json")},
+        }
+    )
+    config.normalize()
+    device = DeviceRecord(
+        None,
+        "AA:BB:CC:DD:EE:FF",
+        "present",
+        False,
+        last_seen=int(time.time() * 1000),
+    )
+    convex = FakeConvex(devices=[device])
+    bluetooth = FakeBluetooth()
+    loop = PresenceLoop(config, convex, bluetooth)
+
+    run(loop.run_cycle())
+    run(loop.run_cycle())
+
+    assert convex.statuses == []
+
+
 def test_absent_threshold_debounces_checkout(tmp_path) -> None:
     config = Config.from_dict(
         {
@@ -70,7 +96,7 @@ def test_absent_threshold_debounces_checkout(tmp_path) -> None:
         }
     )
     config.normalize()
-    device = DeviceRecord(None, "AA:BB:CC:DD:EE:FF", "present", False)
+    device = DeviceRecord(None, "AA:BB:CC:DD:EE:FF", "present", False, last_seen=None)
     convex = FakeConvex(devices=[device])
     bluetooth = FakeBluetooth()
     loop = PresenceLoop(config, convex, bluetooth)
