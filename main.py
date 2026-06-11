@@ -7,7 +7,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from presence_tracker.bluetooth import BlueZPresenceMonitor
+from presence_tracker.bluetooth import BlueZPresenceMonitor, normalize_mac
+from presence_tracker.state import load_known_macs
 from presence_tracker.config import Config
 from presence_tracker.convex_client import ConvexClient
 from presence_tracker.logging_utils import configure_logging, log_event
@@ -61,6 +62,11 @@ async def run() -> None:
     await monitor.configure_adapter(config.bluetooth_name)
     await monitor.register_agent()
     await monitor.start_discovery()
+
+    monitor.seed_seen_paired(load_known_macs(config.paths.state_file))
+    if convex.is_configured:
+        devices = await convex.get_devices()
+        monitor.seed_seen_paired({normalize_mac(device.mac_address) for device in devices})
 
     pairing_task: asyncio.Task[None] | None = None
     if convex.is_configured:
