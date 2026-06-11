@@ -52,6 +52,17 @@ def test_passive_probe_ignores_stale_cached_properties() -> None:
     assert not asyncio.run(monitor.is_device_passively_present("FC:31:5D:72:AA:9C"))
 
 
+def test_passive_presence_survives_routine_property_invalidation() -> None:
+    # BlueZ invalidates RSSI as a side effect of stopping discovery every probe
+    # cycle. A live advertisement must register presence, and a later event that
+    # carries no fresh advertisement data must NOT erase a still-fresh sighting.
+    monitor = BlueZPresenceMonitor(BluetoothConfig(passive_presence_ttl_seconds=180))
+    monitor._record_property_change("AA:BB:CC:DD:EE:FF", {"RSSI": -55})
+    monitor._record_property_change("AA:BB:CC:DD:EE:FF", {})
+
+    assert asyncio.run(monitor.is_device_passively_present("AA:BB:CC:DD:EE:FF"))
+
+
 def test_connect_probe_rejects_failed_success_code() -> None:
     out = CommandOutput(
         code=0,

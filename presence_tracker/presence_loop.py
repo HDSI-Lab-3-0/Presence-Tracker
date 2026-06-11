@@ -171,11 +171,15 @@ class PresenceLoop:
             self.misses.pop(mac, None)
             if device.status != "present":
                 if via_connected:
+                    # An active OS-level connection is ground truth; trust it
+                    # immediately rather than debouncing the strongest signal.
+                    self.hits.pop(mac, None)
+                else:
+                    # Weaker probe-only signal: debounce by present_threshold so a
+                    # single noisy hit cannot flip a device to present.
                     self.hits[mac] += 1
                     if self.hits[mac] < present_threshold:
                         return
-                    self.hits.pop(mac, None)
-                else:
                     self.hits.pop(mac, None)
                 await self.transition_status(device, "present")
             return

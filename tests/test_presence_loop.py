@@ -39,6 +39,12 @@ class FakeBluetooth:
     async def get_connected_devices(self):
         return self.connected
 
+    async def begin_probe_batch(self):
+        pass
+
+    async def end_probe_batch(self):
+        pass
+
     async def probe_device(self, mac):
         return self.probes.get(mac, False)
 
@@ -86,6 +92,26 @@ def test_present_ttl_holds_status_after_probe_misses(tmp_path) -> None:
     run(loop.run_cycle())
 
     assert convex.statuses == []
+
+
+def test_connected_device_marks_present_immediately(tmp_path) -> None:
+    # An active OS-level connection is the strongest signal and must not be
+    # held back by present_threshold debouncing meant for weak probes.
+    config = Config.from_dict(
+        {
+            "presence": {"present_threshold": 3},
+            "paths": {"state_file": str(tmp_path / "state.json")},
+        }
+    )
+    config.normalize()
+    device = DeviceRecord(None, "AA:BB:CC:DD:EE:FF", "absent", False, last_seen=None)
+    convex = FakeConvex(devices=[device])
+    bluetooth = FakeBluetooth(connected={"AA:BB:CC:DD:EE:FF"})
+    loop = PresenceLoop(config, convex, bluetooth)
+
+    run(loop.run_cycle())
+
+    assert convex.statuses == [("AA:BB:CC:DD:EE:FF", "present")]
 
 
 def test_absent_threshold_debounces_checkout(tmp_path) -> None:
