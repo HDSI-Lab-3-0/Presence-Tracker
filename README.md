@@ -160,7 +160,7 @@ Active probing is bounded and hardware-aware:
 - Registered devices are probed with an `asyncio.Semaphore`.
 - Default probe concurrency is 2 to avoid stressing Raspberry Pi Bluetooth hardware.
 - Paired phones seen through BlueZ RSSI/advertising count as present for `passive_presence_ttl_seconds`, so presence works without connecting audio profiles.
-- `l2ping` is run with strict timeouts.
+- `l2ping` is run with strict timeouts, then `hcitool name` is tried as a non-audio fallback reachability probe.
 - Generic connect probes are skipped for devices advertising blocked audio UUIDs.
 
 Audio protection:

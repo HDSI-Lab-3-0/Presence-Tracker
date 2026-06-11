@@ -96,6 +96,7 @@ class BlueZPresenceMonitor:
         self.agent = PresenceAgent(self.audio_uuids)
         self.seen_paired: set[str] = set()
         self.passive_seen_at: dict[str, float] = {}
+        self.watched_device_paths: set[str] = set()
 
     async def connect(self) -> None:
         self.bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
@@ -307,7 +308,10 @@ class BlueZPresenceMonitor:
 
         while True:
             try:
-                paired = await self.get_paired_devices()
+                objects = await self.get_managed_objects()
+                self._remember_passive_seen_from_objects(objects)
+                await self._watch_device_property_changes(objects)
+                paired = self._paired_devices_from_objects(objects)
                 for mac in sorted(set(paired) - self.seen_paired):
                     await self.handle_new_pairing(mac, register_pending)
             except asyncio.CancelledError:
@@ -365,6 +369,34 @@ class BlueZPresenceMonitor:
         manager = await self._interface(BLUEZ, "/", OBJECT_MANAGER)
         return await manager.call_get_managed_objects()
 
+    async def _watch_device_property_changes(self, objects: dict[str, dict[str, dict[str, Any]]]) -> None:
+        for path, ifaces in objects.items():
+            if DEVICE not in ifaces or path in self.watched_device_paths:
+                continue
+            mac = path_to_mac(path)
+            if not mac:
+                continue
+            try:
+                props = await self._interface(BLUEZ, path, PROPERTIES)
+            except Exception as exc:
+                log_event("bluetooth", "watch_device", mac=mac, result="error", message=str(exc), level=logging.WARNING)
+                continue
+
+            def on_properties_changed(
+                interface_name: str,
+                changed_properties: dict[str, Any],
+                invalidated_properties: list[str],
+                watched_mac: str = mac,
+            ) -> None:
+                if interface_name != DEVICE:
+                    return
+                if device_properties_indicate_passive_presence(changed_properties):
+                    self.passive_seen_at[normalize_mac(watched_mac)] = time.monotonic()
+                    log_event("bluetooth", "passive_seen", mac=watched_mac, result="event")
+
+            props.on_properties_changed(on_properties_changed)
+            self.watched_device_paths.add(path)
+
     async def is_device_passively_present(self, mac: str) -> bool:
         if not is_valid_mac(mac):
             return False
@@ -384,6 +416,18 @@ class BlueZPresenceMonitor:
             mac = path_to_mac(path)
             if device and mac:
                 self._remember_passive_seen(mac, device)
+
+    def _paired_devices_from_objects(self, objects: dict[str, dict[str, dict[str, Any]]]) -> dict[str, str]:
+        paired: dict[str, str] = {}
+        for path, ifaces in objects.items():
+            device = ifaces.get(DEVICE)
+            if not device:
+                continue
+            if _variant_value(device.get("Paired")) is True:
+                mac = path_to_mac(path)
+                if mac:
+                    paired[mac] = path
+        return paired
 
     def _remember_passive_seen(self, mac: str, props: dict[str, Any]) -> None:
         if device_properties_indicate_passive_presence(props):

@@ -1,4 +1,7 @@
+import asyncio
+
 from presence_tracker.bluetooth import (
+    BlueZPresenceMonitor,
     CommandOutput,
     command_output_indicates_connect_success,
     command_output_indicates_remote_name_success,
@@ -9,7 +12,7 @@ from presence_tracker.bluetooth import (
     normalize_mac,
     path_to_mac,
 )
-from presence_tracker.config import DEFAULT_AUDIO_UUIDS
+from presence_tracker.config import DEFAULT_AUDIO_UUIDS, BluetoothConfig
 
 
 def test_mac_helpers() -> None:
@@ -63,3 +66,34 @@ def test_remote_name_probe_rejects_missing_tool() -> None:
 def test_remote_name_probe_rejects_timeout() -> None:
     out = CommandOutput(code=124, stdout="", stderr="timeout")
     assert not command_output_indicates_remote_name_success(out)
+
+
+def test_probe_device_uses_remote_name_before_audio_skip(monkeypatch) -> None:
+    monitor = BlueZPresenceMonitor(BluetoothConfig())
+    checked_audio = False
+
+    async def is_device_connected(mac: str) -> bool:
+        return False
+
+    async def is_device_passively_present(mac: str) -> bool:
+        return False
+
+    async def l2ping_device(mac: str, count: int, timeout_seconds: int) -> bool:
+        return False
+
+    async def remote_name_probe_device(mac: str, timeout_seconds: int) -> bool:
+        return True
+
+    async def device_has_audio_services(mac: str) -> bool:
+        nonlocal checked_audio
+        checked_audio = True
+        return True
+
+    monitor.is_device_connected = is_device_connected
+    monitor.is_device_passively_present = is_device_passively_present
+    monitor.device_has_audio_services = device_has_audio_services
+    monkeypatch.setattr("presence_tracker.bluetooth.l2ping_device", l2ping_device)
+    monkeypatch.setattr("presence_tracker.bluetooth.remote_name_probe_device", remote_name_probe_device)
+
+    assert asyncio.run(monitor.probe_device("74:F4:41:2E:2B:3A"))
+    assert not checked_audio
