@@ -34,6 +34,24 @@ def test_passive_presence_uses_discovery_properties() -> None:
     assert not device_properties_indicate_passive_presence({})
 
 
+def test_passive_probe_ignores_stale_cached_properties() -> None:
+    monitor = BlueZPresenceMonitor(BluetoothConfig(passive_presence_ttl_seconds=300))
+
+    async def device_path(mac: str) -> str:
+        return "/org/bluez/hci0/dev_FC_31_5D_72_AA_9C"
+
+    async def get_device_properties(path: str) -> dict:
+        return {
+            "ManufacturerData": {76: b"\x10\x06y\x1eb\xacP\x9b"},
+            "AdvertisingFlags": b"\x1a",
+        }
+
+    monitor.device_path = device_path
+    monitor.get_device_properties = get_device_properties
+
+    assert not asyncio.run(monitor.is_device_passively_present("FC:31:5D:72:AA:9C"))
+
+
 def test_connect_probe_rejects_failed_success_code() -> None:
     out = CommandOutput(
         code=0,

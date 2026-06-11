@@ -106,7 +106,7 @@ class Config:
                 connect_probe_timeout_seconds=_int(bluetooth.get("connect_probe_timeout_seconds"), 2),
                 command_timeout_seconds=_int(bluetooth.get("command_timeout_seconds"), 5),
                 max_concurrent_probes=_int(bluetooth.get("max_concurrent_probes"), 2),
-                passive_presence_ttl_seconds=_int(bluetooth.get("passive_presence_ttl_seconds"), 180),
+                passive_presence_ttl_seconds=_int(bluetooth.get("passive_presence_ttl_seconds"), 300),
                 adapter_name=str(bluetooth.get("adapter_name", "")),
                 audio_block_uuids=[
                     str(uuid).strip().lower()

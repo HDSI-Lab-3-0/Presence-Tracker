@@ -180,7 +180,6 @@ class BlueZPresenceMonitor:
 
     async def get_connected_devices(self) -> set[str]:
         objects = await self.get_managed_objects()
-        self._remember_passive_seen_from_objects(objects)
         connected: set[str] = set()
         for path, ifaces in objects.items():
             device = ifaces.get(DEVICE)
@@ -194,7 +193,6 @@ class BlueZPresenceMonitor:
 
     async def get_paired_devices(self) -> dict[str, str]:
         objects = await self.get_managed_objects()
-        self._remember_passive_seen_from_objects(objects)
         paired: dict[str, str] = {}
         for path, ifaces in objects.items():
             device = ifaces.get(DEVICE)
@@ -366,7 +364,6 @@ class BlueZPresenceMonitor:
         while True:
             try:
                 objects = await self.get_managed_objects()
-                self._remember_passive_seen_from_objects(objects)
                 await self._watch_device_property_changes(objects)
                 paired = self._paired_devices_from_objects(objects)
                 for mac in sorted(set(paired) - self.seen_paired):
@@ -419,7 +416,6 @@ class BlueZPresenceMonitor:
 
     async def get_device_properties(self, path: str) -> dict[str, Any]:
         objects = await self.get_managed_objects()
-        self._remember_passive_seen_from_objects(objects)
         return dict(objects.get(path, {}).get(DEVICE, {}))
 
     async def get_managed_objects(self) -> dict[str, dict[str, dict[str, Any]]]:
@@ -447,9 +443,15 @@ class BlueZPresenceMonitor:
                 ) -> None:
                     if interface_name != DEVICE:
                         return
+                    normalized = normalize_mac(watched_mac)
                     if device_properties_indicate_passive_presence(changed_properties):
-                        self.passive_seen_at[normalize_mac(watched_mac)] = time.monotonic()
+                        self.passive_seen_at[normalized] = time.monotonic()
                         log_event("bluetooth", "passive_seen", mac=watched_mac, result="event")
+                    if any(
+                        prop in invalidated_properties
+                        for prop in ("RSSI", "ManufacturerData", "AdvertisingFlags")
+                    ):
+                        self.passive_seen_at.pop(normalized, None)
 
                 return on_properties_changed
 
@@ -460,21 +462,10 @@ class BlueZPresenceMonitor:
         if not is_valid_mac(mac):
             return False
         mac = normalize_mac(mac)
-        path = await self.device_path(mac)
-        if path:
-            props = await self.get_device_properties(path)
-            self._remember_passive_seen(mac, props)
         seen_at = self.passive_seen_at.get(mac)
         if seen_at is None:
             return False
         return (time.monotonic() - seen_at) <= self.config.passive_presence_ttl_seconds
-
-    def _remember_passive_seen_from_objects(self, objects: dict[str, dict[str, dict[str, Any]]]) -> None:
-        for path, ifaces in objects.items():
-            device = ifaces.get(DEVICE)
-            mac = path_to_mac(path)
-            if device and mac:
-                self._remember_passive_seen(mac, device)
 
     def _paired_devices_from_objects(self, objects: dict[str, dict[str, dict[str, Any]]]) -> dict[str, str]:
         paired: dict[str, str] = {}
@@ -487,10 +478,6 @@ class BlueZPresenceMonitor:
                 if mac:
                     paired[mac] = path
         return paired
-
-    def _remember_passive_seen(self, mac: str, props: dict[str, Any]) -> None:
-        if device_properties_indicate_passive_presence(props):
-            self.passive_seen_at[normalize_mac(mac)] = time.monotonic()
 
     async def _interface(self, bus_name: str, path: str, interface_name: str) -> Any:
         if not self.bus:
