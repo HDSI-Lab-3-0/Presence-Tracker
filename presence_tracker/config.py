@@ -40,9 +40,9 @@ class PresenceConfig:
 class BluetoothConfig:
     l2ping_timeout_seconds: int = 2
     l2ping_count: int = 1
-    connect_probe_timeout_seconds: int = 2
+    connect_probe_timeout_seconds: int = 5
     command_timeout_seconds: int = 5
-    max_concurrent_probes: int = 2
+    max_concurrent_probes: int = 1
     passive_presence_ttl_seconds: int = 300
     adapter_name: str = ""
     audio_block_uuids: list[str] = field(default_factory=lambda: DEFAULT_AUDIO_UUIDS.copy())

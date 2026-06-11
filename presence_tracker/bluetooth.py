@@ -97,6 +97,7 @@ class BlueZPresenceMonitor:
         self.seen_paired: set[str] = set()
         self.passive_seen_at: dict[str, float] = {}
         self.watched_device_paths: set[str] = set()
+        self._connect_lock = asyncio.Lock()
 
     async def connect(self) -> None:
         self.bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
@@ -286,6 +287,15 @@ class BlueZPresenceMonitor:
         return False
 
     async def connect_probe(self, mac: str) -> bool:
+        async with self._connect_lock:
+            for attempt in range(3):
+                if await self._connect_probe_once(mac):
+                    return True
+                if attempt < 2:
+                    await asyncio.sleep(0.75)
+            return False
+
+    async def _connect_probe_once(self, mac: str) -> bool:
         path = await self.device_path(mac)
         if not path:
             out = await run_command(
@@ -299,7 +309,13 @@ class BlueZPresenceMonitor:
             await asyncio.wait_for(device.call_connect(), timeout=self.config.connect_probe_timeout_seconds)
             return True
         except Exception as exc:
-            log_event("bluetooth", "connect_probe", mac=mac, result="failed", message=str(exc))
+            message = str(exc)
+            retryable = any(
+                token in message.lower()
+                for token in ("in progress", "canceled", "too many links", "busy")
+            )
+            if not retryable:
+                log_event("bluetooth", "connect_probe", mac=mac, result="failed", message=message)
             return False
 
     async def monitor_new_pairings(
