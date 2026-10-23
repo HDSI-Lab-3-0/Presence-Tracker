@@ -4,14 +4,15 @@ version = "0.1.0"
 description = "Async Python Bluetooth presence agent for Raspberry Pi"
 requires-python = ">=3.10"
 dependencies = [
+  "certifi>=2026.10.19",
   "dbus-next>=0.2.3",
-  "httpx>=0.28.0",
-  "python-dotenv>=1.0.0",
+  "httpx>=0.28.1",
+  "python-dotenv>=1.2.4",
 ]
 
 [dependency-groups]
 dev = [
-  "pytest>=8.0.0",
+  "pytest>=9.1.1",
 ]
 
 [tool.uv]
